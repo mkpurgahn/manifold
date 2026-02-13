@@ -624,6 +624,67 @@ size_t manifold_num_prop_vert(const Manifold *m) {
   return manifold_impl_num_prop_vert(&m->impl);
 }
 
+bool manifold_matches_tri_normals(const Manifold *m) {
+  const ManifoldImpl *impl = &m->impl;
+  size_t numTri = impl->halfedge.len / 3;
+  if (impl->halfedge.len == 0 || impl->faceNormal.len != numTri) return true;
+  for (size_t face = 0; face < numTri; face++) {
+    if (impl->halfedge.data[3 * face].pairedHalfedge < 0) continue;
+    ManifoldMat2x3 projection = manifold_get_axis_aligned_projection(
+        impl->faceNormal.data[face]);
+    ManifoldVec2 v[3];
+    double maxD = -1e308, minD = 1e308;
+    for (int i = 0; i < 3; i++) {
+      ManifoldVec3 p = impl->vertPos.data[impl->halfedge.data[3*face+i].startVert];
+      v[i] = mat2x3_mul_vec3(projection, p);
+      double d = vec3_dot(p, impl->faceNormal.data[face]);
+      if (!isfinite(d)) continue;
+      if (d > maxD) maxD = d;
+      if (d < minD) minD = d;
+    }
+    if (maxD - minD > 2 * impl->tolerance) return false;
+    if (manifold_ccw(v[0], v[1], v[2], impl->epsilon * 2) < 0) return false;
+  }
+  return true;
+}
+
+int manifold_num_degenerate_tris(const Manifold *m) {
+  const ManifoldImpl *impl = &m->impl;
+  size_t numTri = impl->halfedge.len / 3;
+  if (impl->halfedge.len == 0 || impl->faceNormal.len != numTri) return 0;
+  int count = 0;
+  for (size_t face = 0; face < numTri; face++) {
+    if (impl->halfedge.data[3 * face].pairedHalfedge < 0) { count++; continue; }
+    ManifoldMat2x3 projection = manifold_get_axis_aligned_projection(
+        impl->faceNormal.data[face]);
+    ManifoldVec2 v[3];
+    for (int i = 0; i < 3; i++)
+      v[i] = mat2x3_mul_vec3(projection,
+          impl->vertPos.data[impl->halfedge.data[3*face+i].startVert]);
+    if (manifold_ccw(v[0], v[1], v[2], impl->epsilon / 2) == 0) count++;
+  }
+  return count;
+}
+
+Manifold manifold_refine_to_tolerance(const Manifold *m, double tolerance) {
+  // Find the longest edge, refine until max edge < tolerance
+  Manifold result;
+  manifold_copy(&result, m);
+  double maxEdge = 0;
+  for (size_t i = 0; i < result.impl.halfedge.len; i++) {
+    ManifoldHalfedge he = result.impl.halfedge.data[i];
+    ManifoldVec3 a = result.impl.vertPos.data[he.startVert];
+    ManifoldVec3 b = result.impl.vertPos.data[he.endVert];
+    double len = vec3_length(vec3_sub(b, a));
+    if (len > maxEdge) maxEdge = len;
+  }
+  if (maxEdge <= tolerance || tolerance <= 0) return result;
+  int n = (int)ceil(maxEdge / tolerance);
+  if (n < 2) n = 2;
+  manifold_destroy(&result);
+  return manifold_refine(m, n);
+}
+
 Manifold manifold_mirror(const Manifold *m, ManifoldVec3 normal) {
   double len = vec3_length(normal);
   if (len == 0.0) {

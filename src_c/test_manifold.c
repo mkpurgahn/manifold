@@ -3880,6 +3880,133 @@ static void test_from_meshgl_basic(void) {
   manifold_destroy(&tet);
 }
 
+// ===== Matches Tri Normals / Degenerate Tests =====
+
+static void test_matches_tri_normals(void) {
+  Manifold cube = manifold_cube(manifold_vec3(1,1,1), false);
+  ASSERT_TRUE(manifold_matches_tri_normals(&cube));
+  manifold_destroy(&cube);
+
+  Manifold sphere = manifold_sphere(1.0, 16);
+  ASSERT_TRUE(manifold_matches_tri_normals(&sphere));
+  manifold_destroy(&sphere);
+}
+
+static void test_degenerate_tris(void) {
+  Manifold cube = manifold_cube(manifold_vec3(1,1,1), false);
+  ASSERT_EQ(manifold_num_degenerate_tris(&cube), 0);
+  manifold_destroy(&cube);
+}
+
+static void test_refine_to_tolerance(void) {
+  Manifold cube = manifold_cube(manifold_vec3(1,1,1), false);
+  Manifold refined = manifold_refine_to_tolerance(&cube, 0.3);
+  ASSERT_TRUE(manifold_num_vert(&refined) > manifold_num_vert(&cube));
+  ASSERT_NEAR(manifold_volume(&refined), 1.0, 0.01);
+  manifold_destroy(&cube);
+  manifold_destroy(&refined);
+}
+
+// ===== Hull of multiple manifolds =====
+
+static void test_hull_multiple_manifolds(void) {
+  // Hull of two separated cubes should encompass both
+  Manifold c1 = manifold_cube(manifold_vec3(1,1,1), false);
+  Manifold c2base = manifold_cube(manifold_vec3(1,1,1), false);
+  Manifold c2 = manifold_translate(&c2base, manifold_vec3(3, 0, 0));
+
+  // Union then hull
+  Manifold u = manifold_union(&c1, &c2);
+  Manifold h = manifold_hull(&u);
+  ASSERT_TRUE(manifold_is_convex(&h));
+  // The hull should be a box 4x1x1
+  ASSERT_NEAR(manifold_volume(&h), 4.0, 0.01);
+
+  manifold_destroy(&c1); manifold_destroy(&c2base);
+  manifold_destroy(&c2); manifold_destroy(&u);
+  manifold_destroy(&h);
+}
+
+// ===== Mirrored tri normals test =====
+
+static void test_mirrored_tri_normals(void) {
+  Manifold cube = manifold_cube(manifold_vec3(1,1,1), false);
+  Manifold mirrored = manifold_scale(&cube, manifold_vec3(1, -1, 1));
+  ASSERT_TRUE(manifold_matches_tri_normals(&mirrored));
+  manifold_destroy(&cube);
+  manifold_destroy(&mirrored);
+}
+
+// ===== From mesh roundtrip with MeshGL =====
+
+static void test_meshgl_tet_roundtrip(void) {
+  // Create tet, export to meshgl, reimport
+  Manifold tet = manifold_tetrahedron();
+  double origVol = manifold_volume(&tet);
+
+  float *vp = NULL; int *tv = NULL;
+  size_t nv, np, nt;
+  manifold_get_mesh(&tet, &vp, &nv, &np, &tv, &nt);
+  ASSERT_EQ((int)nv, 4);
+  ASSERT_EQ((int)nt, 4);
+
+  // Build ManifoldMeshGL
+  double *dvp = (double*)malloc(nv * 3 * sizeof(double));
+  for (size_t i = 0; i < nv; i++) {
+    dvp[i*3+0] = vp[i*np+0];
+    dvp[i*3+1] = vp[i*np+1];
+    dvp[i*3+2] = vp[i*np+2];
+  }
+  ManifoldMeshGL mesh;
+  mesh.numProp = 3;
+  mesh.vertProperties = dvp;
+  mesh.vertLen = nv;
+  mesh.triVerts = tv;
+  mesh.triLen = nt;
+  mesh.tolerance = 0;
+  Manifold reimported = manifold_from_meshgl(&mesh);
+  ASSERT_NEAR(manifold_volume(&reimported), origVol, 0.001);
+
+  free(dvp);
+  manifold_free_mesh(vp, tv);
+  manifold_destroy(&tet);
+  manifold_destroy(&reimported);
+}
+
+// ===== Additional edge cases =====
+
+static void test_scale_and_boolean(void) {
+  // Scale then boolean
+  Manifold cube = manifold_cube(manifold_vec3(1,1,1), false);
+  Manifold big = manifold_scale(&cube, manifold_vec3(2,2,2));
+  Manifold small_cube = manifold_cube(manifold_vec3(1,1,1), false);
+  Manifold result = manifold_difference(&big, &small_cube);
+  ASSERT_NEAR(manifold_volume(&result), 8.0 - 1.0, 0.01);
+  manifold_destroy(&cube); manifold_destroy(&big);
+  manifold_destroy(&small_cube); manifold_destroy(&result);
+}
+
+static void test_sphere_boolean_genus(void) {
+  // Two overlapping spheres unioned should have genus 0
+  Manifold s1 = manifold_sphere(1.0, 16);
+  Manifold s2base = manifold_sphere(1.0, 16);
+  Manifold s2 = manifold_translate(&s2base, manifold_vec3(1, 0, 0));
+  Manifold u = manifold_union(&s1, &s2);
+  ASSERT_EQ(manifold_genus(&u), 0);
+  manifold_destroy(&s1); manifold_destroy(&s2base);
+  manifold_destroy(&s2); manifold_destroy(&u);
+}
+
+static void test_empty_manifold_properties(void) {
+  Manifold e = manifold_empty();
+  ASSERT_TRUE(manifold_is_empty(&e));
+  ASSERT_NEAR(manifold_volume(&e), 0.0, 1e-10);
+  ASSERT_NEAR(manifold_surface_area(&e), 0.0, 1e-10);
+  ASSERT_EQ(manifold_num_vert(&e), 0);
+  ASSERT_EQ(manifold_num_tri(&e), 0);
+  manifold_destroy(&e);
+}
+
 // ============== Main ==============
 
 int main(void) {
@@ -4245,6 +4372,23 @@ int main(void) {
   RUN_TEST(meshgl_roundtrip);
   RUN_TEST(from_meshgl_basic);
 
-  printf("\n=== All %d tests passed! ===\n", 250);
+  printf("\nTri Normal Matching:\n");
+  RUN_TEST(matches_tri_normals);
+  RUN_TEST(degenerate_tris);
+  RUN_TEST(refine_to_tolerance);
+  RUN_TEST(mirrored_tri_normals);
+
+  printf("\nHull:\n");
+  RUN_TEST(hull_multiple_manifolds);
+
+  printf("\nMeshGL:\n");
+  RUN_TEST(meshgl_tet_roundtrip);
+
+  printf("\nAdditional Edge Cases:\n");
+  RUN_TEST(scale_and_boolean);
+  RUN_TEST(sphere_boolean_genus);
+  RUN_TEST(empty_manifold_properties);
+
+  printf("\n=== All %d tests passed! ===\n", 260);
   return 0;
 }

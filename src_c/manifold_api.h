@@ -105,6 +105,9 @@ double manifold_get_epsilon(const Manifold *m);
 double manifold_get_tolerance(const Manifold *m);
 size_t manifold_num_prop(const Manifold *m);
 size_t manifold_num_prop_vert(const Manifold *m);
+bool manifold_matches_tri_normals(const Manifold *m);
+int manifold_num_degenerate_tris(const Manifold *m);
+Manifold manifold_refine_to_tolerance(const Manifold *m, double tolerance);
 
 // ---------- Mirror ----------
 Manifold manifold_mirror(const Manifold *m, ManifoldVec3 normal);
