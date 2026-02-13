@@ -4110,6 +4110,120 @@ static void test_warp_volume_preserving(void) {
   manifold_destroy(&warped);
 }
 
+// ===== Additional API coverage tests =====
+
+static void test_bounding_box(void) {
+  Manifold cube = manifold_cube(manifold_vec3(2, 3, 4), false);
+  ManifoldBox box = manifold_bounding_box(&cube);
+  ASSERT_NEAR(box.min.x, 0, 1e-5);
+  ASSERT_NEAR(box.min.y, 0, 1e-5);
+  ASSERT_NEAR(box.min.z, 0, 1e-5);
+  ASSERT_NEAR(box.max.x, 2, 1e-5);
+  ASSERT_NEAR(box.max.y, 3, 1e-5);
+  ASSERT_NEAR(box.max.z, 4, 1e-5);
+  manifold_destroy(&cube);
+}
+
+static void test_centered_cube_bbox(void) {
+  Manifold cube = manifold_cube(manifold_vec3(2, 2, 2), true);
+  ManifoldBox box = manifold_bounding_box(&cube);
+  ASSERT_NEAR(box.min.x, -1, 1e-5);
+  ASSERT_NEAR(box.max.x, 1, 1e-5);
+  manifold_destroy(&cube);
+}
+
+static void test_translate_bbox(void) {
+  Manifold cube = manifold_cube(manifold_vec3(1, 1, 1), false);
+  Manifold moved = manifold_translate(&cube, manifold_vec3(10, 20, 30));
+  ManifoldBox box = manifold_bounding_box(&moved);
+  ASSERT_NEAR(box.min.x, 10, 1e-5);
+  ASSERT_NEAR(box.min.y, 20, 1e-5);
+  ASSERT_NEAR(box.min.z, 30, 1e-5);
+  manifold_destroy(&cube);
+  manifold_destroy(&moved);
+}
+
+static void test_as_original_preserves(void) {
+  Manifold cube = manifold_cube(manifold_vec3(1, 1, 1), false);
+  Manifold orig = manifold_as_original(&cube);
+  ASSERT_TRUE(manifold_original_id(&orig) >= 0);
+  ASSERT_NEAR(manifold_volume(&orig), 1.0, 0.001);
+  manifold_destroy(&cube);
+  manifold_destroy(&orig);
+}
+
+static void test_reserve_ids2(void) {
+  int id1 = manifold_reserve_ids(1);
+  int id2 = manifold_reserve_ids(5);
+  ASSERT_TRUE(id2 > id1);
+  ASSERT_TRUE(id2 >= id1 + 1);
+}
+
+static void test_status_valid(void) {
+  Manifold cube = manifold_cube(manifold_vec3(1, 1, 1), false);
+  ASSERT_EQ(manifold_status(&cube), MANIFOLD_ERROR_NO_ERROR);
+  manifold_destroy(&cube);
+}
+
+static void test_num_edges(void) {
+  Manifold tet = manifold_tetrahedron();
+  // A tetrahedron has 4 vertices, 6 edges, 4 triangles
+  ASSERT_EQ((int)manifold_num_vert(&tet), 4);
+  ASSERT_EQ((int)manifold_num_tri(&tet), 4);
+  int numEdge = (int)manifold_num_edge(&tet);
+  ASSERT_EQ(numEdge, 6);
+  manifold_destroy(&tet);
+}
+
+static void test_cube_is_2manifold(void) {
+  Manifold cube = manifold_cube(manifold_vec3(1, 1, 1), false);
+  ASSERT_TRUE(manifold_is_manifold(&cube));
+  ASSERT_TRUE(manifold_is_2manifold(&cube));
+  manifold_destroy(&cube);
+}
+
+static void test_epsilon_positive(void) {
+  Manifold cube = manifold_cube(manifold_vec3(1, 1, 1), false);
+  double eps = manifold_get_epsilon(&cube);
+  ASSERT_TRUE(eps >= 0);
+  manifold_destroy(&cube);
+}
+
+static void test_simplify_identity(void) {
+  // Simplifying with default tolerance should not reduce a cube
+  Manifold cube = manifold_cube(manifold_vec3(1, 1, 1), false);
+  Manifold simplified = manifold_simplify(&cube, 0);
+  ASSERT_NEAR(manifold_volume(&simplified), 1.0, 0.01);
+  manifold_destroy(&cube);
+  manifold_destroy(&simplified);
+}
+
+static void test_boolean_intersect_sphere_cube(void) {
+  // Intersection of sphere and cube
+  Manifold s = manifold_sphere(1.0, 32);
+  Manifold c = manifold_cube(manifold_vec3(1, 1, 1), false);
+  Manifold result = manifold_intersection(&s, &c);
+  ASSERT_TRUE(!manifold_is_empty(&result));
+  double v = manifold_volume(&result);
+  // Should be less than both and positive
+  ASSERT_TRUE(v > 0 && v < manifold_volume(&s) && v < manifold_volume(&c));
+  manifold_destroy(&s);
+  manifold_destroy(&c);
+  manifold_destroy(&result);
+}
+
+static void test_hull_of_sphere(void) {
+  // Hull of sphere should be roughly the same sphere
+  Manifold s = manifold_sphere(1.0, 16);
+  double origVol = manifold_volume(&s);
+  Manifold h = manifold_hull(&s);
+  ASSERT_TRUE(manifold_is_convex(&h));
+  // Hull should have same or slightly larger volume (sphere is already convex)
+  ASSERT_NEAR(manifold_volume(&h), origVol, 0.01);
+  manifold_destroy(&s);
+  manifold_destroy(&h);
+}
+
 // ============== Main ==============
 
 int main(void) {
@@ -4502,6 +4616,20 @@ int main(void) {
   RUN_TEST(cube_surface_area_volume);
   RUN_TEST(warp_volume_preserving);
 
-  printf("\n=== All %d tests passed! ===\n", 270);
+  printf("\nAPI Coverage:\n");
+  RUN_TEST(bounding_box);
+  RUN_TEST(centered_cube_bbox);
+  RUN_TEST(translate_bbox);
+  RUN_TEST(as_original_preserves);
+  RUN_TEST(reserve_ids2);
+  RUN_TEST(status_valid);
+  RUN_TEST(num_edges);
+  RUN_TEST(cube_is_2manifold);
+  RUN_TEST(epsilon_positive);
+  RUN_TEST(simplify_identity);
+  RUN_TEST(boolean_intersect_sphere_cube);
+  RUN_TEST(hull_of_sphere);
+
+  printf("\n=== All %d tests passed! ===\n", 282);
   return 0;
 }
