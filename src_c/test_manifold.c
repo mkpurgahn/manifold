@@ -2171,6 +2171,104 @@ static void test_refine_manifold(void) {
   manifold_destroy(&r);
 }
 
+// ---------- Refine + Boolean ----------
+
+static void test_refine_boolean(void) {
+  Manifold c1 = manifold_cube(manifold_vec3(2, 2, 2), false);
+  Manifold r1 = manifold_refine(&c1, 2);
+
+  Manifold c2_base = manifold_cube(manifold_vec3(1, 1, 3), false);
+  Manifold c2 = manifold_translate(&c2_base, manifold_vec3(0.5, 0.5, -0.5));
+
+  Manifold d = manifold_difference(&r1, &c2);
+  ASSERT_TRUE(!manifold_is_empty(&d));
+  double vol = manifold_volume(&d);
+  // 2^3 - min(2*2,1)*min(2*2,1)*min(2+0.5,3) = 8 - 1*1*2 = 6
+  ASSERT_NEAR(vol, 6.0, 0.5);
+
+  manifold_destroy(&c1);
+  manifold_destroy(&r1);
+  manifold_destroy(&c2_base);
+  manifold_destroy(&c2);
+  manifold_destroy(&d);
+}
+
+// ---------- Multiple decompose + recompose ----------
+
+static void test_decompose_recompose(void) {
+  // Create two separate cubes via union of non-overlapping
+  Manifold c1 = manifold_cube(manifold_vec3(1, 1, 1), false);
+  Manifold c2_base = manifold_cube(manifold_vec3(1, 1, 1), false);
+  Manifold c2 = manifold_translate(&c2_base, manifold_vec3(3, 0, 0));
+  Manifold u = manifold_union(&c1, &c2);
+
+  Manifold *comps = NULL;
+  int nComps = manifold_decompose(&u, &comps, 10);
+  ASSERT_EQ(nComps, 2);
+
+  // Each component should have volume 1
+  for (int i = 0; i < nComps; i++) {
+    ASSERT_NEAR(manifold_volume(&comps[i]), 1.0, 0.05);
+    manifold_destroy(&comps[i]);
+  }
+  free(comps);
+
+  manifold_destroy(&c1);
+  manifold_destroy(&c2_base);
+  manifold_destroy(&c2);
+  manifold_destroy(&u);
+}
+
+// ---------- Extrude with multiple divisions ----------
+
+static void test_extrude_divisions(void) {
+  ManifoldVec2 sq[4] = {{0,0},{1,0},{1,1},{0,1}};
+  int sizes[] = {4};
+
+  // Extrude with 3 divisions
+  Manifold m = manifold_extrude(sq, sizes, 1, 2.0, 3, 0.0,
+                                 manifold_vec2(1, 1));
+  ASSERT_TRUE(!manifold_is_empty(&m));
+  ASSERT_NEAR(manifold_volume(&m), 2.0, 0.01);
+  // With 3 divisions, more triangles than simple extrude
+  size_t nt = manifold_num_tri(&m);
+  ASSERT_TRUE(nt > 12);
+
+  manifold_destroy(&m);
+}
+
+// ---------- Mirror axis ----------
+
+static void test_mirror_axis(void) {
+  // Mirror a translated cube across YZ plane (normal = (1,0,0))
+  Manifold c = manifold_cube(manifold_vec3(1, 1, 1), false);
+  Manifold t = manifold_translate(&c, manifold_vec3(2, 0, 0));
+  Manifold m = manifold_mirror(&t, manifold_vec3(1, 0, 0));
+
+  // Should be mirrored: x range should be [-3, -2]
+  ManifoldBox bb = manifold_bounding_box(&m);
+  ASSERT_TRUE(bb.max.x < 0);
+  ASSERT_NEAR(manifold_volume(&m), 1.0, 0.01);
+
+  manifold_destroy(&c);
+  manifold_destroy(&t);
+  manifold_destroy(&m);
+}
+
+// ---------- Cylinder cone ----------
+
+static void test_cylinder_cone(void) {
+  manifold_set_circular_segments(16);
+  // Cone: top radius = 0
+  Manifold cone = manifold_cylinder(3.0, 2.0, 0.0, 16, false);
+  ASSERT_TRUE(!manifold_is_empty(&cone));
+  // Volume of cone: 1/3 * pi * r^2 * h = 1/3 * pi * 4 * 3 = 4*pi
+  ASSERT_NEAR(manifold_volume(&cone), 4.0 * MANIFOLD_PI, 1.0);
+
+  manifold_quality_reset();
+  manifold_destroy(&cone);
+}
+
 // ============== Main ==============
 
 int main(void) {
@@ -2364,7 +2462,12 @@ int main(void) {
   RUN_TEST(cube_measurements);
   RUN_TEST(epsilon_scaling);
   RUN_TEST(refine_manifold);
+  RUN_TEST(refine_boolean);
+  RUN_TEST(decompose_recompose);
+  RUN_TEST(extrude_divisions);
+  RUN_TEST(mirror_axis);
+  RUN_TEST(cylinder_cone);
 
-  printf("\n=== All %d tests passed! ===\n", 128);
+  printf("\n=== All %d tests passed! ===\n", 134);
   return 0;
 }
