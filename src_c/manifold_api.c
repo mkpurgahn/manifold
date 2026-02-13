@@ -721,8 +721,6 @@ Manifold manifold_mirror(const Manifold *m, ManifoldVec3 normal) {
   // Mirror matrix: I - 2*n*n^T
   ManifoldMat3 mirror = mat3_sub(mat3_identity(),
                                   mat3_scale_s(vec3_outerprod(n, n), 2.0));
-  ManifoldMat3x4 transform = mat3x4_from_mat3_translate(mirror,
-                                                          manifold_vec3(0, 0, 0));
 
   Manifold out;
   manifold_copy(&out, m);
@@ -760,7 +758,6 @@ Manifold manifold_mirror(const Manifold *m, ManifoldVec3 normal) {
   manifold_impl_set_normals_and_coplanar(&out.impl);
   vec_ivec3_free(&triVerts);
   vec_ivec3_free(&emptyTriProp);
-  (void)transform;
   return out;
 }
 

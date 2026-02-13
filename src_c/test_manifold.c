@@ -2639,8 +2639,7 @@ static void test_minkowski_convex_convex_diff(void) {
 
 // ============== Additional Boolean Tests ==============
 
-// SKIPPED: boolean_vug hangs with identical/fully-contained geometry
-#if 0
+// boolean_vug now works with the identical-geometry shortcut  
 static void test_boolean_vug(void) {
   // Vug: non-intersecting geometry properly retained
   Manifold c1 = manifold_cube(manifold_vec3(4, 4, 4), true);
@@ -2648,12 +2647,12 @@ static void test_boolean_vug(void) {
   Manifold hole = manifold_difference(&c1, &c2);
   ASSERT_TRUE(!manifold_is_empty(&hole));
   ASSERT_NEAR(manifold_volume(&hole), 64.0 - 1.0, 0.1);
-  ASSERT_EQ(manifold_genus(&hole), 0);
+  // genus=-1 for a hollow cube (outer shell + inner void = 2 components)
+  ASSERT_EQ(manifold_genus(&hole), -1);
   manifold_destroy(&c1);
   manifold_destroy(&c2);
   manifold_destroy(&hole);
 }
-#endif
 
 static void test_boolean_non_intersecting_2(void) {
   // Two cubes far apart, union should preserve both volumes
@@ -2691,8 +2690,7 @@ static void test_boolean_winding(void) {
   manifold_destroy(&diff);
 }
 
-// SKIPPED: boolean with identical geometry hangs
-#if 0
+// Fixed: boolean with identical geometry now works
 static void test_boolean_cubes_same(void) {
   Manifold c = manifold_cube(manifold_vec3(2, 2, 2), false);
   Manifold c2 = manifold_cube(manifold_vec3(2, 2, 2), false);
@@ -2702,7 +2700,6 @@ static void test_boolean_cubes_same(void) {
   manifold_destroy(&c2);
   manifold_destroy(&result);
 }
-#endif
 
 static void test_boolean_union_diff(void) {
   // Union then difference
@@ -5846,8 +5843,10 @@ int main(void) {
   RUN_TEST(minkowski_convex_convex_diff);
 
   printf("\nMore Boolean Tests:\n");
-  // Skip boolean_vug - hangs on fully-contained boolean (known limitation)
-  // Skip boolean_cubes_same - hangs on identical geometry intersection (known limitation)
+  // Fixed: boolean_vug now works with identical-geometry shortcut
+  RUN_TEST(boolean_vug);
+  // Fixed: boolean_cubes_same now works with identical-geometry shortcut
+  RUN_TEST(boolean_cubes_same);
   RUN_TEST(boolean_non_intersecting_2);
   RUN_TEST(boolean_precision2);
   RUN_TEST(boolean_winding);
@@ -6078,6 +6077,6 @@ int main(void) {
   // revolve_clip, partial_revolve_offset disabled — revolve axis clipping/offset differences
   RUN_TEST(calculate_curvature2);
 
-  printf("\n=== All %d tests passed! ===\n", 311);
+  printf("\n=== All %d tests passed! ===\n", 313);
   return 0;
 }
