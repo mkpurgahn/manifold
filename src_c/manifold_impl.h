@@ -162,6 +162,9 @@ void manifold_impl_set_properties(ManifoldImpl *impl, int numProp,
 int manifold_impl_decompose(const ManifoldImpl *impl, ManifoldImpl *components,
                              int maxComponents);
 
+// Convexity check
+bool manifold_impl_is_convex(const ManifoldImpl *impl);
+
 // constructors.cpp equivalents
 void manifold_impl_tetrahedron(ManifoldImpl *impl);
 void manifold_impl_cube(ManifoldImpl *impl, ManifoldMat3x4 transform);

@@ -349,3 +349,37 @@ int manifold_impl_decompose(const ManifoldImpl *impl, ManifoldImpl *components,
   free(rootToComponent);
   return outputCount;
 }
+
+bool manifold_impl_is_convex(const ManifoldImpl *impl) {
+  // Convex shape must have genus of 0
+  int chi = (int)manifold_impl_num_vert(impl) -
+            (int)manifold_impl_num_edge(impl) +
+            (int)manifold_impl_num_tri(impl);
+  int genus = 1 - chi / 2;
+  if (genus != 0) return false;
+
+  // Compute scale-based tolerance for near-convex shapes
+  ManifoldVec3 sz = vec3_sub(impl->bBox.max, impl->bBox.min);
+  double extent = fmax(fmax(fabs(sz.x), fabs(sz.y)), fabs(sz.z));
+  double tol = -extent * 1e-2;
+
+  size_t nbEdges = impl->halfedge.len;
+  for (size_t idx = 0; idx < nbEdges; idx++) {
+    ManifoldHalfedge edge = impl->halfedge.data[idx];
+    if (!manifold_halfedge_is_forward(&edge)) continue;
+
+    ManifoldVec3 normal0 = impl->faceNormal.data[idx / 3];
+    if (edge.pairedHalfedge < 0 ||
+        (size_t)edge.pairedHalfedge >= impl->halfedge.len)
+      return false;
+    ManifoldVec3 normal1 = impl->faceNormal.data[edge.pairedHalfedge / 3];
+
+    if (vec3_equal(normal0, normal1)) continue;
+
+    ManifoldVec3 edgeVec = vec3_sub(impl->vertPos.data[edge.endVert],
+                                     impl->vertPos.data[edge.startVert]);
+    double dot = vec3_dot(edgeVec, vec3_cross(normal0, normal1));
+    if (dot < tol) return false;
+  }
+  return true;
+}

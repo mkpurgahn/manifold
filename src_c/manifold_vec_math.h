@@ -106,6 +106,9 @@ static inline ManifoldVec3 vec3_max(ManifoldVec3 a, ManifoldVec3 b) {
 static inline ManifoldVec3 vec3_abs(ManifoldVec3 a) {
   return manifold_vec3(fabs(a.x), fabs(a.y), fabs(a.z));
 }
+static inline bool vec3_equal(ManifoldVec3 a, ManifoldVec3 b) {
+  return a.x == b.x && a.y == b.y && a.z == b.z;
+}
 static inline bool vec3_all_gequal(ManifoldVec3 a, ManifoldVec3 b) {
   return a.x >= b.x && a.y >= b.y && a.z >= b.z;
 }

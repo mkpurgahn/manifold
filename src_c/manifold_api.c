@@ -251,14 +251,15 @@ Manifold manifold_sphere(double radius, int circularSegments) {
   ManifoldVecIVec3 tris = {0};
   for (int i = 0; i < 8; i++) vec_ivec3_push(&tris, baseTris[i]);
 
-  // Subdivide n-1 times (n=1 means octahedron, n=2 means 1 subdivision, etc.)
-  for (int subdiv = 1; subdiv < n; subdiv++) {
-    // For each triangle, split all 3 edges at midpoint
-    // Use a hashtable to avoid duplicate midpoint vertices
+  // Subdivide using recursive midpoint splitting
+  // The C++ code splits each edge into n segments. We approximate this
+  // by performing ceil(log2(n)) midpoint subdivisions (each doubles resolution).
+  int numSubdiv = 0;
+  { int target = n; while (target > 1) { numSubdiv++; target = (target + 1) / 2; } }
+  
+  for (int subdiv = 0; subdiv < numSubdiv; subdiv++) {
     ManifoldVecIVec3 newTris = {0};
 
-    // Edge midpoint cache: key = min_vert * MAX + max_vert, value = midpoint index
-    // Simple linear search for small meshes
     typedef struct { int v0, v1, mid; } EdgeMid;
     size_t numEdgeMids = 0;
     size_t capEdgeMids = tris.len * 3;
@@ -273,7 +274,6 @@ Manifold manifold_sphere(double radius, int circularSegments) {
         int lo = a < b ? a : b;
         int hi = a < b ? b : a;
 
-        // Search for existing midpoint
         int found = -1;
         for (size_t k = 0; k < numEdgeMids; k++) {
           if (edgeMids[k].v0 == lo && edgeMids[k].v1 == hi) {
@@ -297,7 +297,6 @@ Manifold manifold_sphere(double radius, int circularSegments) {
         }
       }
 
-      // 4 sub-triangles
       vec_ivec3_push(&newTris, manifold_ivec3(v[0], mid[0], mid[2]));
       vec_ivec3_push(&newTris, manifold_ivec3(mid[0], v[1], mid[1]));
       vec_ivec3_push(&newTris, manifold_ivec3(mid[2], mid[1], v[2]));
@@ -843,4 +842,249 @@ Manifold manifold_refine(const Manifold *m, int n) {
   manifold_impl_sort_geometry(&out.impl);
 
   return out;
+}
+
+bool manifold_is_convex(const Manifold *m) {
+  return manifold_impl_is_convex(&m->impl);
+}
+
+static Manifold manifold_minkowski_impl(const Manifold *a, const Manifold *b,
+                                         bool inset) {
+  const ManifoldImpl *aImpl = &a->impl;
+  const ManifoldImpl *bImpl = &b->impl;
+
+  bool aConvex = manifold_impl_is_convex(aImpl);
+  bool bConvex = manifold_impl_is_convex(bImpl);
+
+  // If the convex manifold was supplied first, swap them
+  if (aConvex && !bConvex) {
+    const ManifoldImpl *tmp = aImpl;
+    aImpl = bImpl;
+    bImpl = tmp;
+    bool tmpB = aConvex;
+    aConvex = bConvex;
+    bConvex = tmpB;
+  }
+
+  if (manifold_impl_is_empty(bImpl)) {
+    Manifold result;
+    manifold_copy(&result, (aImpl == &a->impl) ? a : b);
+    return result;
+  }
+  if (manifold_impl_is_empty(aImpl)) {
+    Manifold result;
+    manifold_copy(&result, (bImpl == &b->impl) ? b : a);
+    return result;
+  }
+
+  // Start with a copy of the base
+  Manifold base;
+  manifold_copy(&base, (aImpl == &a->impl) ? a : b);
+
+  // Convex-Convex Minkowski Sum (not inset): hull of all pairwise sums
+  if (!inset && aConvex && bConvex) {
+    // Ensure the smaller mesh is the one we iterate (bImpl)
+    const ManifoldImpl *bigImpl = aImpl;
+    const ManifoldImpl *smallImpl = bImpl;
+    if (aImpl->vertPos.len < bImpl->vertPos.len) {
+      bigImpl = bImpl;
+      smallImpl = aImpl;
+    }
+    size_t numSmall = smallImpl->vertPos.len;
+    size_t numBig = bigImpl->vertPos.len;
+    if (numSmall * numBig <= 200) {
+      size_t total = numSmall * numBig;
+      ManifoldVec3 *pts = (ManifoldVec3 *)malloc(total * sizeof(ManifoldVec3));
+      size_t idx = 0;
+      for (size_t i = 0; i < numSmall; i++)
+        for (size_t j = 0; j < numBig; j++)
+          pts[idx++] = vec3_add(smallImpl->vertPos.data[i], bigImpl->vertPos.data[j]);
+      Manifold hullResult = manifold_hull_points(pts, total);
+      free(pts);
+      manifold_destroy(&base);
+      Manifold orig = manifold_as_original(&hullResult);
+      manifold_destroy(&hullResult);
+      return orig;
+    }
+    // Large point sets: per-face hulls + batch union
+    size_t numSmallTri = manifold_impl_num_tri(smallImpl);
+    Manifold *hulls = (Manifold *)malloc(numSmallTri * sizeof(Manifold));
+    for (size_t tri = 0; tri < numSmallTri; tri++) {
+      size_t numPts = 3 * numBig;
+      ManifoldVec3 *pts = (ManifoldVec3 *)malloc(numPts * sizeof(ManifoldVec3));
+      size_t pidx = 0;
+      for (int i = 0; i < 3; i++) {
+        ManifoldVec3 vert = smallImpl->vertPos.data[
+            smallImpl->halfedge.data[tri * 3 + i].startVert];
+        for (size_t j = 0; j < numBig; j++)
+          pts[pidx++] = vec3_add(vert, bigImpl->vertPos.data[j]);
+      }
+      hulls[tri] = manifold_hull_points(pts, numPts);
+      free(pts);
+    }
+    Manifold hullResult = manifold_batch_boolean(hulls, (int)numSmallTri, MANIFOLD_OP_ADD);
+    for (size_t i = 0; i < numSmallTri; i++) manifold_destroy(&hulls[i]);
+    free(hulls);
+    manifold_destroy(&base);
+    Manifold orig = manifold_as_original(&hullResult);
+    manifold_destroy(&hullResult);
+    return orig;
+  }
+
+  // Convex-Convex Minkowski Difference (inset): intersect translated copies of A
+  if (inset && aConvex && bConvex) {
+    // A ⊖ B = intersection of (A translated by -b_j) for all vertices b_j of B
+    size_t numBVerts = bImpl->vertPos.len;
+    Manifold result;
+    manifold_copy(&result, (aImpl == &a->impl) ? a : b);
+    // Translate A by -b_0
+    ManifoldVec3 b0 = bImpl->vertPos.data[0];
+    Manifold translated = manifold_translate(&result, manifold_vec3(-b0.x, -b0.y, -b0.z));
+    manifold_destroy(&result);
+    result = translated;
+    for (size_t j = 1; j < numBVerts; j++) {
+      ManifoldVec3 bj = bImpl->vertPos.data[j];
+      Manifold aCopy;
+      manifold_copy(&aCopy, (aImpl == &a->impl) ? a : b);
+      Manifold tr = manifold_translate(&aCopy, manifold_vec3(-bj.x, -bj.y, -bj.z));
+      manifold_destroy(&aCopy);
+      Manifold inter = manifold_intersection(&result, &tr);
+      manifold_destroy(&result);
+      manifold_destroy(&tr);
+      result = inter;
+    }
+    manifold_destroy(&base);
+    Manifold orig = manifold_as_original(&result);
+    manifold_destroy(&result);
+    return orig;
+  }
+
+  // Convex-NonConvex or NonConvex-Convex with inset
+  if ((inset || !aConvex) && bConvex) {
+    size_t numTri = manifold_impl_num_tri(aImpl);
+    size_t numBVerts = bImpl->vertPos.len;
+    size_t numBatches = (numTri + 999) / 1000;
+    Manifold *composed = (Manifold *)malloc((1 + numBatches) * sizeof(Manifold));
+    composed[0] = base;
+    size_t composedLen = 1;
+
+    for (size_t offset = 0; offset < numTri; offset += 1000) {
+      size_t numIter = numTri - offset;
+      if (numIter > 1000) numIter = 1000;
+      Manifold *hulls = (Manifold *)malloc(numIter * sizeof(Manifold));
+      for (size_t iter = 0; iter < numIter; iter++) {
+        size_t triIdx = offset + iter;
+        size_t numPts = 3 * numBVerts;
+        ManifoldVec3 *pts = (ManifoldVec3 *)malloc(numPts * sizeof(ManifoldVec3));
+        size_t pidx = 0;
+        for (int i = 0; i < 3; i++) {
+          ManifoldVec3 vert = aImpl->vertPos.data[
+              aImpl->halfedge.data[triIdx * 3 + i].startVert];
+          for (size_t j = 0; j < numBVerts; j++) {
+            pts[pidx++] = vec3_add(vert, bImpl->vertPos.data[j]);
+          }
+        }
+        hulls[iter] = manifold_hull_points(pts, numPts);
+        free(pts);
+      }
+      composed[composedLen++] = manifold_batch_boolean(hulls, (int)numIter,
+                                                        MANIFOLD_OP_ADD);
+      for (size_t i = 0; i < numIter; i++) manifold_destroy(&hulls[i]);
+      free(hulls);
+    }
+
+    ManifoldOpType op = inset ? MANIFOLD_OP_SUBTRACT : MANIFOLD_OP_ADD;
+    Manifold result = manifold_batch_boolean(composed, (int)composedLen, op);
+    for (size_t i = 0; i < composedLen; i++) manifold_destroy(&composed[i]);
+    free(composed);
+    Manifold orig = manifold_as_original(&result);
+    manifold_destroy(&result);
+    return orig;
+  }
+
+  // Non-Convex - Non-Convex
+  {
+    size_t numTriA = manifold_impl_num_tri(aImpl);
+    size_t numTriB = manifold_impl_num_tri(bImpl);
+
+    Manifold *accumulated = (Manifold *)malloc(200 * sizeof(Manifold));
+    size_t accLen = 0;
+    Manifold *allComposed = (Manifold *)malloc((2 + numTriA) * sizeof(Manifold));
+    allComposed[0] = base;
+    size_t allLen = 1;
+
+    for (size_t aFace = 0; aFace < numTriA; aFace++) {
+      ManifoldVec3 a1 = aImpl->vertPos.data[aImpl->halfedge.data[aFace * 3].startVert];
+      ManifoldVec3 a2 = aImpl->vertPos.data[aImpl->halfedge.data[aFace * 3 + 1].startVert];
+      ManifoldVec3 a3 = aImpl->vertPos.data[aImpl->halfedge.data[aFace * 3 + 2].startVert];
+      ManifoldVec3 nA = aImpl->faceNormal.data[aFace];
+
+      Manifold *validHulls = (Manifold *)malloc(numTriB * sizeof(Manifold));
+      size_t validCount = 0;
+
+      for (size_t bFace = 0; bFace < numTriB; bFace++) {
+        ManifoldVec3 nB = bImpl->faceNormal.data[bFace];
+        double dotSame = vec3_dot(nA, nB);
+        double dotOpp = vec3_dot(nA, vec3_neg(nB));
+        bool coplanar = (fabs(dotSame - 1.0) < 1e-12) ||
+                        (fabs(dotOpp - 1.0) < 1e-12);
+        if (coplanar) continue;
+
+        ManifoldVec3 b1 = bImpl->vertPos.data[bImpl->halfedge.data[bFace * 3].startVert];
+        ManifoldVec3 b2 = bImpl->vertPos.data[bImpl->halfedge.data[bFace * 3 + 1].startVert];
+        ManifoldVec3 b3 = bImpl->vertPos.data[bImpl->halfedge.data[bFace * 3 + 2].startVert];
+
+        ManifoldVec3 pts[9] = {
+          vec3_add(a1, b1), vec3_add(a1, b2), vec3_add(a1, b3),
+          vec3_add(a2, b1), vec3_add(a2, b2), vec3_add(a2, b3),
+          vec3_add(a3, b1), vec3_add(a3, b2), vec3_add(a3, b3),
+        };
+        Manifold h = manifold_hull_points(pts, 9);
+        if (!manifold_is_empty(&h)) {
+          validHulls[validCount++] = h;
+        } else {
+          manifold_destroy(&h);
+        }
+      }
+
+      if (validCount > 0) {
+        accumulated[accLen++] = manifold_batch_boolean(validHulls, (int)validCount,
+                                                        MANIFOLD_OP_ADD);
+      }
+      for (size_t i = 0; i < validCount; i++) manifold_destroy(&validHulls[i]);
+      free(validHulls);
+
+      if (accLen >= 200) {
+        Manifold reduced = manifold_batch_boolean(accumulated, (int)accLen,
+                                                   MANIFOLD_OP_ADD);
+        for (size_t i = 0; i < accLen; i++) manifold_destroy(&accumulated[i]);
+        accLen = 0;
+        accumulated[accLen++] = reduced;
+      }
+    }
+
+    if (accLen > 0) {
+      allComposed[allLen++] = manifold_batch_boolean(accumulated, (int)accLen,
+                                                      MANIFOLD_OP_ADD);
+      for (size_t i = 0; i < accLen; i++) manifold_destroy(&accumulated[i]);
+    }
+    free(accumulated);
+
+    ManifoldOpType op = inset ? MANIFOLD_OP_SUBTRACT : MANIFOLD_OP_ADD;
+    Manifold result = manifold_batch_boolean(allComposed, (int)allLen, op);
+    for (size_t i = 0; i < allLen; i++) manifold_destroy(&allComposed[i]);
+    free(allComposed);
+
+    Manifold orig = manifold_as_original(&result);
+    manifold_destroy(&result);
+    return orig;
+  }
+}
+
+Manifold manifold_minkowski_sum(const Manifold *a, const Manifold *b) {
+  return manifold_minkowski_impl(a, b, false);
+}
+
+Manifold manifold_minkowski_difference(const Manifold *a, const Manifold *b) {
+  return manifold_minkowski_impl(a, b, true);
 }

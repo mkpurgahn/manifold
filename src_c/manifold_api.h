@@ -150,6 +150,13 @@ Manifold manifold_set_tolerance(const Manifold *m, double tolerance);
 // Subdivide each triangle into n^2 sub-triangles (n>=2)
 Manifold manifold_refine(const Manifold *m, int n);
 
+// ---------- Minkowski ----------
+Manifold manifold_minkowski_sum(const Manifold *a, const Manifold *b);
+Manifold manifold_minkowski_difference(const Manifold *a, const Manifold *b);
+
+// ---------- Convexity ----------
+bool manifold_is_convex(const Manifold *m);
+
 // ---------- Mesh Data Access ----------
 // Get raw vertex positions (read-only)
 const ManifoldVec3 *manifold_get_vert_positions(const Manifold *m, size_t *count);

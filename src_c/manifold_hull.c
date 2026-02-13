@@ -1,125 +1,628 @@
 // Copyright 2024 The Manifold Authors.
 // SPDX-License-Identifier: Apache-2.0
 //
-// Convex hull using incremental algorithm.
-// For each point, find visible faces and replace them with new faces
-// connecting the point to the horizon edges.
+// QuickHull convex hull algorithm - ported from quickhull.cpp.
+// Derived from the public domain work of Antti Kuukka.
 
 #include "manifold_hull.h"
 #include <stdlib.h>
 #include <string.h>
 #include <float.h>
+#include <math.h>
+
+// ─── Dynamic int array ──────────────────────────────────────────────────────
+typedef struct { int *data; size_t len, cap; } IntVec;
+static void iv_init(IntVec *v) { v->data = NULL; v->len = v->cap = 0; }
+static void iv_free(IntVec *v) { free(v->data); v->data = NULL; v->len = v->cap = 0; }
+static void iv_push(IntVec *v, int val) {
+  if (v->len >= v->cap) { v->cap = v->cap ? v->cap * 2 : 16; v->data = (int*)realloc(v->data, v->cap * sizeof(int)); }
+  v->data[v->len++] = val;
+}
+static void iv_clear(IntVec *v) { v->len = 0; }
+
+// ─── Dynamic size_t array ───────────────────────────────────────────────────
+typedef struct { size_t *data; size_t len, cap; } SzVec;
+static void sv_init(SzVec *v) { v->data = NULL; v->len = v->cap = 0; }
+static void sv_free(SzVec *v) { free(v->data); v->data = NULL; v->len = v->cap = 0; }
+static void sv_push(SzVec *v, size_t val) {
+  if (v->len >= v->cap) { v->cap = v->cap ? v->cap * 2 : 16; v->data = (size_t*)realloc(v->data, v->cap * sizeof(size_t)); }
+  v->data[v->len++] = val;
+}
+static void sv_clear(SzVec *v) { v->len = 0; }
+
+// ─── Plane ──────────────────────────────────────────────────────────────────
+typedef struct { ManifoldVec3 N; double D; double sqrNLength; } QHPlane;
+
+static QHPlane qh_plane(ManifoldVec3 N, ManifoldVec3 P) {
+  QHPlane p;
+  p.N = N;
+  p.D = -vec3_dot(N, P);
+  p.sqrNLength = vec3_dot(N, N);
+  return p;
+}
+
+static double qh_signed_dist(ManifoldVec3 v, const QHPlane *p) {
+  return vec3_dot(p->N, v) + p->D;
+}
+
+// ─── Triangle normal (normalized) ───────────────────────────────────────────
+static ManifoldVec3 qh_tri_normal(ManifoldVec3 a, ManifoldVec3 b, ManifoldVec3 c) {
+  ManifoldVec3 n = vec3_cross(vec3_sub(a, c), vec3_sub(b, c));
+  double len = vec3_length(n);
+  if (len > 1e-30) n = vec3_scale(n, 1.0 / len);
+  return n;
+}
+
+// ─── MeshBuilder Face ───────────────────────────────────────────────────────
+typedef struct {
+  int he;                    // index of first halfedge
+  QHPlane P;
+  double mostDistantPointDist;
+  size_t mostDistantPoint;
+  size_t visibilityCheckedOnIteration;
+  uint8_t isVisibleFaceOnCurrentIteration;
+  uint8_t inFaceStack;
+  uint8_t horizonEdgesOnCurrentIteration;
+  // Points on positive side: indices into original vertex array
+  SzVec pointsOnPositiveSide;
+  bool hasPoints; // whether pointsOnPositiveSide is active
+} QHFace;
+
+static void qhface_init(QHFace *f, int he) {
+  f->he = he;
+  memset(&f->P, 0, sizeof(f->P));
+  f->mostDistantPointDist = 0;
+  f->mostDistantPoint = 0;
+  f->visibilityCheckedOnIteration = 0;
+  f->isVisibleFaceOnCurrentIteration = 0;
+  f->inFaceStack = 0;
+  f->horizonEdgesOnCurrentIteration = 0;
+  sv_init(&f->pointsOnPositiveSide);
+  f->hasPoints = false;
+}
+
+static bool qhface_is_disabled(const QHFace *f) { return f->he == -1; }
+static void qhface_disable(QHFace *f) { f->he = -1; }
+
+// ─── MeshBuilder ────────────────────────────────────────────────────────────
+// Halfedge: {startVert, endVert, pairedHalfedge}
+typedef struct { int startVert, endVert, pairedHalfedge; } QHHalfedge;
 
 typedef struct {
-  int v[3];     // vertex indices
-  int adj[3];   // adjacent face indices (-1 = boundary)
-  ManifoldVec3 normal;
-  double d;     // plane offset: normal·p + d = 0
-  bool removed;
-} HullFace;
+  QHFace *faces;       size_t faceLen, faceCap;
+  QHHalfedge *he;      size_t heLen, heCap;
+  int *heToFace;       // halfedge -> face index
+  int *heNext;         // halfedge -> next halfedge
+  SzVec disabledFaces;
+  SzVec disabledHE;
+} QHMesh;
 
-static void hull_face_init(HullFace *f, int v0, int v1, int v2,
-                           const ManifoldVec3 *pts) {
-  f->v[0] = v0; f->v[1] = v1; f->v[2] = v2;
-  f->adj[0] = f->adj[1] = f->adj[2] = -1;
-  f->removed = false;
-
-  ManifoldVec3 ab = vec3_sub(pts[v1], pts[v0]);
-  ManifoldVec3 ac = vec3_sub(pts[v2], pts[v0]);
-  f->normal = vec3_cross(ab, ac);
-  double len = vec3_length(f->normal);
-  if (len > 1e-15) {
-    f->normal = vec3_scale(f->normal, 1.0 / len);
-  }
-  f->d = -vec3_dot(f->normal, pts[v0]);
+static void qhm_init(QHMesh *m) {
+  m->faces = NULL; m->faceLen = m->faceCap = 0;
+  m->he = NULL; m->heLen = m->heCap = 0;
+  m->heToFace = NULL; m->heNext = NULL;
+  sv_init(&m->disabledFaces);
+  sv_init(&m->disabledHE);
 }
 
-static double hull_face_dist(const HullFace *f, ManifoldVec3 p) {
-  return vec3_dot(f->normal, p) + f->d;
+static void qhm_free(QHMesh *m) {
+  for (size_t i = 0; i < m->faceLen; i++) sv_free(&m->faces[i].pointsOnPositiveSide);
+  free(m->faces); free(m->he); free(m->heToFace); free(m->heNext);
+  sv_free(&m->disabledFaces); sv_free(&m->disabledHE);
 }
 
-// Find initial tetrahedron from extreme points
-static bool find_initial_tet(const ManifoldVec3 *pts, size_t n,
-                              int out[4]) {
-  if (n < 4) return false;
-
-  // Find extreme points along each axis
-  int minX = 0, maxX = 0;
-  for (size_t i = 1; i < n; i++) {
-    if (pts[i].x < pts[minX].x) minX = (int)i;
-    if (pts[i].x > pts[maxX].x) maxX = (int)i;
+static void qhm_ensure_he(QHMesh *m, size_t needed) {
+  if (needed > m->heCap) {
+    size_t nc = m->heCap ? m->heCap : 16;
+    while (nc < needed) nc *= 2;
+    m->he = (QHHalfedge*)realloc(m->he, nc * sizeof(QHHalfedge));
+    m->heToFace = (int*)realloc(m->heToFace, nc * sizeof(int));
+    m->heNext = (int*)realloc(m->heNext, nc * sizeof(int));
+    m->heCap = nc;
   }
-  if (minX == maxX) return false;
-  out[0] = minX;
-  out[1] = maxX;
+}
 
-  // Find point farthest from line out[0]-out[1]
-  ManifoldVec3 lineDir = vec3_sub(pts[out[1]], pts[out[0]]);
-  double lineLen2 = vec3_dot(lineDir, lineDir);
-  if (lineLen2 < 1e-30) return false;
-
-  double bestDist2 = -1;
-  out[2] = -1;
-  for (size_t i = 0; i < n; i++) {
-    if ((int)i == out[0] || (int)i == out[1]) continue;
-    ManifoldVec3 v = vec3_sub(pts[i], pts[out[0]]);
-    double t = vec3_dot(v, lineDir) / lineLen2;
-    ManifoldVec3 proj = vec3_add(pts[out[0]], vec3_scale(lineDir, t));
-    ManifoldVec3 diff = vec3_sub(pts[i], proj);
-    double d2 = vec3_dot(diff, diff);
-    if (d2 > bestDist2) { bestDist2 = d2; out[2] = (int)i; }
+static void qhm_ensure_face(QHMesh *m, size_t needed) {
+  if (needed > m->faceCap) {
+    size_t nc = m->faceCap ? m->faceCap : 8;
+    while (nc < needed) nc *= 2;
+    m->faces = (QHFace*)realloc(m->faces, nc * sizeof(QHFace));
+    m->faceCap = nc;
   }
-  if (out[2] < 0 || bestDist2 < 1e-30) return false;
+}
 
-  // Find point farthest from plane of first 3 points
-  ManifoldVec3 ab = vec3_sub(pts[out[1]], pts[out[0]]);
-  ManifoldVec3 ac = vec3_sub(pts[out[2]], pts[out[0]]);
-  ManifoldVec3 planeN = vec3_cross(ab, ac);
-  double planeLen = vec3_length(planeN);
-  if (planeLen < 1e-15) return false;
-  planeN = vec3_scale(planeN, 1.0 / planeLen);
-  double planeD = -vec3_dot(planeN, pts[out[0]]);
-
-  double bestAbsDist = -1;
-  out[3] = -1;
-  for (size_t i = 0; i < n; i++) {
-    if ((int)i == out[0] || (int)i == out[1] || (int)i == out[2]) continue;
-    double dist = fabs(vec3_dot(planeN, pts[i]) + planeD);
-    if (dist > bestAbsDist) { bestAbsDist = dist; out[3] = (int)i; }
+static size_t qhm_add_face(QHMesh *m) {
+  if (m->disabledFaces.len > 0) {
+    size_t idx = m->disabledFaces.data[--m->disabledFaces.len];
+    QHFace *f = &m->faces[idx];
+    f->mostDistantPointDist = 0;
+    f->mostDistantPoint = 0;
+    f->isVisibleFaceOnCurrentIteration = 0;
+    f->inFaceStack = 0;
+    f->horizonEdgesOnCurrentIteration = 0;
+    f->visibilityCheckedOnIteration = 0;
+    return idx;
   }
-  if (out[3] < 0 || bestAbsDist < 1e-15) return false;
+  qhm_ensure_face(m, m->faceLen + 1);
+  qhface_init(&m->faces[m->faceLen], -1);
+  return m->faceLen++;
+}
 
-  // Ensure out[3] is above the plane (swap if needed for consistent orientation)
-  double d = vec3_dot(planeN, pts[out[3]]) + planeD;
-  if (d < 0) {
-    int tmp = out[1]; out[1] = out[2]; out[2] = tmp;
+static size_t qhm_add_he(QHMesh *m) {
+  if (m->disabledHE.len > 0) {
+    size_t idx = m->disabledHE.data[--m->disabledHE.len];
+    return idx;
   }
+  qhm_ensure_he(m, m->heLen + 1);
+  memset(&m->he[m->heLen], 0, sizeof(QHHalfedge));
+  m->heToFace[m->heLen] = 0;
+  m->heNext[m->heLen] = 0;
+  return m->heLen++;
+}
 
+static void qhm_disable_face(QHMesh *m, size_t fi) {
+  qhface_disable(&m->faces[fi]);
+  sv_push(&m->disabledFaces, fi);
+}
+
+static void qhm_disable_he(QHMesh *m, size_t hi) {
+  m->he[hi].pairedHalfedge = -1;
+  sv_push(&m->disabledHE, hi);
+}
+
+static void qhm_get_face_he(const QHMesh *m, const QHFace *f, int out[3]) {
+  out[0] = f->he;
+  out[1] = m->heNext[out[0]];
+  out[2] = m->heNext[out[1]];
+}
+
+static void qhm_get_face_verts(const QHMesh *m, const QHFace *f, int out[3]) {
+  int hes[3]; qhm_get_face_he(m, f, hes);
+  out[0] = m->he[hes[0]].endVert;
+  out[1] = m->he[hes[1]].endVert;
+  out[2] = m->he[hes[2]].endVert;
+}
+
+// Setup initial tetrahedron ABCD. dot(AB, normal(ABC)) should be negative.
+static void qhm_setup(QHMesh *m, int a, int b, int c, int d) {
+  m->faceLen = 0; m->heLen = 0;
+  m->disabledFaces.len = 0; m->disabledHE.len = 0;
+
+  qhm_ensure_he(m, 12);
+  qhm_ensure_face(m, 4);
+
+  // 12 halfedges for a tetrahedron
+  #define ADDHE(sv, ev, pair, face, next) do { \
+    m->he[m->heLen] = (QHHalfedge){0, ev, pair}; \
+    m->heToFace[m->heLen] = face; \
+    m->heNext[m->heLen] = next; \
+    m->heLen++; \
+  } while(0)
+
+  // Face 0: ABC  (halfedges 0,1,2)
+  ADDHE(0, b, 6,  0, 1);   // 0: AB paired=6(BA)
+  ADDHE(0, c, 9,  0, 2);   // 1: BC paired=9(CB)
+  ADDHE(0, a, 3,  0, 0);   // 2: CA paired=3(AC)
+  // Face 1: ACD  (halfedges 3,4,5)
+  ADDHE(0, c, 2,  1, 4);   // 3: AC paired=2(CA)
+  ADDHE(0, d, 11, 1, 5);   // 4: CD paired=11(DC)
+  ADDHE(0, a, 7,  1, 3);   // 5: DA paired=7(AD)
+  // Face 2: ADB  (halfedges 6,7,8)
+  ADDHE(0, a, 0,  2, 7);   // 6: BA paired=0(AB)
+  ADDHE(0, d, 5,  2, 8);   // 7: AD paired=5(DA)
+  ADDHE(0, b, 10, 2, 6);   // 8: DB paired=10(BD)
+  // Face 3: BDC  (halfedges 9,10,11)
+  ADDHE(0, b, 1,  3, 10);  // 9: CB paired=1(BC)
+  ADDHE(0, d, 8,  3, 11);  // 10: BD paired=8(DB)
+  ADDHE(0, c, 4,  3, 9);   // 11: DC paired=4(CD)
+
+  #undef ADDHE
+
+  for (int i = 0; i < 4; i++) {
+    qhface_init(&m->faces[i], i * 3);
+    m->faceLen++;
+  }
+}
+
+// ─── QuickHull algorithm state ──────────────────────────────────────────────
+typedef struct {
+  int faceIndex;
+  int enteredFromHalfedge;
+} QHFaceData;
+
+typedef struct {
+  double epsilon, epsilonSq, scale;
+  bool planar;
+  const ManifoldVec3 *verts;
+  size_t vertCount;
+  QHMesh mesh;
+  size_t extremes[6];
+
+  // Temporaries
+  SzVec newFaceIndices, newHEIndices, visibleFaces, horizonEdges;
+  QHFaceData *pvfStack; size_t pvfLen, pvfCap;
+  IntVec faceList;
+} QHState;
+
+static void qhs_init(QHState *s, const ManifoldVec3 *pts, size_t n) {
+  memset(s, 0, sizeof(*s));
+  s->verts = pts;
+  s->vertCount = n;
+  qhm_init(&s->mesh);
+  sv_init(&s->newFaceIndices); sv_init(&s->newHEIndices);
+  sv_init(&s->visibleFaces); sv_init(&s->horizonEdges);
+  s->pvfStack = NULL; s->pvfLen = s->pvfCap = 0;
+  iv_init(&s->faceList);
+}
+
+static void qhs_free(QHState *s) {
+  qhm_free(&s->mesh);
+  sv_free(&s->newFaceIndices); sv_free(&s->newHEIndices);
+  sv_free(&s->visibleFaces); sv_free(&s->horizonEdges);
+  free(s->pvfStack);
+  iv_free(&s->faceList);
+}
+
+static void pvf_push(QHState *s, QHFaceData fd) {
+  if (s->pvfLen >= s->pvfCap) {
+    s->pvfCap = s->pvfCap ? s->pvfCap * 2 : 32;
+    s->pvfStack = (QHFaceData*)realloc(s->pvfStack, s->pvfCap * sizeof(QHFaceData));
+  }
+  s->pvfStack[s->pvfLen++] = fd;
+}
+
+static void qhs_get_extremes(QHState *s) {
+  for (int i = 0; i < 6; i++) s->extremes[i] = 0;
+  double ev[6];
+  ev[0] = ev[1] = s->verts[0].x;
+  ev[2] = ev[3] = s->verts[0].y;
+  ev[4] = ev[5] = s->verts[0].z;
+  for (size_t i = 1; i < s->vertCount; i++) {
+    ManifoldVec3 p = s->verts[i];
+    if (p.x > ev[0]) { ev[0] = p.x; s->extremes[0] = i; }
+    else if (p.x < ev[1]) { ev[1] = p.x; s->extremes[1] = i; }
+    if (p.y > ev[2]) { ev[2] = p.y; s->extremes[2] = i; }
+    else if (p.y < ev[3]) { ev[3] = p.y; s->extremes[3] = i; }
+    if (p.z > ev[4]) { ev[4] = p.z; s->extremes[4] = i; }
+    else if (p.z < ev[5]) { ev[5] = p.z; s->extremes[5] = i; }
+  }
+}
+
+static double qhs_get_scale(QHState *s) {
+  double sc = 0;
+  for (int i = 0; i < 6; i++) {
+    const double *v = (const double *)&s->verts[s->extremes[i]];
+    double a = fabs(v[i / 2]);
+    if (a > sc) sc = a;
+  }
+  return sc;
+}
+
+static bool qhs_add_point_to_face(QHState *s, QHFace *f, size_t ptIdx) {
+  double D = qh_signed_dist(s->verts[ptIdx], &f->P);
+  if (D > 0 && D * D > s->epsilonSq * f->P.sqrNLength) {
+    if (!f->hasPoints) {
+      sv_clear(&f->pointsOnPositiveSide);
+      f->hasPoints = true;
+    }
+    sv_push(&f->pointsOnPositiveSide, ptIdx);
+    if (D > f->mostDistantPointDist) {
+      f->mostDistantPointDist = D;
+      f->mostDistantPoint = ptIdx;
+    }
+    return true;
+  }
+  return false;
+}
+
+static bool qhs_reorder_horizon(QHState *s) {
+  SzVec *he = &s->horizonEdges;
+  size_t n = he->len;
+  for (size_t i = 0; i + 1 < n; i++) {
+    int endV = s->mesh.he[he->data[i]].endVert;
+    bool found = false;
+    for (size_t j = i + 1; j < n; j++) {
+      int beginV = s->mesh.he[s->mesh.he[he->data[j]].pairedHalfedge].endVert;
+      if (beginV == endV) {
+        size_t tmp = he->data[i + 1]; he->data[i + 1] = he->data[j]; he->data[j] = tmp;
+        found = true;
+        break;
+      }
+    }
+    if (!found) return false;
+  }
   return true;
 }
 
-// Dynamic array of HullFace
-typedef struct {
-  HullFace *data;
-  size_t len;
-  size_t cap;
-} HullFaceVec;
+static void qhs_setup_initial_tet(QHState *s) {
+  size_t vc = s->vertCount;
 
-static void hfv_push(HullFaceVec *v, HullFace f) {
-  if (v->len >= v->cap) {
-    v->cap = v->cap ? v->cap * 2 : 16;
-    v->data = (HullFace *)realloc(v->data, v->cap * sizeof(HullFace));
+  // Handle <= 4 points
+  if (vc <= 4) {
+    if (vc < 4) { s->planar = true; return; }
+    size_t v[4] = {0, 1, 2, 3};
+    ManifoldVec3 N = qh_tri_normal(s->verts[v[0]], s->verts[v[1]], s->verts[v[2]]);
+    QHPlane tp = qh_plane(N, s->verts[v[0]]);
+    double d = fabs(qh_signed_dist(s->verts[v[3]], &tp));
+    if (d < s->epsilon || tp.sqrNLength < 1e-30) {
+      s->planar = true; return;
+    }
+    if (qh_signed_dist(s->verts[v[3]], &tp) >= 0) {
+      size_t tmp = v[0]; v[0] = v[1]; v[1] = tmp;
+    }
+    qhm_setup(&s->mesh, (int)v[0], (int)v[1], (int)v[2], (int)v[3]);
+    return;
   }
-  v->data[v->len++] = f;
+
+  // Find two most distant extreme points
+  double maxD = s->epsilonSq;
+  size_t sp0 = 0, sp1 = 0;
+  for (int i = 0; i < 6; i++) {
+    for (int j = i + 1; j < 6; j++) {
+      ManifoldVec3 diff = vec3_sub(s->verts[s->extremes[i]], s->verts[s->extremes[j]]);
+      double d = vec3_dot(diff, diff);
+      if (d > maxD) { maxD = d; sp0 = s->extremes[i]; sp1 = s->extremes[j]; }
+    }
+  }
+  if (maxD == s->epsilonSq) {
+    qhm_setup(&s->mesh, 0, 1 % (int)vc, 2 % (int)vc, 3 % (int)vc);
+    return;
+  }
+
+  // Find point farthest from line sp0-sp1
+  ManifoldVec3 rayV = vec3_sub(s->verts[sp1], s->verts[sp0]);
+  double rayInvLen2 = 1.0 / vec3_dot(rayV, rayV);
+  maxD = s->epsilonSq;
+  size_t maxI = SIZE_MAX;
+  for (size_t i = 0; i < vc; i++) {
+    ManifoldVec3 sv = vec3_sub(s->verts[i], s->verts[sp0]);
+    double t = vec3_dot(sv, rayV);
+    double d2 = vec3_dot(sv, sv) - t * t * rayInvLen2;
+    if (d2 > maxD) { maxD = d2; maxI = i; }
+  }
+  if (maxI == SIZE_MAX) {
+    qhm_setup(&s->mesh, (int)sp0, (int)sp1, 0, 1);
+    return;
+  }
+
+  size_t baseTri[3] = {sp0, sp1, maxI};
+
+  // Find 4th vertex farthest from base triangle plane
+  ManifoldVec3 N = qh_tri_normal(s->verts[baseTri[0]], s->verts[baseTri[1]], s->verts[baseTri[2]]);
+  QHPlane triPlane = qh_plane(N, s->verts[baseTri[0]]);
+  maxD = s->epsilon;
+  maxI = 0;
+  for (size_t i = 0; i < vc; i++) {
+    double d = fabs(qh_signed_dist(s->verts[i], &triPlane));
+    if (d > maxD) { maxD = d; maxI = i; }
+  }
+  if (maxD == s->epsilon) {
+    // All points are coplanar - set planar flag
+    s->planar = true;
+    return;
+  }
+
+  // Enforce CCW orientation
+  if (qh_signed_dist(s->verts[maxI], &triPlane) >= 0) {
+    size_t tmp = baseTri[0]; baseTri[0] = baseTri[1]; baseTri[1] = tmp;
+  }
+
+  qhm_setup(&s->mesh, (int)baseTri[0], (int)baseTri[1], (int)baseTri[2], (int)maxI);
+
+  // Compute planes for initial faces
+  for (size_t fi = 0; fi < 4; fi++) {
+    int v[3]; qhm_get_face_verts(&s->mesh, &s->mesh.faces[fi], v);
+    ManifoldVec3 fn = qh_tri_normal(s->verts[v[0]], s->verts[v[1]], s->verts[v[2]]);
+    s->mesh.faces[fi].P = qh_plane(fn, s->verts[v[0]]);
+  }
+
+  // Assign each point to first visible face
+  for (size_t i = 0; i < vc; i++) {
+    for (size_t fi = 0; fi < 4; fi++) {
+      if (qhs_add_point_to_face(s, &s->mesh.faces[fi], i)) break;
+    }
+  }
 }
 
-// Edge structure for horizon tracking
-typedef struct {
-  int v0, v1;
-  int face;
-  int edge; // which edge of the face (0,1,2)
-} HorizonEdge;
+static void qhs_build(QHState *s) {
+  s->planar = false;
+  qhs_setup_initial_tet(s);
+  if (s->planar) return; // all points coplanar, no 3D hull
 
+  // Init face stack
+  iv_clear(&s->faceList);
+  for (size_t i = 0; i < 4; i++) {
+    QHFace *f = &s->mesh.faces[i];
+    if (f->hasPoints && f->pointsOnPositiveSide.len > 0) {
+      iv_push(&s->faceList, (int)i);
+      f->inFaceStack = 1;
+    }
+  }
+
+  size_t iter = 0;
+  while (s->faceList.len > 0) {
+    iter++;
+    if (iter == SIZE_MAX) iter = 0;
+
+    int topFaceIndex = s->faceList.data[0];
+    // Pop front: shift array
+    memmove(s->faceList.data, s->faceList.data + 1, (s->faceList.len - 1) * sizeof(int));
+    s->faceList.len--;
+
+    QHFace *tf = &s->mesh.faces[topFaceIndex];
+    tf->inFaceStack = 0;
+
+    if (!tf->hasPoints || tf->pointsOnPositiveSide.len == 0 || qhface_is_disabled(tf))
+      continue;
+
+    ManifoldVec3 activePoint = s->verts[tf->mostDistantPoint];
+    size_t activePointIndex = tf->mostDistantPoint;
+
+    // Find visible faces via DFS from topFace
+    sv_clear(&s->horizonEdges);
+    s->pvfLen = 0;
+    sv_clear(&s->visibleFaces);
+
+    pvf_push(s, (QHFaceData){topFaceIndex, -1});
+
+    while (s->pvfLen > 0) {
+      QHFaceData fd = s->pvfStack[--s->pvfLen];
+      QHFace *pvf = &s->mesh.faces[fd.faceIndex];
+
+      if (pvf->visibilityCheckedOnIteration == iter) {
+        if (pvf->isVisibleFaceOnCurrentIteration) continue;
+      } else {
+        pvf->visibilityCheckedOnIteration = iter;
+        double d = vec3_dot(pvf->P.N, activePoint) + pvf->P.D;
+        if (d > 0) {
+          pvf->isVisibleFaceOnCurrentIteration = 1;
+          pvf->horizonEdgesOnCurrentIteration = 0;
+          sv_push(&s->visibleFaces, (size_t)fd.faceIndex);
+          int hes[3]; qhm_get_face_he(&s->mesh, pvf, hes);
+          for (int ei = 0; ei < 3; ei++) {
+            if (s->mesh.he[hes[ei]].pairedHalfedge != fd.enteredFromHalfedge) {
+              int paired = s->mesh.he[hes[ei]].pairedHalfedge;
+              pvf_push(s, (QHFaceData){s->mesh.heToFace[paired], hes[ei]});
+            }
+          }
+          continue;
+        }
+      }
+
+      pvf->isVisibleFaceOnCurrentIteration = 0;
+      if (fd.enteredFromHalfedge >= 0) {
+        sv_push(&s->horizonEdges, (size_t)fd.enteredFromHalfedge);
+        // Mark which halfedge of the visible face is a horizon edge
+        int faceOfHE = s->mesh.heToFace[fd.enteredFromHalfedge];
+        int hes[3]; qhm_get_face_he(&s->mesh, &s->mesh.faces[faceOfHE], hes);
+        int8_t ind = (hes[0] == fd.enteredFromHalfedge) ? 0 : (hes[1] == fd.enteredFromHalfedge ? 1 : 2);
+        s->mesh.faces[faceOfHE].horizonEdgesOnCurrentIteration |= (1 << ind);
+      }
+    }
+
+    size_t horizonEdgeCount = s->horizonEdges.len;
+
+    // Try to reorder horizon edges into a loop
+    if (!qhs_reorder_horizon(s)) {
+      // Failed: remove active point and continue
+      SzVec *pts = &tf->pointsOnPositiveSide;
+      bool found = false;
+      for (size_t i = 0; i < pts->len; i++) {
+        if (pts->data[i] == activePointIndex) found = true;
+        if (found && i + 1 < pts->len) pts->data[i] = pts->data[i + 1];
+      }
+      if (found) pts->len--;
+      if (pts->len == 0) tf->hasPoints = false;
+      continue;
+    }
+
+    // Disable visible faces and collect their point lists
+    // Collect disabled face point vectors
+    SzVec *savedPointVecs = (SzVec*)malloc(s->visibleFaces.len * sizeof(SzVec));
+    bool *savedHasPoints = (bool*)calloc(s->visibleFaces.len, sizeof(bool));
+    size_t savedCount = 0;
+
+    sv_clear(&s->newFaceIndices);
+    sv_clear(&s->newHEIndices);
+    size_t disableCounter = 0;
+
+    for (size_t vi = 0; vi < s->visibleFaces.len; vi++) {
+      size_t faceIndex = s->visibleFaces.data[vi];
+      QHFace *df = &s->mesh.faces[faceIndex];
+      int hes[3]; qhm_get_face_he(&s->mesh, df, hes);
+      for (int j = 0; j < 3; j++) {
+        if ((df->horizonEdgesOnCurrentIteration & (1 << j)) == 0) {
+          if (disableCounter < horizonEdgeCount * 2) {
+            sv_push(&s->newHEIndices, (size_t)hes[j]);
+            disableCounter++;
+          } else {
+            qhm_disable_he(&s->mesh, (size_t)hes[j]);
+          }
+        }
+      }
+      // Save points
+      if (df->hasPoints && df->pointsOnPositiveSide.len > 0) {
+        savedPointVecs[savedCount] = df->pointsOnPositiveSide;
+        savedHasPoints[savedCount] = true;
+        savedCount++;
+        // Reset without freeing (we took ownership)
+        sv_init(&df->pointsOnPositiveSide);
+        df->hasPoints = false;
+      }
+      qhm_disable_face(&s->mesh, faceIndex);
+    }
+
+    // Add more halfedges if needed
+    while (disableCounter < horizonEdgeCount * 2) {
+      sv_push(&s->newHEIndices, qhm_add_he(&s->mesh));
+      disableCounter++;
+    }
+
+    // Create new faces connecting active point to horizon edges
+    for (size_t i = 0; i < horizonEdgeCount; i++) {
+      size_t AB = s->horizonEdges.data[i];
+      int A = s->mesh.he[s->mesh.he[AB].pairedHalfedge].endVert;
+      int B = s->mesh.he[AB].endVert;
+      int C = (int)activePointIndex;
+
+      size_t newFI = qhm_add_face(&s->mesh);
+      sv_push(&s->newFaceIndices, newFI);
+
+      size_t CA = s->newHEIndices.data[2 * i + 0];
+      size_t BC = s->newHEIndices.data[2 * i + 1];
+
+      s->mesh.heNext[AB] = (int)BC;
+      s->mesh.heNext[BC] = (int)CA;
+      s->mesh.heNext[CA] = (int)AB;
+
+      s->mesh.heToFace[BC] = (int)newFI;
+      s->mesh.heToFace[CA] = (int)newFI;
+      s->mesh.heToFace[AB] = (int)newFI;
+
+      s->mesh.he[CA].endVert = A;
+      s->mesh.he[BC].endVert = C;
+
+      QHFace *nf = &s->mesh.faces[newFI];
+      ManifoldVec3 planeN = qh_tri_normal(s->verts[A], s->verts[B], activePoint);
+      nf->P = qh_plane(planeN, activePoint);
+      nf->he = (int)AB;
+
+      // Pair CA with previous face's BC, and BC with next face's CA
+      s->mesh.he[CA].pairedHalfedge =
+          (int)s->newHEIndices.data[i > 0 ? i * 2 - 1 : 2 * horizonEdgeCount - 1];
+      s->mesh.he[BC].pairedHalfedge =
+          (int)s->newHEIndices.data[((i + 1) * 2) % (horizonEdgeCount * 2)];
+    }
+
+    // Reassign points from disabled faces to new faces
+    for (size_t si = 0; si < savedCount; si++) {
+      if (!savedHasPoints[si]) continue;
+      SzVec *pts = &savedPointVecs[si];
+      for (size_t pi = 0; pi < pts->len; pi++) {
+        size_t ptIdx = pts->data[pi];
+        if (ptIdx == activePointIndex) continue;
+        for (size_t j = 0; j < horizonEdgeCount; j++) {
+          if (qhs_add_point_to_face(s, &s->mesh.faces[s->newFaceIndices.data[j]], ptIdx))
+            break;
+        }
+      }
+      sv_free(pts);
+    }
+    free(savedPointVecs);
+    free(savedHasPoints);
+
+    // Push new faces with points to face stack
+    for (size_t i = 0; i < s->newFaceIndices.len; i++) {
+      QHFace *nf = &s->mesh.faces[s->newFaceIndices.data[i]];
+      if (nf->hasPoints && nf->pointsOnPositiveSide.len > 0 && !nf->inFaceStack) {
+        iv_push(&s->faceList, (int)s->newFaceIndices.data[i]);
+        nf->inFaceStack = 1;
+      }
+    }
+  }
+}
+
+// ─── Build the manifold mesh from QuickHull result ──────────────────────────
 void manifold_convex_hull(ManifoldImpl *impl, const ManifoldVec3 *points,
                            size_t numPoints) {
   manifold_impl_init(impl);
@@ -129,180 +632,76 @@ void manifold_convex_hull(ManifoldImpl *impl, const ManifoldVec3 *points,
     return;
   }
 
-  // Find initial tetrahedron
-  int tetIdx[4];
-  if (!find_initial_tet(points, numPoints, tetIdx)) {
+  QHState state;
+  qhs_init(&state, points, numPoints);
+
+  state.extremes[0] = 0;
+  qhs_get_extremes(&state);
+  state.scale = qhs_get_scale(&state);
+
+  double eps = 0.0000001;
+  state.epsilon = eps * state.scale;
+  state.epsilonSq = state.epsilon * state.epsilon;
+
+  qhs_build(&state);
+
+  if (state.planar) {
+    qhs_free(&state);
     manifold_impl_make_empty(impl, MANIFOLD_ERROR_INVALID_CONSTRUCTION);
     return;
   }
 
-  // Build initial tetrahedron (4 faces)
-  HullFaceVec faces = {0};
-  HullFace f;
-
-  hull_face_init(&f, tetIdx[0], tetIdx[1], tetIdx[2], points);
-  hfv_push(&faces, f);  // face 0
-  hull_face_init(&f, tetIdx[0], tetIdx[2], tetIdx[3], points);
-  hfv_push(&faces, f);  // face 1
-  hull_face_init(&f, tetIdx[0], tetIdx[3], tetIdx[1], points);
-  hfv_push(&faces, f);  // face 2
-  hull_face_init(&f, tetIdx[1], tetIdx[3], tetIdx[2], points);
-  hfv_push(&faces, f);  // face 3
-
-  // Set adjacency for initial tetrahedron
-  // Face 0: 012, Face 1: 023, Face 2: 031, Face 3: 132
-  faces.data[0].adj[0] = 2; faces.data[0].adj[1] = 3; faces.data[0].adj[2] = 1;
-  faces.data[1].adj[0] = 0; faces.data[1].adj[1] = 3; faces.data[1].adj[2] = 2;
-  faces.data[2].adj[0] = 1; faces.data[2].adj[1] = 3; faces.data[2].adj[2] = 0;
-  faces.data[3].adj[0] = 2; faces.data[3].adj[1] = 1; faces.data[3].adj[2] = 0;
-
-  // For each remaining point, if it's outside any face, update the hull
-  for (size_t pi = 0; pi < numPoints; pi++) {
-    if ((int)pi == tetIdx[0] || (int)pi == tetIdx[1] ||
-        (int)pi == tetIdx[2] || (int)pi == tetIdx[3])
-      continue;
-
-    // Find a visible face
-    int visibleFace = -1;
-    double maxDist = 1e-10;
-    for (size_t fi = 0; fi < faces.len; fi++) {
-      if (faces.data[fi].removed) continue;
-      double d = hull_face_dist(&faces.data[fi], points[pi]);
-      if (d > maxDist) { maxDist = d; visibleFace = (int)fi; }
+  // Collect enabled faces and build triangle mesh
+  // First pass: count faces and map vertices
+  int *vertUsed = (int*)calloc(numPoints, sizeof(int));
+  size_t triCount = 0;
+  for (size_t fi = 0; fi < state.mesh.faceLen; fi++) {
+    if (qhface_is_disabled(&state.mesh.faces[fi])) continue;
+    int hes[3]; qhm_get_face_he(&state.mesh, &state.mesh.faces[fi], hes);
+    // Validate halfedges
+    if (state.mesh.he[hes[0]].pairedHalfedge < 0) continue;
+    triCount++;
+    int v[3]; qhm_get_face_verts(&state.mesh, &state.mesh.faces[fi], v);
+    for (int j = 0; j < 3; j++) {
+      if (v[j] >= 0 && (size_t)v[j] < numPoints) vertUsed[v[j]] = 1;
     }
-    if (visibleFace < 0) continue; // point inside hull
-
-    // Mark all visible faces
-    bool *visible = (bool *)calloc(faces.len, sizeof(bool));
-    // BFS to find all visible faces starting from visibleFace
-    int *stack = (int *)malloc(faces.len * sizeof(int));
-    int stackLen = 0;
-    stack[stackLen++] = visibleFace;
-    visible[visibleFace] = true;
-
-    while (stackLen > 0) {
-      int fi = stack[--stackLen];
-      for (int ei = 0; ei < 3; ei++) {
-        int adj = faces.data[fi].adj[ei];
-        if (adj >= 0 && !visible[adj] && !faces.data[adj].removed) {
-          double d = hull_face_dist(&faces.data[adj], points[pi]);
-          if (d > 1e-10) {
-            visible[adj] = true;
-            stack[stackLen++] = adj;
-          }
-        }
-      }
-    }
-
-    // Find horizon edges (edges between visible and non-visible faces)
-    HorizonEdge *horizon = (HorizonEdge *)malloc(faces.len * 3 * sizeof(HorizonEdge));
-    int horizonLen = 0;
-
-    for (size_t fi = 0; fi < faces.len; fi++) {
-      if (!visible[fi]) continue;
-      for (int ei = 0; ei < 3; ei++) {
-        int adj = faces.data[fi].adj[ei];
-        if (adj < 0 || !visible[adj]) {
-          HorizonEdge he;
-          he.v0 = faces.data[fi].v[ei];
-          he.v1 = faces.data[fi].v[(ei + 1) % 3];
-          he.face = adj;
-          he.edge = ei;
-          horizon[horizonLen++] = he;
-        }
-      }
-    }
-
-    if (horizonLen < 3) {
-      free(visible);
-      free(stack);
-      free(horizon);
-      continue;
-    }
-
-    // Remove visible faces
-    for (size_t fi = 0; fi < faces.len; fi++) {
-      if (visible[fi]) faces.data[fi].removed = true;
-    }
-
-    // Create new faces connecting point to horizon edges
-    int *newFaceIdx = (int *)malloc(horizonLen * sizeof(int));
-    for (int hi = 0; hi < horizonLen; hi++) {
-      HullFace nf;
-      hull_face_init(&nf, horizon[hi].v0, horizon[hi].v1, (int)pi, points);
-      newFaceIdx[hi] = (int)faces.len;
-      hfv_push(&faces, nf);
-
-      // Set adjacency to the non-visible adjacent face
-      if (horizon[hi].face >= 0) {
-        HullFace *adjFace = &faces.data[horizon[hi].face];
-        for (int aei = 0; aei < 3; aei++) {
-          // Find the edge in the adjacent face that connects to this visible face
-          int av0 = adjFace->v[aei];
-          int av1 = adjFace->v[(aei + 1) % 3];
-          if ((av0 == horizon[hi].v1 && av1 == horizon[hi].v0) ||
-              (av0 == horizon[hi].v0 && av1 == horizon[hi].v1)) {
-            adjFace->adj[aei] = newFaceIdx[hi];
-            faces.data[newFaceIdx[hi]].adj[0] = horizon[hi].face;
-            break;
-          }
-        }
-      }
-    }
-
-    // Set adjacency between new faces
-    for (int hi = 0; hi < horizonLen; hi++) {
-      for (int hj = hi + 1; hj < horizonLen; hj++) {
-        // Check if these two new faces share an edge
-        int fi1 = newFaceIdx[hi];
-        int fi2 = newFaceIdx[hj];
-        for (int e1 = 0; e1 < 3; e1++) {
-          for (int e2 = 0; e2 < 3; e2++) {
-            int a0 = faces.data[fi1].v[e1];
-            int a1 = faces.data[fi1].v[(e1 + 1) % 3];
-            int b0 = faces.data[fi2].v[e2];
-            int b1 = faces.data[fi2].v[(e2 + 1) % 3];
-            if (a0 == b1 && a1 == b0) {
-              faces.data[fi1].adj[e1] = fi2;
-              faces.data[fi2].adj[e2] = fi1;
-            }
-          }
-        }
-      }
-    }
-
-    free(newFaceIdx);
-    free(visible);
-    free(stack);
-    free(horizon);
   }
 
-  // Collect surviving faces and build mesh
-  // First, collect all used vertices and remap
-  int *vertMap = (int *)calloc(numPoints, sizeof(int));
-  for (size_t i = 0; i < numPoints; i++) vertMap[i] = -1;
+  if (triCount < 4) {
+    free(vertUsed);
+    qhs_free(&state);
+    manifold_impl_make_empty(impl, MANIFOLD_ERROR_INVALID_CONSTRUCTION);
+    return;
+  }
 
+  // Build vertex map: old index -> new index
   int vertCount = 0;
+  int *vertMap = (int*)malloc(numPoints * sizeof(int));
+  for (size_t i = 0; i < numPoints; i++) {
+    if (vertUsed[i]) vertMap[i] = vertCount++;
+    else vertMap[i] = -1;
+  }
+
+  // Build triangles
   ManifoldVecIVec3 triVerts = {0};
-  for (size_t fi = 0; fi < faces.len; fi++) {
-    if (faces.data[fi].removed) continue;
-    for (int vi = 0; vi < 3; vi++) {
-      if (vertMap[faces.data[fi].v[vi]] < 0) {
-        vertMap[faces.data[fi].v[vi]] = vertCount++;
-      }
-    }
-    vec_ivec3_push(&triVerts, manifold_ivec3(
-        vertMap[faces.data[fi].v[0]],
-        vertMap[faces.data[fi].v[1]],
-        vertMap[faces.data[fi].v[2]]));
+  for (size_t fi = 0; fi < state.mesh.faceLen; fi++) {
+    if (qhface_is_disabled(&state.mesh.faces[fi])) continue;
+    if (state.mesh.he[state.mesh.faces[fi].he].pairedHalfedge < 0) continue;
+    int v[3]; qhm_get_face_verts(&state.mesh, &state.mesh.faces[fi], v);
+    if (v[0] < 0 || v[1] < 0 || v[2] < 0) continue;
+    if ((size_t)v[0] >= numPoints || (size_t)v[1] >= numPoints || (size_t)v[2] >= numPoints) continue;
+    // Compute face startVert from halfedge structure
+    int hes[3]; qhm_get_face_he(&state.mesh, &state.mesh.faces[fi], hes);
+    int sv0 = state.mesh.he[state.mesh.heNext[state.mesh.heNext[hes[0]]]].endVert;
+    int sv1 = state.mesh.he[hes[0]].endVert;
+    int sv2 = state.mesh.he[state.mesh.heNext[hes[0]]].endVert;
+    vec_ivec3_push(&triVerts, manifold_ivec3(vertMap[sv0], vertMap[sv1], vertMap[sv2]));
   }
 
   // Copy vertices
   impl->vertPos = vec_vec3_create_n((size_t)vertCount);
   for (size_t i = 0; i < numPoints; i++) {
-    if (vertMap[i] >= 0) {
-      impl->vertPos.data[vertMap[i]] = points[i];
-    }
+    if (vertMap[i] >= 0) impl->vertPos.data[vertMap[i]] = points[i];
   }
 
   ManifoldVecIVec3 emptyTriVert = {0};
@@ -316,5 +715,6 @@ void manifold_convex_hull(ManifoldImpl *impl, const ManifoldVec3 *points,
   vec_ivec3_free(&triVerts);
   vec_ivec3_free(&emptyTriVert);
   free(vertMap);
-  free(faces.data);
+  free(vertUsed);
+  qhs_free(&state);
 }
