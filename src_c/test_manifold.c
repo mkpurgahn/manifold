@@ -616,6 +616,71 @@ static void test_sdf_volume_accuracy(void) {
   manifold_destroy(&m);
 }
 
+// ============== Overlapping Boolean Tests ==============
+
+static void test_boolean_union_overlapping(void) {
+  // Two overlapping cubes - union should produce a single solid
+  Manifold a = manifold_cube(manifold_vec3(2.0, 2.0, 2.0), false);
+  Manifold b_base = manifold_cube(manifold_vec3(2.0, 2.0, 2.0), false);
+  Manifold b = manifold_translate(&b_base, manifold_vec3(1.0, 0.0, 0.0));
+
+  Manifold u = manifold_boolean(&a, &b, MANIFOLD_OP_ADD);
+
+  ASSERT_EQ(manifold_status(&u), MANIFOLD_ERROR_NO_ERROR);
+  ASSERT_TRUE(!manifold_is_empty(&u));
+
+  // Volume of union should be 2*2*2 + 2*2*2 - 1*2*2 = 12
+  double vol = manifold_volume(&u);
+  ASSERT_NEAR(vol, 12.0, 0.5);
+
+  manifold_destroy(&a);
+  manifold_destroy(&b_base);
+  manifold_destroy(&b);
+  manifold_destroy(&u);
+}
+
+static void test_boolean_subtract_overlapping(void) {
+  // Subtract a smaller offset cube from a larger one
+  Manifold a = manifold_cube(manifold_vec3(2.0, 2.0, 2.0), false);
+  Manifold b_base = manifold_cube(manifold_vec3(2.0, 2.0, 2.0), false);
+  Manifold b = manifold_translate(&b_base, manifold_vec3(1.0, 0.0, 0.0));
+
+  Manifold d = manifold_boolean(&a, &b, MANIFOLD_OP_SUBTRACT);
+
+  ASSERT_EQ(manifold_status(&d), MANIFOLD_ERROR_NO_ERROR);
+  ASSERT_TRUE(!manifold_is_empty(&d));
+
+  // Volume = 2*2*2 - 1*2*2 = 4
+  double vol = manifold_volume(&d);
+  ASSERT_NEAR(vol, 4.0, 0.5);
+
+  manifold_destroy(&a);
+  manifold_destroy(&b_base);
+  manifold_destroy(&b);
+  manifold_destroy(&d);
+}
+
+static void test_boolean_intersect_overlapping(void) {
+  // Intersection of two offset cubes
+  Manifold a = manifold_cube(manifold_vec3(2.0, 2.0, 2.0), false);
+  Manifold b_base = manifold_cube(manifold_vec3(2.0, 2.0, 2.0), false);
+  Manifold b = manifold_translate(&b_base, manifold_vec3(1.0, 0.0, 0.0));
+
+  Manifold inter = manifold_boolean(&a, &b, MANIFOLD_OP_INTERSECT);
+
+  ASSERT_EQ(manifold_status(&inter), MANIFOLD_ERROR_NO_ERROR);
+  ASSERT_TRUE(!manifold_is_empty(&inter));
+
+  // Volume = 1*2*2 = 4
+  double vol = manifold_volume(&inter);
+  ASSERT_NEAR(vol, 4.0, 0.5);
+
+  manifold_destroy(&a);
+  manifold_destroy(&b_base);
+  manifold_destroy(&b);
+  manifold_destroy(&inter);
+}
+
 // ============== Main ==============
 
 int main(void) {
@@ -670,6 +735,9 @@ int main(void) {
   RUN_TEST(boolean_empty);
   RUN_TEST(boolean_subtract_non_overlapping);
   RUN_TEST(boolean_intersect_non_overlapping);
+  RUN_TEST(boolean_union_overlapping);
+  RUN_TEST(boolean_subtract_overlapping);
+  RUN_TEST(boolean_intersect_overlapping);
 
   printf("\nConvex Hull:\n");
   RUN_TEST(hull_cube);
@@ -684,6 +752,6 @@ int main(void) {
   RUN_TEST(hull_tetrahedron);
   RUN_TEST(sdf_volume_accuracy);
 
-  printf("\n=== All %d tests passed! ===\n", 34);
+  printf("\n=== All %d tests passed! ===\n", 37);
   return 0;
 }

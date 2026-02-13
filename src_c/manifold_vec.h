@@ -182,9 +182,21 @@ MANIFOLD_VEC_FUNCS(ManifoldSmoothness, ManifoldVecSmoothness, vec_smooth)
 MANIFOLD_VEC_STRUCT(bool, ManifoldVecBool)
 MANIFOLD_VEC_FUNCS(bool, ManifoldVecBool, vec_bool)
 
+MANIFOLD_VEC_STRUCT(char, ManifoldVecChar)
+MANIFOLD_VEC_FUNCS(char, ManifoldVecChar, vec_char)
+
+// Int pair type for boolean edges  
+typedef struct { int v[2]; } ManifoldIntArr2;
+MANIFOLD_VEC_STRUCT(ManifoldIntArr2, ManifoldVecIntArr2)
+MANIFOLD_VEC_FUNCS(ManifoldIntArr2, ManifoldVecIntArr2, vec_intarr2)
+
 // Sequence fill: fills v->data[0..n-1] with 0, 1, 2, ...
 static inline void vec_int_sequence(ManifoldVecInt *v) {
   for (size_t i = 0; i < v->len; i++) v->data[i] = (int)i;
+}
+
+static inline void vec_size_sequence(ManifoldVecSize *v) {
+  for (size_t i = 0; i < v->len; i++) v->data[i] = i;
 }
 
 // Permute: rearrange src into dst according to new2old mapping
@@ -205,5 +217,7 @@ MANIFOLD_VEC_PERMUTE(uint32_t, ManifoldVecU32, vec_u32)
 MANIFOLD_VEC_PERMUTE(ManifoldTriRef, ManifoldVecTriRef, vec_triref)
 MANIFOLD_VEC_PERMUTE(ManifoldHalfedge, ManifoldVecHalfedge, vec_halfedge)
 MANIFOLD_VEC_PERMUTE(int, ManifoldVecInt, vec_int)
+MANIFOLD_VEC_PERMUTE(ManifoldIntArr2, ManifoldVecIntArr2, vec_intarr2)
+MANIFOLD_VEC_PERMUTE(size_t, ManifoldVecSize, vec_size)
 
 #endif // MANIFOLD_VEC_H
