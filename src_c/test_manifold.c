@@ -681,6 +681,90 @@ static void test_boolean_intersect_overlapping(void) {
   manifold_destroy(&inter);
 }
 
+static void test_boolean_3d_offset(void) {
+  // Cubes offset in all 3 axes - tests more complex intersections
+  Manifold a = manifold_cube(manifold_vec3(2.0, 2.0, 2.0), false);
+  Manifold b_base = manifold_cube(manifold_vec3(2.0, 2.0, 2.0), false);
+  Manifold b = manifold_translate(&b_base, manifold_vec3(1.0, 1.0, 1.0));
+
+  Manifold u = manifold_boolean(&a, &b, MANIFOLD_OP_ADD);
+  ASSERT_EQ(manifold_status(&u), MANIFOLD_ERROR_NO_ERROR);
+  // Union volume = 2*8 - 1*1*1 = 15
+  ASSERT_NEAR(manifold_volume(&u), 15.0, 0.5);
+
+  Manifold inter = manifold_boolean(&a, &b, MANIFOLD_OP_INTERSECT);
+  ASSERT_EQ(manifold_status(&inter), MANIFOLD_ERROR_NO_ERROR);
+  // Intersection volume = 1*1*1 = 1
+  ASSERT_NEAR(manifold_volume(&inter), 1.0, 0.5);
+
+  manifold_destroy(&a);
+  manifold_destroy(&b_base);
+  manifold_destroy(&b);
+  manifold_destroy(&u);
+  manifold_destroy(&inter);
+}
+
+static void test_boolean_self_difference(void) {
+  // A - A should be empty
+  Manifold a = manifold_cube(manifold_vec3(2.0, 2.0, 2.0), false);
+  Manifold b = manifold_cube(manifold_vec3(2.0, 2.0, 2.0), false);
+
+  Manifold d = manifold_boolean(&a, &b, MANIFOLD_OP_SUBTRACT);
+  ASSERT_EQ(manifold_status(&d), MANIFOLD_ERROR_NO_ERROR);
+  // Should be empty or near-zero volume
+  double vol = manifold_volume(&d);
+  ASSERT_NEAR(vol, 0.0, 0.5);
+
+  manifold_destroy(&a);
+  manifold_destroy(&b);
+  manifold_destroy(&d);
+}
+
+static void test_boolean_sequential(void) {
+  // (A union B) - C, all cubes
+  Manifold a = manifold_cube(manifold_vec3(2.0, 2.0, 2.0), false);
+  Manifold b_base = manifold_cube(manifold_vec3(2.0, 2.0, 2.0), false);
+  Manifold b = manifold_translate(&b_base, manifold_vec3(1.0, 0.0, 0.0));
+  Manifold c_base = manifold_cube(manifold_vec3(1.0, 1.0, 1.0), false);
+  Manifold c = manifold_translate(&c_base, manifold_vec3(0.5, 0.5, 0.5));
+
+  Manifold u = manifold_boolean(&a, &b, MANIFOLD_OP_ADD);
+  Manifold result = manifold_boolean(&u, &c, MANIFOLD_OP_SUBTRACT);
+
+  ASSERT_EQ(manifold_status(&result), MANIFOLD_ERROR_NO_ERROR);
+  // Volume = 12 - 1 = 11
+  ASSERT_NEAR(manifold_volume(&result), 11.0, 0.5);
+
+  manifold_destroy(&a);
+  manifold_destroy(&b_base);
+  manifold_destroy(&b);
+  manifold_destroy(&c_base);
+  manifold_destroy(&c);
+  manifold_destroy(&u);
+  manifold_destroy(&result);
+}
+
+static void test_boolean_sphere(void) {
+  // Boolean on spheres
+  Manifold a = manifold_sphere(1.0, 16);
+  Manifold b_base = manifold_sphere(1.0, 16);
+  Manifold b = manifold_translate(&b_base, manifold_vec3(1.0, 0.0, 0.0));
+
+  Manifold u = manifold_boolean(&a, &b, MANIFOLD_OP_ADD);
+  ASSERT_EQ(manifold_status(&u), MANIFOLD_ERROR_NO_ERROR);
+  ASSERT_TRUE(!manifold_is_empty(&u));
+
+  // Union of two low-poly spheres: should be non-empty and non-zero volume
+  double vol = manifold_volume(&u);
+  ASSERT_TRUE(vol > 2.0);  // should be noticeably larger than zero
+  ASSERT_TRUE(vol < 10.0); // but bounded
+
+  manifold_destroy(&a);
+  manifold_destroy(&b_base);
+  manifold_destroy(&b);
+  manifold_destroy(&u);
+}
+
 // ============== Main ==============
 
 int main(void) {
@@ -738,6 +822,10 @@ int main(void) {
   RUN_TEST(boolean_union_overlapping);
   RUN_TEST(boolean_subtract_overlapping);
   RUN_TEST(boolean_intersect_overlapping);
+  RUN_TEST(boolean_3d_offset);
+  RUN_TEST(boolean_self_difference);
+  RUN_TEST(boolean_sequential);
+  RUN_TEST(boolean_sphere);
 
   printf("\nConvex Hull:\n");
   RUN_TEST(hull_cube);
@@ -752,6 +840,6 @@ int main(void) {
   RUN_TEST(hull_tetrahedron);
   RUN_TEST(sdf_volume_accuracy);
 
-  printf("\n=== All %d tests passed! ===\n", 37);
+  printf("\n=== All %d tests passed! ===\n", 41);
   return 0;
 }
