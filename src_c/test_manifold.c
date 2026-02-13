@@ -1,0 +1,307 @@
+// C11 test suite for the Manifold port.
+// Simple assert-based tests, no external framework needed.
+
+#include <assert.h>
+#include <math.h>
+#include <stdio.h>
+
+#include "manifold_api.h"
+
+#define ASSERT_NEAR(a, b, tol) \
+  do { \
+    double _a = (a), _b = (b), _t = (tol); \
+    if (fabs(_a - _b) > _t) { \
+      fprintf(stderr, "FAIL: %s:%d: |%g - %g| = %g > %g\n", \
+              __FILE__, __LINE__, _a, _b, fabs(_a - _b), _t); \
+      assert(0); \
+    } \
+  } while (0)
+
+#define ASSERT_TRUE(x) \
+  do { \
+    if (!(x)) { \
+      fprintf(stderr, "FAIL: %s:%d: %s\n", __FILE__, __LINE__, #x); \
+      assert(0); \
+    } \
+  } while (0)
+
+#define ASSERT_EQ(a, b) \
+  do { \
+    if ((a) != (b)) { \
+      fprintf(stderr, "FAIL: %s:%d: %s != %s\n", __FILE__, __LINE__, #a, #b); \
+      assert(0); \
+    } \
+  } while (0)
+
+#define RUN_TEST(name) \
+  do { \
+    printf("  %-40s ", #name); \
+    test_##name(); \
+    printf("PASS\n"); \
+  } while (0)
+
+// ============== Vec Math Tests ==============
+
+static void test_vec3_basics(void) {
+  ManifoldVec3 a = manifold_vec3(1, 2, 3);
+  ManifoldVec3 b = manifold_vec3(4, 5, 6);
+  ManifoldVec3 sum = vec3_add(a, b);
+  ASSERT_NEAR(sum.x, 5.0, 1e-10);
+  ASSERT_NEAR(sum.y, 7.0, 1e-10);
+  ASSERT_NEAR(sum.z, 9.0, 1e-10);
+
+  ManifoldVec3 diff = vec3_sub(b, a);
+  ASSERT_NEAR(diff.x, 3.0, 1e-10);
+  ASSERT_NEAR(diff.y, 3.0, 1e-10);
+  ASSERT_NEAR(diff.z, 3.0, 1e-10);
+
+  double d = vec3_dot(a, b);
+  ASSERT_NEAR(d, 32.0, 1e-10);
+
+  ManifoldVec3 cross = vec3_cross(a, b);
+  ASSERT_NEAR(cross.x, -3.0, 1e-10);
+  ASSERT_NEAR(cross.y, 6.0, 1e-10);
+  ASSERT_NEAR(cross.z, -3.0, 1e-10);
+}
+
+static void test_vec3_normalize(void) {
+  ManifoldVec3 v = manifold_vec3(3, 4, 0);
+  ManifoldVec3 n = vec3_normalize(v);
+  ASSERT_NEAR(n.x, 0.6, 1e-10);
+  ASSERT_NEAR(n.y, 0.8, 1e-10);
+  ASSERT_NEAR(n.z, 0.0, 1e-10);
+  ASSERT_NEAR(vec3_length(n), 1.0, 1e-10);
+}
+
+static void test_mat3_identity(void) {
+  ManifoldMat3 I = mat3_identity();
+  ManifoldVec3 v = manifold_vec3(1, 2, 3);
+  ManifoldVec3 result = mat3_mul_vec3(I, v);
+  ASSERT_NEAR(result.x, 1.0, 1e-10);
+  ASSERT_NEAR(result.y, 2.0, 1e-10);
+  ASSERT_NEAR(result.z, 3.0, 1e-10);
+}
+
+static void test_mat3_inverse(void) {
+  ManifoldMat3 m;
+  m.cols[0] = manifold_vec3(1, 0, 0);
+  m.cols[1] = manifold_vec3(0, 2, 0);
+  m.cols[2] = manifold_vec3(0, 0, 4);
+  ManifoldMat3 inv = mat3_inverse(m);
+  ASSERT_NEAR(inv.cols[0].x, 1.0, 1e-10);
+  ASSERT_NEAR(inv.cols[1].y, 0.5, 1e-10);
+  ASSERT_NEAR(inv.cols[2].z, 0.25, 1e-10);
+}
+
+static void test_box_operations(void) {
+  ManifoldBox b = manifold_box_empty();
+  manifold_box_union_point(&b, manifold_vec3(1, 2, 3));
+  manifold_box_union_point(&b, manifold_vec3(-1, -2, -3));
+  ASSERT_NEAR(b.min.x, -1.0, 1e-10);
+  ASSERT_NEAR(b.max.z, 3.0, 1e-10);
+  ASSERT_TRUE(manifold_box_contains_point(b, manifold_vec3(0, 0, 0)));
+  ASSERT_TRUE(!manifold_box_contains_point(b, manifold_vec3(10, 0, 0)));
+}
+
+// ============== Vec (Dynamic Array) Tests ==============
+
+static void test_vec_int(void) {
+  ManifoldVecInt v = {0};
+  vec_int_push(&v, 10);
+  vec_int_push(&v, 20);
+  vec_int_push(&v, 30);
+  ASSERT_EQ(v.len, (size_t)3);
+  ASSERT_EQ(v.data[0], 10);
+  ASSERT_EQ(v.data[1], 20);
+  ASSERT_EQ(v.data[2], 30);
+  vec_int_pop(&v);
+  ASSERT_EQ(v.len, (size_t)2);
+  vec_int_free(&v);
+}
+
+// ============== Hashtable Tests ==============
+
+static void test_hashtable(void) {
+  ManifoldHashTable ht = manifold_hashtable_create(16, 1);
+  manifold_hashtable_insert(&ht, 42, 100);
+  manifold_hashtable_insert(&ht, 99, 200);
+  ASSERT_EQ(manifold_hashtable_lookup(&ht, 42), 100);
+  ASSERT_EQ(manifold_hashtable_lookup(&ht, 99), 200);
+  ASSERT_EQ(manifold_hashtable_lookup(&ht, 1), -1);
+  manifold_hashtable_free(&ht);
+}
+
+// ============== Tetrahedron Tests ==============
+
+static void test_tetrahedron(void) {
+  Manifold m = manifold_tetrahedron();
+  ASSERT_EQ(manifold_status(&m), MANIFOLD_ERROR_NO_ERROR);
+  ASSERT_TRUE(!manifold_is_empty(&m));
+  ASSERT_EQ(manifold_num_vert(&m), (size_t)4);
+  ASSERT_EQ(manifold_num_tri(&m), (size_t)4);
+  ASSERT_EQ(manifold_num_edge(&m), (size_t)6);
+
+  // Volume of tetrahedron with vertices at (±1,±1,±1) (alternating)
+  double vol = manifold_volume(&m);
+  ASSERT_NEAR(fabs(vol), 8.0 / 3.0, 1e-10);
+
+  ManifoldBox bb = manifold_bounding_box(&m);
+  ASSERT_TRUE(manifold_box_isfinite(bb));
+
+  manifold_destroy(&m);
+}
+
+// ============== Cube Tests ==============
+
+static void test_cube(void) {
+  ManifoldVec3 size = manifold_vec3(1, 1, 1);
+  Manifold m = manifold_cube(size, false);
+  ASSERT_EQ(manifold_status(&m), MANIFOLD_ERROR_NO_ERROR);
+  ASSERT_TRUE(!manifold_is_empty(&m));
+  ASSERT_EQ(manifold_num_vert(&m), (size_t)8);
+  ASSERT_EQ(manifold_num_tri(&m), (size_t)12);
+
+  double vol = manifold_volume(&m);
+  ASSERT_NEAR(vol, 1.0, 1e-10);
+
+  double sa = manifold_surface_area(&m);
+  ASSERT_NEAR(sa, 6.0, 1e-10);
+
+  manifold_destroy(&m);
+}
+
+static void test_cube_centered(void) {
+  ManifoldVec3 size = manifold_vec3(2, 2, 2);
+  Manifold m = manifold_cube(size, true);
+  ASSERT_EQ(manifold_status(&m), MANIFOLD_ERROR_NO_ERROR);
+
+  double vol = manifold_volume(&m);
+  ASSERT_NEAR(vol, 8.0, 1e-10);
+
+  ManifoldBox bb = manifold_bounding_box(&m);
+  ASSERT_NEAR(bb.min.x, -1.0, 1e-10);
+  ASSERT_NEAR(bb.max.x, 1.0, 1e-10);
+
+  manifold_destroy(&m);
+}
+
+static void test_cube_scaled(void) {
+  ManifoldVec3 size = manifold_vec3(2, 3, 4);
+  Manifold m = manifold_cube(size, false);
+
+  double vol = manifold_volume(&m);
+  ASSERT_NEAR(vol, 24.0, 1e-10);
+
+  double sa = manifold_surface_area(&m);
+  ASSERT_NEAR(sa, 2.0 * (2*3 + 3*4 + 2*4), 1e-10);
+
+  manifold_destroy(&m);
+}
+
+// ============== Transform Tests ==============
+
+static void test_translate(void) {
+  Manifold m = manifold_cube(manifold_vec3(1, 1, 1), false);
+  Manifold translated = manifold_translate(&m, manifold_vec3(5, 0, 0));
+
+  ManifoldBox bb = manifold_bounding_box(&translated);
+  ASSERT_NEAR(bb.min.x, 5.0, 1e-10);
+  ASSERT_NEAR(bb.max.x, 6.0, 1e-10);
+
+  // Volume should be preserved
+  ASSERT_NEAR(manifold_volume(&translated), 1.0, 1e-10);
+
+  manifold_destroy(&m);
+  manifold_destroy(&translated);
+}
+
+static void test_scale(void) {
+  Manifold m = manifold_cube(manifold_vec3(1, 1, 1), false);
+  Manifold scaled = manifold_scale(&m, manifold_vec3(2, 3, 4));
+
+  double vol = manifold_volume(&scaled);
+  ASSERT_NEAR(vol, 24.0, 1e-10);
+
+  manifold_destroy(&m);
+  manifold_destroy(&scaled);
+}
+
+// ============== Quality Tests ==============
+
+static void test_quality(void) {
+  manifold_quality_reset();
+  int seg = manifold_get_circular_segments(1.0);
+  ASSERT_TRUE(seg >= 3);
+  ASSERT_TRUE(seg % 4 == 0);
+
+  manifold_set_circular_segments(32);
+  ASSERT_EQ(manifold_get_circular_segments(1.0), 32);
+
+  manifold_quality_reset();
+}
+
+// ============== Disjoint Sets Tests ==============
+
+static void test_disjoint_sets(void) {
+  ManifoldDisjointSets ds = manifold_disjoint_sets_create(10);
+  manifold_disjoint_sets_unite(&ds, 0, 1);
+  manifold_disjoint_sets_unite(&ds, 2, 3);
+  manifold_disjoint_sets_unite(&ds, 0, 3);
+  ASSERT_TRUE(manifold_disjoint_sets_same(&ds, 0, 1));
+  ASSERT_TRUE(manifold_disjoint_sets_same(&ds, 0, 2));
+  ASSERT_TRUE(manifold_disjoint_sets_same(&ds, 0, 3));
+  ASSERT_TRUE(!manifold_disjoint_sets_same(&ds, 0, 4));
+  manifold_disjoint_sets_free(&ds);
+}
+
+// ============== Manifold checks ==============
+
+static void test_manifold_check(void) {
+  Manifold m = manifold_tetrahedron();
+  ASSERT_TRUE(manifold_impl_is_manifold(&m.impl));
+  manifold_destroy(&m);
+
+  Manifold c = manifold_cube(manifold_vec3(1,1,1), false);
+  ASSERT_TRUE(manifold_impl_is_manifold(&c.impl));
+  manifold_destroy(&c);
+}
+
+// ============== Main ==============
+
+int main(void) {
+  printf("=== Manifold C11 Port Tests ===\n\n");
+  printf("Vec Math:\n");
+  RUN_TEST(vec3_basics);
+  RUN_TEST(vec3_normalize);
+  RUN_TEST(mat3_identity);
+  RUN_TEST(mat3_inverse);
+  RUN_TEST(box_operations);
+
+  printf("\nDynamic Arrays:\n");
+  RUN_TEST(vec_int);
+
+  printf("\nHash Table:\n");
+  RUN_TEST(hashtable);
+
+  printf("\nDisjoint Sets:\n");
+  RUN_TEST(disjoint_sets);
+
+  printf("\nConstructors:\n");
+  RUN_TEST(tetrahedron);
+  RUN_TEST(cube);
+  RUN_TEST(cube_centered);
+  RUN_TEST(cube_scaled);
+
+  printf("\nTransforms:\n");
+  RUN_TEST(translate);
+  RUN_TEST(scale);
+
+  printf("\nQuality:\n");
+  RUN_TEST(quality);
+
+  printf("\nManifold Checks:\n");
+  RUN_TEST(manifold_check);
+
+  printf("\n=== All %d tests passed! ===\n", 16);
+  return 0;
+}
