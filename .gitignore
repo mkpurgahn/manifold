@@ -137,3 +137,5 @@ extras/ember_tests/testfiles/raw_meshes
 
 *.o
 test_manifold
+test_manifold_dbg
+*.dSYM
