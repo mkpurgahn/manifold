@@ -97,6 +97,12 @@ ManifoldBox manifold_bounding_box(const Manifold *m) { return m->impl.bBox; }
 double manifold_volume(const Manifold *m) { return manifold_impl_get_volume(&m->impl); }
 double manifold_surface_area(const Manifold *m) { return manifold_impl_get_surface_area(&m->impl); }
 
+Manifold manifold_empty(void) {
+  Manifold m;
+  manifold_impl_init(&m.impl);
+  return m;
+}
+
 Manifold manifold_tetrahedron(void) {
   Manifold m;
   manifold_impl_tetrahedron(&m.impl);

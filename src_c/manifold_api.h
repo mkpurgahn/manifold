@@ -19,6 +19,7 @@ void manifold_destroy(Manifold *m);
 void manifold_copy(Manifold *dst, const Manifold *src);
 
 // ---------- Constructors ----------
+Manifold manifold_empty(void);
 Manifold manifold_tetrahedron(void);
 Manifold manifold_cube(ManifoldVec3 size, bool center);
 Manifold manifold_sphere(double radius, int circularSegments);

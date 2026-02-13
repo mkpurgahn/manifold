@@ -1954,6 +1954,106 @@ static void test_hull_sphere(void) {
   manifold_destroy(&h);
 }
 
+// ---------- Empty constructor ----------
+
+static void test_empty_constructor(void) {
+  Manifold e = manifold_empty();
+  ASSERT_TRUE(manifold_is_empty(&e));
+  ASSERT_EQ(manifold_num_vert(&e), (size_t)0);
+  ASSERT_EQ(manifold_num_tri(&e), (size_t)0);
+  ASSERT_EQ(manifold_num_edge(&e), (size_t)0);
+  ASSERT_NEAR(manifold_volume(&e), 0.0, 0.001);
+  manifold_destroy(&e);
+}
+
+// ---------- Cube triangle count ----------
+
+static void test_cube_tri_count(void) {
+  Manifold m = manifold_cube(manifold_vec3(1, 1, 1), false);
+  // A cube has 6 faces, each split into 2 triangles = 12 triangles
+  ASSERT_EQ(manifold_num_tri(&m), (size_t)12);
+  ASSERT_EQ(manifold_num_vert(&m), (size_t)8);
+  ASSERT_EQ(manifold_num_edge(&m), (size_t)18);
+  manifold_destroy(&m);
+}
+
+// ---------- Tetrahedron properties ----------
+
+static void test_tetra_properties(void) {
+  Manifold t = manifold_tetrahedron();
+  ASSERT_EQ(manifold_num_vert(&t), (size_t)4);
+  ASSERT_EQ(manifold_num_tri(&t), (size_t)4);
+  ASSERT_EQ(manifold_num_edge(&t), (size_t)6);
+  // Tetrahedron with unit coords - volume should be positive
+  double vol = manifold_volume(&t);
+  ASSERT_TRUE(vol > 0);
+  manifold_destroy(&t);
+}
+
+// ---------- From mesh round trip ----------
+
+static void test_from_mesh_roundtrip(void) {
+  Manifold orig = manifold_cube(manifold_vec3(2, 3, 4), false);
+  size_t nv, nt;
+  const ManifoldVec3 *verts = manifold_get_vert_positions(&orig, &nv);
+  ManifoldIVec3 *tris = (ManifoldIVec3 *)malloc(manifold_num_tri(&orig) * sizeof(ManifoldIVec3));
+  manifold_get_triangles(&orig, tris, &nt);
+
+  Manifold copy = manifold_from_mesh(verts, nv, tris, nt);
+  ASSERT_NEAR(manifold_volume(&copy), manifold_volume(&orig), 0.1);
+  ASSERT_EQ(manifold_num_tri(&copy), manifold_num_tri(&orig));
+
+  free(tris);
+  manifold_destroy(&orig);
+  manifold_destroy(&copy);
+}
+
+// ---------- Scale preserves topology ----------
+
+static void test_scale_topology(void) {
+  Manifold m = manifold_cube(manifold_vec3(1, 1, 1), false);
+  Manifold s = manifold_scale(&m, manifold_vec3(10, 10, 10));
+
+  ASSERT_EQ(manifold_num_vert(&s), manifold_num_vert(&m));
+  ASSERT_EQ(manifold_num_tri(&s), manifold_num_tri(&m));
+  ASSERT_NEAR(manifold_volume(&s), 1000.0, 0.01);
+
+  manifold_destroy(&m);
+  manifold_destroy(&s);
+}
+
+// ---------- Multiple hull from points ----------
+
+static void test_hull_random_points(void) {
+  ManifoldVec3 pts[20] = {
+    {0,0,0}, {1,0,0}, {0,1,0}, {0,0,1}, {1,1,1},
+    {0.5,0.5,0}, {0.5,0,0.5}, {0,0.5,0.5}, {0.3,0.3,0.3}, {0.7,0.7,0.3},
+    {0.2,0.8,0.4}, {0.9,0.1,0.5}, {0.4,0.6,0.8}, {0.1,0.2,0.9}, {0.8,0.9,0.1},
+    {0.6,0.4,0.6}, {0.3,0.7,0.2}, {0.5,0.5,0.5}, {0.2,0.3,0.7}, {0.7,0.2,0.8}
+  };
+  Manifold h = manifold_hull_points(pts, 20);
+  ASSERT_TRUE(!manifold_is_empty(&h));
+  double vol = manifold_volume(&h);
+  ASSERT_TRUE(vol > 0.1 && vol < 1.5);
+  ASSERT_EQ(manifold_genus(&h), 0);
+  manifold_destroy(&h);
+}
+
+// ---------- Cylinder triangle count ----------
+
+static void test_cylinder_properties(void) {
+  manifold_set_circular_segments(8);
+  Manifold c = manifold_cylinder(2.0, 1.0, 1.0, 8, false);
+  ASSERT_TRUE(!manifold_is_empty(&c));
+  // Volume of cylinder: pi*r^2*h = pi*1*2 ≈ 6.28
+  ASSERT_NEAR(manifold_volume(&c), MANIFOLD_PI * 2.0, 1.0);
+  // Cylinder should have genus 0
+  ASSERT_EQ(manifold_genus(&c), 0);
+
+  manifold_quality_reset();
+  manifold_destroy(&c);
+}
+
 // ============== Main ==============
 
 int main(void) {
@@ -2132,7 +2232,14 @@ int main(void) {
   RUN_TEST(boolean_identical);
   RUN_TEST(extrude_l_shape);
   RUN_TEST(hull_sphere);
+  RUN_TEST(empty_constructor);
+  RUN_TEST(cube_tri_count);
+  RUN_TEST(tetra_properties);
+  RUN_TEST(from_mesh_roundtrip);
+  RUN_TEST(scale_topology);
+  RUN_TEST(hull_random_points);
+  RUN_TEST(cylinder_properties);
 
-  printf("\n=== All %d tests passed! ===\n", 110);
+  printf("\n=== All %d tests passed! ===\n", 119);
   return 0;
 }
