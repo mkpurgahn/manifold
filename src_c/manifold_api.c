@@ -278,6 +278,23 @@ Manifold manifold_cylinder(double height, double radiusLow, double radiusHigh,
   return m;
 }
 
+// Warp
+Manifold manifold_warp(const Manifold *m,
+                       void (*warpFn)(double *x, double *y, double *z, void *ctx),
+                       void *ctx) {
+  Manifold out;
+  manifold_copy(&out, m);
+  for (size_t i = 0; i < out.impl.vertPos.len; i++) {
+    warpFn(&out.impl.vertPos.data[i].x,
+           &out.impl.vertPos.data[i].y,
+           &out.impl.vertPos.data[i].z, ctx);
+  }
+  manifold_impl_calculate_bbox(&out.impl);
+  manifold_impl_set_epsilon(&out.impl, -1.0, false);
+  manifold_impl_set_normals_and_coplanar(&out.impl);
+  return out;
+}
+
 Manifold manifold_hull(const Manifold *m) {
   Manifold result;
   manifold_convex_hull(&result.impl, m->impl.vertPos.data, m->impl.vertPos.len);
@@ -297,4 +314,58 @@ Manifold manifold_level_set(double (*sdf)(double x, double y, double z, void *ct
   manifold_impl_level_set(&m.impl, sdf, ctx, bounds, edgeLength, level);
   (void)tolerance;
   return m;
+}
+
+// Mesh data access
+const ManifoldVec3 *manifold_get_vert_positions(const Manifold *m, size_t *count) {
+  if (count) *count = m->impl.vertPos.len;
+  return m->impl.vertPos.data;
+}
+
+void manifold_get_triangles(const Manifold *m, ManifoldIVec3 *out, size_t *count) {
+  size_t numTri = manifold_impl_num_tri(&m->impl);
+  if (count) *count = numTri;
+  if (!out) return;
+  for (size_t i = 0; i < numTri; i++) {
+    int base = (int)(i * 3);
+    out[i].x = m->impl.halfedge.data[base].startVert;
+    out[i].y = m->impl.halfedge.data[base + 1].startVert;
+    out[i].z = m->impl.halfedge.data[base + 2].startVert;
+  }
+}
+
+void manifold_get_mesh(const Manifold *m,
+                       float **vertProps, size_t *numVert, size_t *numProp,
+                       int **triVerts, size_t *numTri) {
+  size_t nv = m->impl.vertPos.len;
+  size_t nt = manifold_impl_num_tri(&m->impl);
+  size_t np = 3; // just positions for now
+
+  if (numVert) *numVert = nv;
+  if (numProp) *numProp = np;
+  if (numTri) *numTri = nt;
+
+  if (vertProps) {
+    *vertProps = (float *)malloc(nv * np * sizeof(float));
+    for (size_t i = 0; i < nv; i++) {
+      (*vertProps)[i * np + 0] = (float)m->impl.vertPos.data[i].x;
+      (*vertProps)[i * np + 1] = (float)m->impl.vertPos.data[i].y;
+      (*vertProps)[i * np + 2] = (float)m->impl.vertPos.data[i].z;
+    }
+  }
+
+  if (triVerts) {
+    *triVerts = (int *)malloc(nt * 3 * sizeof(int));
+    for (size_t i = 0; i < nt; i++) {
+      int base = (int)(i * 3);
+      (*triVerts)[i * 3 + 0] = m->impl.halfedge.data[base].startVert;
+      (*triVerts)[i * 3 + 1] = m->impl.halfedge.data[base + 1].startVert;
+      (*triVerts)[i * 3 + 2] = m->impl.halfedge.data[base + 2].startVert;
+    }
+  }
+}
+
+void manifold_free_mesh(float *vertProps, int *triVerts) {
+  free(vertProps);
+  free(triVerts);
 }

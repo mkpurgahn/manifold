@@ -60,11 +60,28 @@ Manifold manifold_level_set(double (*sdf)(double x, double y, double z, void *ct
                             void *ctx, ManifoldBox bounds, double edgeLength,
                             double level, double tolerance);
 
+// ---------- Deformations ----------
+Manifold manifold_warp(const Manifold *m,
+                       void (*warpFn)(double *x, double *y, double *z, void *ctx),
+                       void *ctx);
+
 // ---------- Quality ----------
 int manifold_get_circular_segments(double radius);
 void manifold_set_circular_segments(int n);
 void manifold_set_min_circular_angle(double angle);
 void manifold_set_min_circular_edge_length(double length);
 void manifold_quality_reset(void);
+
+// ---------- Mesh Data Access ----------
+// Get raw vertex positions (read-only)
+const ManifoldVec3 *manifold_get_vert_positions(const Manifold *m, size_t *count);
+// Get triangle indices as triples of halfedge start vertices
+void manifold_get_triangles(const Manifold *m, ManifoldIVec3 *out, size_t *count);
+// Get mesh as MeshGL-like flat arrays
+void manifold_get_mesh(const Manifold *m,
+                       float **vertProps, size_t *numVert, size_t *numProp,
+                       int **triVerts, size_t *numTri);
+// Free mesh data returned by manifold_get_mesh
+void manifold_free_mesh(float *vertProps, int *triVerts);
 
 #endif // MANIFOLD_API_H

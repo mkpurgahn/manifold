@@ -506,6 +506,61 @@ static void test_hull_points(void) {
   manifold_destroy(&hull);
 }
 
+// ============== Mesh Access Tests ==============
+
+static void warp_double_x(double *x, double *y, double *z, void *ctx) {
+  (void)y; (void)z; (void)ctx;
+  *x *= 2.0;
+}
+
+static void test_warp(void) {
+  Manifold cube = manifold_cube(manifold_vec3(1, 1, 1), true);
+
+  Manifold warped = manifold_warp(&cube, warp_double_x, NULL);
+  ASSERT_NEAR(manifold_volume(&warped), 2.0, 0.01);  // volume should double
+
+  ManifoldBox bb = manifold_bounding_box(&warped);
+  ASSERT_NEAR(bb.min.x, -1.0, 0.01);  // was -0.5, now -1.0
+  ASSERT_NEAR(bb.max.x, 1.0, 0.01);
+
+  manifold_destroy(&cube);
+  manifold_destroy(&warped);
+}
+
+static void test_mesh_access(void) {
+  Manifold m = manifold_cube(manifold_vec3(1, 1, 1), false);
+
+  size_t count;
+  const ManifoldVec3 *verts = manifold_get_vert_positions(&m, &count);
+  ASSERT_EQ(count, (size_t)8);
+  ASSERT_TRUE(verts != NULL);
+
+  size_t numTri;
+  manifold_get_triangles(&m, NULL, &numTri);
+  ASSERT_EQ(numTri, (size_t)12);
+
+  ManifoldIVec3 *tris = (ManifoldIVec3 *)malloc(numTri * sizeof(ManifoldIVec3));
+  manifold_get_triangles(&m, tris, NULL);
+  // All vertex indices should be valid
+  for (size_t i = 0; i < numTri; i++) {
+    ASSERT_TRUE(tris[i].x >= 0 && tris[i].x < (int)count);
+    ASSERT_TRUE(tris[i].y >= 0 && tris[i].y < (int)count);
+    ASSERT_TRUE(tris[i].z >= 0 && tris[i].z < (int)count);
+  }
+  free(tris);
+
+  float *vertProps;
+  int *triVerts;
+  size_t nv, np, nt;
+  manifold_get_mesh(&m, &vertProps, &nv, &np, &triVerts, &nt);
+  ASSERT_EQ(nv, (size_t)8);
+  ASSERT_EQ(np, (size_t)3);
+  ASSERT_EQ(nt, (size_t)12);
+  manifold_free_mesh(vertProps, triVerts);
+
+  manifold_destroy(&m);
+}
+
 // ============== Main ==============
 
 int main(void) {
@@ -565,6 +620,10 @@ int main(void) {
   RUN_TEST(hull_cube);
   RUN_TEST(hull_points);
 
-  printf("\n=== All %d tests passed! ===\n", 29);
+  printf("\nMesh Access:\n");
+  RUN_TEST(warp);
+  RUN_TEST(mesh_access);
+
+  printf("\n=== All %d tests passed! ===\n", 31);
   return 0;
 }
