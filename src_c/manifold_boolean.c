@@ -670,37 +670,6 @@ static VecEdgePos *newedgemap_get_or_create(NewEdgeMap *map,
 
 // ============== Result construction ==============
 
-// Pair up edge positions into halfedges
-typedef void (*PairUpCallback)(ManifoldHalfedge e, void *ctx);
-
-static void pair_up(EdgePos *edges, size_t count, PairUpCallback cb, void *ctx) {
-  if (count == 0) return;
-  if (count % 2 != 0) return;  // non-manifold
-  size_t nEdges = count / 2;
-
-  // Partition: starts first, ends second
-  EdgePos *temp = (EdgePos *)malloc(count * sizeof(EdgePos));
-  size_t si = 0, ei = nEdges;
-  for (size_t i = 0; i < count; i++) {
-    if (edges[i].isStart) temp[si++] = edges[i];
-    else temp[ei++] = edges[i];
-  }
-  if (si != nEdges) {
-    free(temp);
-    return;  // non-manifold
-  }
-
-  // Sort each half
-  qsort(temp, nEdges, sizeof(EdgePos), edgepos_cmp);
-  qsort(temp + nEdges, nEdges, sizeof(EdgePos), edgepos_cmp);
-
-  for (size_t i = 0; i < nEdges; i++) {
-    ManifoldHalfedge he = {temp[i].vert, temp[i + nEdges].vert, -1, 0};
-    cb(he, ctx);
-  }
-  free(temp);
-}
-
 // Add new edge verts from intersections
 static void add_new_edge_verts(EdgeMap *edgesP,
                                 NewEdgeMap *edgesNew,
