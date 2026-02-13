@@ -105,6 +105,13 @@ Manifold manifold_empty(void) {
   return m;
 }
 
+Manifold manifold_invalid(void) {
+  Manifold m;
+  manifold_impl_init(&m.impl);
+  m.impl.status = MANIFOLD_ERROR_INVALID_CONSTRUCTION;
+  return m;
+}
+
 Manifold manifold_tetrahedron(void) {
   Manifold m;
   manifold_impl_tetrahedron(&m.impl);
@@ -136,7 +143,8 @@ Manifold manifold_translate(const Manifold *m, ManifoldVec3 v) {
     out.impl.vertPos.data[i] = vec3_add(out.impl.vertPos.data[i], v);
   }
   manifold_impl_calculate_bbox(&out.impl);
-  manifold_impl_set_epsilon(&out.impl, -1, false);
+  // Preserve inherited epsilon; bbox may grow so use max of inherited and bbox-based
+  manifold_impl_set_epsilon(&out.impl, out.impl.epsilon, false);
   return out;
 }
 
@@ -181,7 +189,13 @@ Manifold manifold_scale(const Manifold *m, ManifoldVec3 v) {
         vec3_mul(out.impl.vertNormal.data[i], signV));
   }
   manifold_impl_calculate_bbox(&out.impl);
-  manifold_impl_set_epsilon(&out.impl, -1, false);
+  // Scale epsilon by the spectral norm of the 3x3 scale matrix (matches C++)
+  ManifoldMat3 scaleMat;
+  scaleMat.cols[0] = manifold_vec3(v.x, 0, 0);
+  scaleMat.cols[1] = manifold_vec3(0, v.y, 0);
+  scaleMat.cols[2] = manifold_vec3(0, 0, v.z);
+  out.impl.epsilon *= manifold_spectral_norm(scaleMat);
+  manifold_impl_set_epsilon(&out.impl, out.impl.epsilon, false);
   return out;
 }
 
@@ -207,7 +221,18 @@ Manifold manifold_rotate(const Manifold *m, double xDeg, double yDeg,
   for (size_t i = 0; i < out.impl.vertPos.len; i++) {
     out.impl.vertPos.data[i] = mat3_mul_vec3(rot, out.impl.vertPos.data[i]);
   }
+  // Transform normals with rotation matrix
+  ManifoldMat3 normalXf = mat3_inverse(mat3_transpose(rot));
+  for (size_t i = 0; i < out.impl.faceNormal.len; i++) {
+    out.impl.faceNormal.data[i] = vec3_normalize(
+        mat3_mul_vec3(normalXf, out.impl.faceNormal.data[i]));
+  }
+  for (size_t i = 0; i < out.impl.vertNormal.len; i++) {
+    out.impl.vertNormal.data[i] = vec3_normalize(
+        mat3_mul_vec3(normalXf, out.impl.vertNormal.data[i]));
+  }
   manifold_impl_calculate_bbox(&out.impl);
+  manifold_impl_set_epsilon(&out.impl, out.impl.epsilon, false);
   return out;
 }
 

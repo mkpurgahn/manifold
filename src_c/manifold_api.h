@@ -20,6 +20,7 @@ void manifold_copy(Manifold *dst, const Manifold *src);
 
 // ---------- Constructors ----------
 Manifold manifold_empty(void);
+Manifold manifold_invalid(void);  // Returns a manifold with InvalidConstruction status
 Manifold manifold_tetrahedron(void);
 Manifold manifold_cube(ManifoldVec3 size, bool center);
 Manifold manifold_sphere(double radius, int circularSegments);
