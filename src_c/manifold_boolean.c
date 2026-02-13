@@ -858,6 +858,76 @@ static void face2tri(ManifoldImpl *impl, const ManifoldVecInt *faceEdge,
       vec_ivec3_push(&triProp, prop);
       vec_vec3_push(&triNormal, normal);
       vec_triref_push(&triRef, ref);
+    } else if (numEdge == 4) {
+      // Quad: try both diagonals, pick the one that produces CCW triangles
+      // with shorter diagonal (matching C++ Face2Tri quad case)
+      ManifoldMat2x3 projection = manifold_get_axis_aligned_projection(normal);
+      ManifoldHalfedge *he = impl->halfedge.data + firstEdge;
+
+      // Assemble into loop order
+      int **loops = NULL;
+      int *loopLens = NULL;
+      int numLoops = assemble_halfedge_loops(he, numEdge, &loops, &loopLens);
+      if (numLoops == 0 || loopLens[0] != 4) {
+        for (int li = 0; li < numLoops; li++) free(loops[li]);
+        free(loops); free(loopLens);
+        continue;
+      }
+      int q[4] = {loops[0][0], loops[0][1], loops[0][2], loops[0][3]};
+      for (int li = 0; li < numLoops; li++) free(loops[li]);
+      free(loops); free(loopLens);
+
+      // Get projected 2D positions for CCW check
+      ManifoldVec2 pts[4];
+      for (int k = 0; k < 4; k++) {
+        int sv = he[q[k]].startVert;
+        pts[k] = mat2x3_mul_vec3(projection, impl->vertPos.data[sv]);
+      }
+      double eps = impl->epsilon;
+
+      // Two possible triangulations
+      // Choice 0: (q[0],q[1],q[2]) + (q[0],q[2],q[3])
+      // Choice 1: (q[1],q[2],q[3]) + (q[0],q[1],q[3])
+      double ccw00 = vec2_cross(vec2_sub(pts[1], pts[0]), vec2_sub(pts[2], pts[0]));
+      double ccw01 = vec2_cross(vec2_sub(pts[2], pts[0]), vec2_sub(pts[3], pts[0]));
+      double ccw10 = vec2_cross(vec2_sub(pts[2], pts[1]), vec2_sub(pts[3], pts[1]));
+      double ccw11 = vec2_cross(vec2_sub(pts[1], pts[0]), vec2_sub(pts[3], pts[0]));
+
+      int choice = 0;
+      if (!(ccw00 >= -eps && ccw01 >= -eps)) {
+        choice = 1;
+      } else if (ccw10 >= -eps && ccw11 >= -eps) {
+        // Both valid: pick shorter diagonal
+        ManifoldVec3 d0 = vec3_sub(impl->vertPos.data[he[q[0]].startVert],
+                                   impl->vertPos.data[he[q[2]].startVert]);
+        ManifoldVec3 d1 = vec3_sub(impl->vertPos.data[he[q[1]].startVert],
+                                   impl->vertPos.data[he[q[3]].startVert]);
+        if (vec3_dot(d0, d0) > vec3_dot(d1, d1)) choice = 1;
+      }
+
+      int t0a, t0b, t0c, t1a, t1b, t1c;
+      if (choice == 0) {
+        t0a = q[0]; t0b = q[1]; t0c = q[2];
+        t1a = q[0]; t1b = q[2]; t1c = q[3];
+      } else {
+        t0a = q[1]; t0b = q[2]; t0c = q[3];
+        t1a = q[0]; t1b = q[1]; t1c = q[3];
+      }
+
+      // Add both triangles
+      for (int t = 0; t < 2; t++) {
+        int ea = t == 0 ? t0a : t1a;
+        int eb = t == 0 ? t0b : t1b;
+        int ec = t == 0 ? t0c : t1c;
+        ManifoldIVec3 triV = manifold_ivec3(
+            he[ea].startVert, he[eb].startVert, he[ec].startVert);
+        ManifoldIVec3 triP = manifold_ivec3(
+            he[ea].propVert, he[eb].propVert, he[ec].propVert);
+        vec_ivec3_push(&triVerts, triV);
+        vec_ivec3_push(&triProp, triP);
+        vec_vec3_push(&triNormal, normal);
+        vec_triref_push(&triRef, ref);
+      }
     } else {
       // General case: assemble into loops, project, and triangulate
       ManifoldMat2x3 projection = manifold_get_axis_aligned_projection(normal);
@@ -901,8 +971,221 @@ static void face2tri(ManifoldImpl *impl, const ManifoldVecInt *faceEdge,
       // Triangulate (handles multiple loops = polygon with holes)
       ManifoldVecIVec3 tris = {0};
       if (numLoops == 1) {
-        tris = manifold_triangulate_polygon(allPts, NULL, (size_t)polySizes[0]);
+        int polyLen = polySizes[0];
+        // Check for pinch points (vertex appears twice in the loop)
+        int pinchI = -1, pinchJ = -1;
+        for (int pi = 0; pi < polyLen && pinchI < 0; pi++) {
+          int svI = impl->halfedge.data[firstEdge + heMap[pi]].startVert;
+          for (int pj = pi + 1; pj < polyLen; pj++) {
+            int svJ = impl->halfedge.data[firstEdge + heMap[pj]].startVert;
+            if (svI == svJ) { pinchI = pi; pinchJ = pj; break; }
+          }
+        }
+        if (pinchI >= 0) {
+          // Split at pinch point into two sub-polygons and triangulate each
+          // Sub1: positions [pinchI .. pinchJ)
+          int len1 = pinchJ - pinchI;
+          if (len1 >= 3) {
+            ManifoldVecIVec3 sub = manifold_triangulate_polygon(
+                allPts + pinchI, NULL, (size_t)len1);
+            for (size_t k = 0; k < sub.len; k++) {
+              sub.data[k].x += pinchI;
+              sub.data[k].y += pinchI;
+              sub.data[k].z += pinchI;
+              vec_ivec3_push(&tris, sub.data[k]);
+            }
+            free(sub.data);
+          }
+          // Sub2: positions [pinchJ .. polyLen) + [0 .. pinchI]
+          int len2 = polyLen - pinchJ + pinchI;
+          if (len2 >= 3) {
+            ManifoldVec2 *pts2 = (ManifoldVec2 *)malloc((size_t)len2 * sizeof(ManifoldVec2));
+            int *posMap = (int *)malloc((size_t)len2 * sizeof(int));
+            int k2 = 0;
+            for (int pi = pinchJ; pi < polyLen; pi++) {
+              pts2[k2] = allPts[pi]; posMap[k2] = pi; k2++;
+            }
+            for (int pi = 0; pi < pinchI; pi++) {
+              pts2[k2] = allPts[pi]; posMap[k2] = pi; k2++;
+            }
+            ManifoldVecIVec3 sub = manifold_triangulate_polygon(pts2, NULL, (size_t)len2);
+            for (size_t k = 0; k < sub.len; k++) {
+              ManifoldIVec3 t = sub.data[k];
+              t.x = posMap[t.x]; t.y = posMap[t.y]; t.z = posMap[t.z];
+              vec_ivec3_push(&tris, t);
+            }
+            free(sub.data); free(pts2); free(posMap);
+          }
+        } else {
+          tris = manifold_triangulate_polygon(allPts, NULL, (size_t)polyLen);
+        }
+#ifdef MANIFOLD_BOOLEAN_DEBUG
+        fprintf(stderr, "DEBUG face %zu (single loop, %d pts, pinch=%d) → %zu tris\n",
+            face, polyLen, pinchI, tris.len);
+#endif
       } else {
+        // Multiple loops: check if all are already triangles
+        bool allTriangles = true;
+        for (int li = 0; li < numLoops; li++) {
+          if (loopLens[li] != 3) { allTriangles = false; break; }
+        }
+        if (allTriangles) {
+          // Each loop is a triangle - emit directly
+          for (int li = 0; li < numLoops; li++) {
+            int *lp = loops[li];
+            ManifoldIVec3 triV = manifold_ivec3(
+                impl->halfedge.data[firstEdge + lp[0]].startVert,
+                impl->halfedge.data[firstEdge + lp[1]].startVert,
+                impl->halfedge.data[firstEdge + lp[2]].startVert);
+            ManifoldIVec3 triP = manifold_ivec3(
+                impl->halfedge.data[firstEdge + lp[0]].propVert,
+                impl->halfedge.data[firstEdge + lp[1]].propVert,
+                impl->halfedge.data[firstEdge + lp[2]].propVert);
+            vec_ivec3_push(&triVerts, triV);
+            vec_ivec3_push(&triProp, triP);
+            vec_vec3_push(&triNormal, normal);
+            vec_triref_push(&triRef, ref);
+          }
+          for (int li = 0; li < numLoops; li++) free(loops[li]);
+          free(loops); free(loopLens);
+          free(allPts); free(heMap); free(polySizes);
+          continue;
+        }
+        // Check if any loops share vertices (pinch points) OR if any
+        // single loop has repeated vertices (within-loop pinch)
+        bool sharedVert = false;
+        {
+          int totalVerts = 0;
+          for (int li = 0; li < numLoops; li++) totalVerts += loopLens[li];
+          int *allVerts = (int *)malloc((size_t)totalVerts * sizeof(int));
+          int vi = 0;
+          for (int li = 0; li < numLoops; li++) {
+            for (int pi = 0; pi < loopLens[li]; pi++) {
+              allVerts[vi++] = impl->halfedge.data[firstEdge + loops[li][pi]].startVert;
+            }
+          }
+          // Check for any duplicate vertex IDs
+          for (int a = 0; a < totalVerts && !sharedVert; a++) {
+            for (int b = a + 1; b < totalVerts; b++) {
+              if (allVerts[a] == allVerts[b]) {
+                sharedVert = true; break;
+              }
+            }
+          }
+          free(allVerts);
+        }
+        if (sharedVert) {
+          // Loops have shared/repeated vertices — triangulate each independently
+          // with recursive pinch-point splitting
+          for (int li = 0; li < numLoops; li++) {
+            int loopLen = loopLens[li];
+            ManifoldVec2 *loopPts = (ManifoldVec2 *)malloc((size_t)loopLen * sizeof(ManifoldVec2));
+            int *loopHeMap = (int *)malloc((size_t)loopLen * sizeof(int));
+            int *loopVertIds = (int *)malloc((size_t)loopLen * sizeof(int));
+            for (int pi = 0; pi < loopLen; pi++) {
+              int localEdge = loops[li][pi];
+              int sv = impl->halfedge.data[firstEdge + localEdge].startVert;
+              loopPts[pi] = mat2x3_mul_vec3(projection, impl->vertPos.data[sv]);
+              loopHeMap[pi] = localEdge;
+              loopVertIds[pi] = sv;
+            }
+            // Check for within-loop pinch
+            int pinchI2 = -1, pinchJ2 = -1;
+            for (int a = 0; a < loopLen && pinchI2 < 0; a++) {
+              for (int b = a + 1; b < loopLen; b++) {
+                if (loopVertIds[a] == loopVertIds[b]) {
+                  pinchI2 = a; pinchJ2 = b; break;
+                }
+              }
+            }
+            if (pinchI2 >= 0) {
+              // Split at pinch and triangulate sub-polygons
+              int len1 = pinchJ2 - pinchI2;
+              if (len1 >= 3) {
+                ManifoldVecIVec3 sub = manifold_triangulate_polygon(
+                    loopPts + pinchI2, NULL, (size_t)len1);
+                for (size_t ti = 0; ti < sub.len; ti++) {
+                  ManifoldIVec3 t = sub.data[ti];
+                  int he0 = firstEdge + loopHeMap[pinchI2 + t.x];
+                  int he1 = firstEdge + loopHeMap[pinchI2 + t.y];
+                  int he2 = firstEdge + loopHeMap[pinchI2 + t.z];
+                  ManifoldIVec3 triV = manifold_ivec3(
+                      impl->halfedge.data[he0].startVert,
+                      impl->halfedge.data[he1].startVert,
+                      impl->halfedge.data[he2].startVert);
+                  ManifoldIVec3 triP = manifold_ivec3(
+                      impl->halfedge.data[he0].propVert,
+                      impl->halfedge.data[he1].propVert,
+                      impl->halfedge.data[he2].propVert);
+                  vec_ivec3_push(&triVerts, triV);
+                  vec_ivec3_push(&triProp, triP);
+                  vec_vec3_push(&triNormal, normal);
+                  vec_triref_push(&triRef, ref);
+                }
+                vec_ivec3_free(&sub);
+              }
+              int len2 = loopLen - pinchJ2 + pinchI2;
+              if (len2 >= 3) {
+                ManifoldVec2 *pts2 = (ManifoldVec2 *)malloc((size_t)len2 * sizeof(ManifoldVec2));
+                int *hm2 = (int *)malloc((size_t)len2 * sizeof(int));
+                int k2 = 0;
+                for (int pi = pinchJ2; pi < loopLen; pi++) {
+                  pts2[k2] = loopPts[pi]; hm2[k2] = loopHeMap[pi]; k2++;
+                }
+                for (int pi = 0; pi < pinchI2; pi++) {
+                  pts2[k2] = loopPts[pi]; hm2[k2] = loopHeMap[pi]; k2++;
+                }
+                ManifoldVecIVec3 sub = manifold_triangulate_polygon(pts2, NULL, (size_t)len2);
+                for (size_t ti = 0; ti < sub.len; ti++) {
+                  ManifoldIVec3 t = sub.data[ti];
+                  int he0 = firstEdge + hm2[t.x];
+                  int he1 = firstEdge + hm2[t.y];
+                  int he2 = firstEdge + hm2[t.z];
+                  ManifoldIVec3 triV = manifold_ivec3(
+                      impl->halfedge.data[he0].startVert,
+                      impl->halfedge.data[he1].startVert,
+                      impl->halfedge.data[he2].startVert);
+                  ManifoldIVec3 triP = manifold_ivec3(
+                      impl->halfedge.data[he0].propVert,
+                      impl->halfedge.data[he1].propVert,
+                      impl->halfedge.data[he2].propVert);
+                  vec_ivec3_push(&triVerts, triV);
+                  vec_ivec3_push(&triProp, triP);
+                  vec_vec3_push(&triNormal, normal);
+                  vec_triref_push(&triRef, ref);
+                }
+                vec_ivec3_free(&sub);
+                free(pts2); free(hm2);
+              }
+            } else {
+              ManifoldVecIVec3 loopTris = manifold_triangulate_polygon(loopPts, NULL, (size_t)loopLen);
+              for (size_t ti = 0; ti < loopTris.len; ti++) {
+                ManifoldIVec3 t = loopTris.data[ti];
+                int he0 = firstEdge + loopHeMap[t.x];
+                int he1 = firstEdge + loopHeMap[t.y];
+                int he2 = firstEdge + loopHeMap[t.z];
+                ManifoldIVec3 triV = manifold_ivec3(
+                    impl->halfedge.data[he0].startVert,
+                    impl->halfedge.data[he1].startVert,
+                    impl->halfedge.data[he2].startVert);
+                ManifoldIVec3 triP = manifold_ivec3(
+                    impl->halfedge.data[he0].propVert,
+                    impl->halfedge.data[he1].propVert,
+                    impl->halfedge.data[he2].propVert);
+                vec_ivec3_push(&triVerts, triV);
+                vec_ivec3_push(&triProp, triP);
+                vec_vec3_push(&triNormal, normal);
+                vec_triref_push(&triRef, ref);
+              }
+              vec_ivec3_free(&loopTris);
+            }
+            free(loopPts); free(loopHeMap); free(loopVertIds);
+          }
+          for (int li = 0; li < numLoops; li++) free(loops[li]);
+          free(loops); free(loopLens);
+          free(allPts); free(heMap); free(polySizes);
+          continue;
+        }
         // Find the outer polygon (largest absolute signed area) and put it first
         double *areas = (double *)malloc((size_t)numLoops * sizeof(double));
         int offset = 0;
@@ -1014,6 +1297,14 @@ skip_face:
   // zero-volume flaps that corrupt topology.
   {
     size_t nTri = triVerts.len;
+#ifdef MANIFOLD_BOOLEAN_DEBUG
+    fprintf(stderr, "DEBUG face2tri: %zu triangles before degenerate removal\n", nTri);
+    for (size_t i = 0; i < nTri; i++) {
+      fprintf(stderr, "  tri %zu: (%d, %d, %d) n=(%.3f,%.3f,%.3f)\n", i,
+        triVerts.data[i].x, triVerts.data[i].y, triVerts.data[i].z,
+        triNormal.data[i].x, triNormal.data[i].y, triNormal.data[i].z);
+    }
+#endif
     bool *remove = (bool *)calloc(nTri, sizeof(bool));
     if (remove) {
       for (size_t i = 0; i < nTri; i++) {
@@ -1051,6 +1342,11 @@ skip_face:
       }
       triVerts.len = triProp.len = triNormal.len = triRef.len = dst;
       free(remove);
+#ifdef MANIFOLD_BOOLEAN_DEBUG
+      if (dst < nTri) {
+        fprintf(stderr, "DEBUG: removed %zu degenerate triangles, %zu remain\n", nTri - dst, dst);
+      }
+#endif
     }
   }
 
@@ -1645,10 +1941,8 @@ static ManifoldError boolean3_result(const ManifoldBoolean3 *b3,
   }
 
 
+
   // Merge coincident vertices before face2tri to avoid degenerate polygons.
-  // The boolean creates many duplicate vertices at the same position (multiple
-  // intersection verts, duplicated P/Q verts). Merging them first simplifies
-  // the polygon faces so the ear-clipper can triangulate correctly.
   {
     int nv = (int)outR->vertPos.len;
     int *vertMap = (int *)malloc((size_t)nv * sizeof(int));
@@ -1685,7 +1979,6 @@ static ManifoldError boolean3_result(const ManifoldBoolean3 *b3,
         if (outR->halfedge.data[e].startVert != outR->halfedge.data[e].endVert) {
           if (writeIdx != e) {
             outR->halfedge.data[writeIdx] = outR->halfedge.data[e];
-            // halfedgeRef is indexed the same way
           }
           vec_triref_push(&newHalfedgeRef, halfedgeRef.data[e]);
           writeIdx++;
@@ -1707,14 +2000,12 @@ static ManifoldError boolean3_result(const ManifoldBoolean3 *b3,
     for (int f = 0; f < numFaceR; f++) {
       int nEdges = faceEdge.data[f + 1] - faceEdge.data[f];
       if (nEdges >= 3) {
-        // Compact halfedges
         int src = faceEdge.data[f];
         int dst = cleanFaceEdge.data[newNumFaceR];
         if (src != dst) {
           for (int e = 0; e < nEdges; e++) {
             outR->halfedge.data[dst + e] = outR->halfedge.data[src + e];
           }
-          // Also shift halfedgeRef
           for (int e = 0; e < nEdges; e++) {
             halfedgeRef.data[dst + e] = halfedgeRef.data[src + e];
           }
@@ -1734,12 +2025,48 @@ static ManifoldError boolean3_result(const ManifoldBoolean3 *b3,
 
   // Triangulate the faces
   faceEdge.len = (size_t)(numFaceR + 1);
+
+#ifdef MANIFOLD_BOOLEAN_DEBUG
+  // Debug: check face assembly before triangulation
+  {
+    int dbg_totalHe = faceEdge.data[numFaceR];
+    fprintf(stderr, "DEBUG face assembly: %d faces, %d halfedges\n", numFaceR, dbg_totalHe);
+    for (int f = 0; f < numFaceR && f < 30; f++) {
+      int start = faceEdge.data[f];
+      int end = faceEdge.data[f + 1];
+      fprintf(stderr, "  face %d (%d edges):", f, end - start);
+      for (int e = start; e < end; e++) {
+        ManifoldHalfedge h = outR->halfedge.data[e];
+        fprintf(stderr, " %d->%d", h.startVert, h.endVert);
+      }
+      // Check if edges form valid loops
+      int chain_breaks = 0;
+      for (int e = start; e < end; e++) {
+        int ev = outR->halfedge.data[e].endVert;
+        int found = 0;
+        for (int e2 = start; e2 < end; e2++) {
+          if (outR->halfedge.data[e2].startVert == ev) { found = 1; break; }
+        }
+        if (!found) chain_breaks++;
+      }
+      if (chain_breaks) fprintf(stderr, " [%d BREAKS]", chain_breaks);
+      fprintf(stderr, "\n");
+    }
+  }
+#endif
+
   face2tri(outR, &faceEdge, &halfedgeRef, true);
 
+#ifdef MANIFOLD_BOOLEAN_DEBUG
+  fprintf(stderr, "DEBUG: face2tri done, %zu halfedges, %zu triRef\n", outR->halfedge.len, outR->meshRelation.triRef.len);
+#endif
 
   // Reorder halfedges for determinism
   manifold_impl_reorder_halfedges(outR);
 
+#ifdef MANIFOLD_BOOLEAN_DEBUG
+  fprintf(stderr, "DEBUG: reorder done\n");
+#endif
 
   // Update references
   size_t offsetQ = manifold_mesh_id_counter;
@@ -1768,7 +2095,13 @@ static ManifoldError boolean3_result(const ManifoldBoolean3 *b3,
   }
 
   // Simplify topology
+#ifdef MANIFOLD_BOOLEAN_DEBUG
+  fprintf(stderr, "DEBUG: starting simplify_topology\n");
+#endif
   manifold_impl_simplify_topology(outR, nPv + nQv);
+#ifdef MANIFOLD_BOOLEAN_DEBUG
+  fprintf(stderr, "DEBUG: simplify done\n");
+#endif
 
 
   manifold_impl_remove_unreferenced_verts(outR);
