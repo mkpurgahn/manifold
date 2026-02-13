@@ -959,6 +959,46 @@ static void test_boolean_split(void) {
   manifold_destroy(&outside);
 }
 
+static void test_boolean_cylinder_subtract(void) {
+  // Subtract a smaller cylinder from a larger one (pipe-like shape)
+  Manifold outer = manifold_cylinder(2.0, 1.0, 1.0, 16, false);
+  Manifold inner_base = manifold_cylinder(2.0, 0.5, 0.5, 16, false);
+  Manifold inner = manifold_translate(&inner_base, manifold_vec3(0.0, 0.0, -0.1));
+  
+  Manifold result = manifold_boolean(&outer, &inner, MANIFOLD_OP_SUBTRACT);
+  ASSERT_EQ(manifold_status(&result), MANIFOLD_ERROR_NO_ERROR);
+  
+  // Volume should be pi*(R^2 - r^2)*h ≈ pi*(1-0.25)*2 ≈ 4.71
+  double vol = manifold_volume(&result);
+  ASSERT_TRUE(vol > 3.0 && vol < 6.0);
+  
+  manifold_destroy(&outer);
+  manifold_destroy(&inner_base);
+  manifold_destroy(&inner);
+  manifold_destroy(&result);
+}
+
+static void test_boolean_extrude_subtract(void) {
+  // Extrude a square, then subtract another extruded square
+  ManifoldVec2 sq1[] = {{0,0}, {2,0}, {2,2}, {0,2}};
+  int sizes[] = {4};
+  ManifoldVec2 scale1 = {1.0, 1.0};
+  Manifold a = manifold_extrude(sq1, sizes, 1, 2.0, 0, 0.0, scale1);
+  
+  ManifoldVec2 sq2[] = {{0.5, 0.5}, {1.5, 0.5}, {1.5, 1.5}, {0.5, 1.5}};
+  Manifold b = manifold_extrude(sq2, sizes, 1, 3.0, 0, 0.0, scale1);
+  
+  Manifold result = manifold_boolean(&a, &b, MANIFOLD_OP_SUBTRACT);
+  ASSERT_EQ(manifold_status(&result), MANIFOLD_ERROR_NO_ERROR);
+  
+  // Volume: 2*2*2 - 1*1*2 = 8 - 2 = 6
+  ASSERT_NEAR(manifold_volume(&result), 6.0, 0.5);
+  
+  manifold_destroy(&a);
+  manifold_destroy(&b);
+  manifold_destroy(&result);
+}
+
 // ============== Main ==============
 
 int main(void) {
@@ -1035,6 +1075,8 @@ int main(void) {
   RUN_TEST(boolean_mirrored);
   RUN_TEST(boolean_union_difference);
   RUN_TEST(boolean_split);
+  RUN_TEST(boolean_cylinder_subtract);
+  RUN_TEST(boolean_extrude_subtract);
 
   printf("\nConvex Hull:\n");
   RUN_TEST(hull_cube);
@@ -1049,6 +1091,6 @@ int main(void) {
   RUN_TEST(hull_tetrahedron);
   RUN_TEST(sdf_volume_accuracy);
 
-  printf("\n=== All %d tests passed! ===\n", 52);
+  printf("\n=== All %d tests passed! ===\n", 54);
   return 0;
 }
