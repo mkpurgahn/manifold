@@ -8,6 +8,8 @@
 
 > **⚠️ NEVER DISABLE, SKIP, OR COMMENT OUT A FAILING TEST.** A failing test means the implementation is wrong. Fix the implementation, not the test. There is no such thing as "pre-existing" or "known issue" — if it crashes, debug it and fix the root cause.
 
+> **⚠️ NEVER WEAKEN A TEST TO MAKE IT PASS.** Do not increase tolerances, loosen assertions, or make tests "more lenient" to match your broken implementation. The C++ tests define the expected behavior. If your C port doesn't match, your code is wrong — not the test. Match C++ accuracy.
+
 ---
 
 ## The Task
