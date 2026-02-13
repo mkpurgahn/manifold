@@ -10,6 +10,8 @@
 
 > **⚠️ NEVER WEAKEN A TEST TO MAKE IT PASS.** Do not increase tolerances, loosen assertions, or make tests "more lenient" to match your broken implementation. The C++ tests define the expected behavior. If your C port doesn't match, your code is wrong — not the test. Match C++ accuracy.
 
+> **You have unlimited time, unlimited iterations, and unlimited budget.** Cost, time, and iteration count are not concerns. The only thing that matters is correctness. If a problem takes 50 iterations to solve, that is fine. Do not take shortcuts because you think you're "spending too long" on something. Stay on the problem until it is solved correctly.
+
 ---
 
 ## The Task
