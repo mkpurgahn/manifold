@@ -9,6 +9,7 @@
 #include <float.h>
 
 #include "manifold_api.h"
+#include "manifold_tri_dist.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -1828,13 +1829,6 @@ static void test_Boolean_AlmostCoplanar(void) {
   manifold_destroy(&sum1); manifold_destroy(&result);
 }
 
-// ==================== More SDF Tests ====================
-
-static void test_SDF_SineSurface(void) {
-  // SineSurface SDF: inside when between sin(x)+sin(y) ± 0.5
-  // Skip for now - requires complex SDF
-}
-
 // ==================== Samples Tests ====================
 
 static void test_Samples_Knot13(void) {
@@ -2339,6 +2333,336 @@ static void test_CBIND_polygons(void) {
   manifold_destroy(&ext);
 }
 
+// ==================== More Tests: Properties ====================
+
+static void test_Properties_MingapAfterTransformations(void) {
+  Manifold a = manifold_sphere(1, 512);
+  Manifold ar = manifold_rotate(&a, 30, 30, 30);
+  Manifold b_base = manifold_sphere(1, 512);
+  Manifold bs = manifold_scale(&b_base, (ManifoldVec3){3, 1, 1});
+  Manifold br = manifold_rotate(&bs, 0, 90, 45);
+  Manifold bt = manifold_translate(&br, (ManifoldVec3){3, 0, 0});
+  double distance = manifold_min_gap(&ar, &bt, 1.1);
+  EXPECT_NEAR(distance, 1.0, 0.001);
+  manifold_destroy(&a); manifold_destroy(&ar);
+  manifold_destroy(&b_base); manifold_destroy(&bs);
+  manifold_destroy(&br); manifold_destroy(&bt);
+}
+
+static void test_Properties_MinGapAfterTransformationsOutOfBounds(void) {
+  Manifold a = manifold_sphere(1, 512);
+  Manifold ar = manifold_rotate(&a, 30, 30, 30);
+  Manifold b_base = manifold_sphere(1, 512);
+  Manifold bs = manifold_scale(&b_base, (ManifoldVec3){3, 1, 1});
+  Manifold br = manifold_rotate(&bs, 0, 90, 45);
+  Manifold bt = manifold_translate(&br, (ManifoldVec3){3, 0, 0});
+  double distance = manifold_min_gap(&ar, &bt, 0.95);
+  EXPECT_NEAR(distance, 0.95, 0.001);
+  manifold_destroy(&a); manifold_destroy(&ar);
+  manifold_destroy(&b_base); manifold_destroy(&bs);
+  manifold_destroy(&br); manifold_destroy(&bt);
+}
+
+// ==================== Triangle Distance Tests ====================
+
+static void test_Properties_TriangleDistanceClosestPointsOnVertices(void) {
+  ManifoldVec3 p[3] = {{-1, 0, 0}, {1, 0, 0}, {0, 1, 0}};
+  ManifoldVec3 q[3] = {{2, 0, 0}, {4, 0, 0}, {3, 1, 0}};
+  double distance = manifold_distance_tri_tri_squared(p, q);
+  EXPECT_FLOAT_EQ(distance, 1);
+}
+
+static void test_Properties_TriangleDistanceClosestPointOnEdge(void) {
+  ManifoldVec3 p[3] = {{-1, 0, 0}, {1, 0, 0}, {0, 1, 0}};
+  ManifoldVec3 q[3] = {{-1, 2, 0}, {1, 2, 0}, {0, 3, 0}};
+  double distance = manifold_distance_tri_tri_squared(p, q);
+  EXPECT_FLOAT_EQ(distance, 1);
+}
+
+static void test_Properties_TriangleDistanceClosestPointOnEdge2(void) {
+  ManifoldVec3 p[3] = {{-1, 0, 0}, {1, 0, 0}, {0, 1, 0}};
+  ManifoldVec3 q[3] = {{1, 1, 0}, {3, 1, 0}, {2, 2, 0}};
+  double distance = manifold_distance_tri_tri_squared(p, q);
+  EXPECT_FLOAT_EQ(distance, 0.5);
+}
+
+static void test_Properties_TriangleDistanceClosestPointOnFace(void) {
+  ManifoldVec3 p[3] = {{-1, 0, 0}, {1, 0, 0}, {0, 1, 0}};
+  ManifoldVec3 q[3] = {{-1, 2, -0.5}, {1, 2, -0.5}, {0, 2, 1.5}};
+  double distance = manifold_distance_tri_tri_squared(p, q);
+  EXPECT_FLOAT_EQ(distance, 1);
+}
+
+static void test_Properties_TriangleDistanceOverlapping(void) {
+  ManifoldVec3 p[3] = {{-1, 0, 0}, {1, 0, 0}, {0, 1, 0}};
+  ManifoldVec3 q[3] = {{-1, 0, 0}, {1, 0.5, 0}, {0, 1, 0}};
+  double distance = manifold_distance_tri_tri_squared(p, q);
+  EXPECT_FLOAT_EQ(distance, 0);
+}
+
+// ==================== Boolean SimplifyCracks ====================
+
+static void simplify_cracks_warp(double *x, double *y, double *z, void *ctx) {
+  (void)z; (void)ctx;
+  *y += *x - (*x) * (*x) / 100.0;
+}
+
+static void test_Boolean_SimplifyCracks(void) {
+  Manifold cylinder = manifold_cylinder(2, 50, 50, 180, false);
+  Manifold cr = manifold_rotate(&cylinder, -89.999999999999, 0, 0);
+  Manifold ct = manifold_translate(&cr, (ManifoldVec3){50, 0, 50});
+  Manifold cube = manifold_cube((ManifoldVec3){100, 2, 50}, false);
+  Manifold sum = manifold_union(&ct, &cube);
+  Manifold refined = manifold_refine_to_length(&sum, 1);
+  Manifold deformed = manifold_warp(&refined, simplify_cracks_warp, NULL);
+  Manifold simplified = manifold_simplify(&deformed, 0.005);
+
+  EXPECT_EQ(manifold_genus(&deformed), 0);
+  EXPECT_EQ(manifold_genus(&simplified), 0);
+  EXPECT_NEAR(manifold_volume(&simplified), manifold_volume(&deformed), 10);
+  EXPECT_NEAR(manifold_surface_area(&simplified),
+              manifold_surface_area(&deformed), 1);
+
+  manifold_destroy(&cylinder); manifold_destroy(&cr); manifold_destroy(&ct);
+  manifold_destroy(&cube); manifold_destroy(&sum); manifold_destroy(&refined);
+  manifold_destroy(&deformed); manifold_destroy(&simplified);
+}
+
+// ==================== BooleanComplex Spiral ====================
+
+static Manifold spiral_helper(int rec, double r, double add, int d) {
+  double rot = 360.0 / (kPi * r * 2) * d;
+  double rNext = r + add / 360 * rot;
+  Manifold cube = manifold_cube((ManifoldVec3){1, 1, 1}, true);
+  Manifold ct = manifold_translate(&cube, (ManifoldVec3){0, r, 0});
+  manifold_destroy(&cube);
+
+  if (rec > 0) {
+    Manifold sub = spiral_helper(rec - 1, rNext, add, d);
+    Manifold sr = manifold_rotate(&sub, 0, 0, rot);
+    manifold_destroy(&sub);
+    Manifold result = manifold_union(&sr, &ct);
+    manifold_destroy(&sr);
+    manifold_destroy(&ct);
+    return result;
+  }
+  return ct;
+}
+
+static void test_BooleanComplex_Spiral(void) {
+  Manifold result = spiral_helper(120, 25, 2, 2);
+  EXPECT_EQ(manifold_genus(&result), -120);
+  manifold_destroy(&result);
+}
+
+// ==================== SDF SineSurface ====================
+
+static double sine_surface_sdf2(double x, double y, double z, void *ctx) {
+  (void)ctx;
+  double mid = sin(x) + sin(y);
+  return (z > mid - 0.5 && z < mid + 0.5) ? 1.0 : -1.0;
+}
+
+static void test_SDF_SineSurface(void) {
+  ManifoldBox bounds = {{-1.75 * kPi, -1.75 * kPi, -1.75 * kPi},
+                        {1.75 * kPi, 1.75 * kPi, 1.75 * kPi}};
+  Manifold surface = manifold_level_set(sine_surface_sdf2, NULL, bounds, 1, 0, 0);
+  Manifold simplified = manifold_simplify(&surface, 0);
+  Manifold smoothed = manifold_smooth_out(&simplified, 180, 0);
+  Manifold refined = manifold_refine_to_length(&smoothed, 0.05);
+
+  EXPECT_EQ(manifold_status(&refined), MANIFOLD_ERROR_NO_ERROR);
+  EXPECT_EQ(manifold_genus(&refined), 38);
+  EXPECT_NEAR(manifold_volume(&refined), 107.4, 0.1);
+  EXPECT_NEAR(manifold_surface_area(&refined), 394.7, 0.1);
+
+  manifold_destroy(&surface); manifold_destroy(&simplified);
+  manifold_destroy(&smoothed); manifold_destroy(&refined);
+}
+
+// ==================== Smooth Csaszar ====================
+
+static void test_Smooth_Csaszar(void) {
+  // Csaszar polyhedron: 7 vertices, 14 triangular faces, genus 1
+  ManifoldVec3 verts[7] = {
+    {-20, -20, -10},
+    {-20,  20, -15},
+    { -5,  -8,   8},
+    {  0,   0,  30},
+    {  5,   8,   8},
+    { 20, -20, -15},
+    { 20,  20, -10}
+  };
+  ManifoldIVec3 tris[14] = {
+    {1, 3, 6}, {1, 6, 5}, {2, 5, 6}, {0, 2, 6}, {0, 6, 4}, {3, 4, 6},
+    {1, 2, 3}, {1, 4, 2}, {1, 0, 4}, {1, 5, 0}, {3, 5, 4}, {0, 5, 3},
+    {0, 3, 2}, {2, 4, 5}
+  };
+  Manifold csaszar_mesh = manifold_from_mesh(verts, 7, tris, 14);
+  Manifold smooth = manifold_smooth(&csaszar_mesh, NULL, 0);
+  Manifold refined = manifold_refine(&smooth, 100);
+  // 7 original verts → numVert ~ 2*100*100+2 = 20002 per face-pair? Actually:
+  // C++ ExpectMeshes: {70000, 140000}
+  EXPECT_NEAR(manifold_volume(&refined), 79890, 10);
+  EXPECT_NEAR(manifold_surface_area(&refined), 11950, 10);
+
+  manifold_destroy(&csaszar_mesh);
+  manifold_destroy(&smooth);
+  manifold_destroy(&refined);
+}
+
+// ==================== Smooth SineSurface ====================
+
+static void test_Smooth_SineSurface(void) {
+  ManifoldBox bounds = {{-2 * kPi + 0.2, -2 * kPi + 0.2, -2 * kPi + 0.2},
+                        {0 * kPi - 0.2, 0 * kPi - 0.2, 0 * kPi - 0.2}};
+  Manifold surface = manifold_level_set(sine_surface_sdf2, NULL, bounds, 1, 0, 0);
+  Manifold simplified = manifold_simplify(&surface, 0);
+
+  Manifold cn = manifold_calculate_normals(&simplified, 0, 50);
+  Manifold smoothed = manifold_smooth_by_normals(&cn, 0);
+  Manifold refined = manifold_refine(&smoothed, 8);
+  EXPECT_NEAR(manifold_volume(&refined), 8.09, 0.01);
+  EXPECT_NEAR(manifold_surface_area(&refined), 30.93, 0.01);
+  EXPECT_EQ(manifold_genus(&refined), 0);
+
+  Manifold smoothed1 = manifold_smooth_out(&simplified, 50, 0);
+  Manifold ref1 = manifold_refine(&smoothed1, 8);
+  EXPECT_FLOAT_EQ(manifold_volume(&ref1), manifold_volume(&refined));
+  EXPECT_FLOAT_EQ(manifold_surface_area(&ref1), manifold_surface_area(&refined));
+  EXPECT_EQ(manifold_genus(&ref1), 0);
+
+  manifold_destroy(&surface); manifold_destroy(&simplified);
+  manifold_destroy(&cn); manifold_destroy(&smoothed); manifold_destroy(&refined);
+  manifold_destroy(&smoothed1); manifold_destroy(&ref1);
+}
+
+// ==================== Minkowski Difference ====================
+
+static void test_Boolean_ConvexConvexMinkowskiDifference(void) {
+  double r = 0.1;
+  double w = 2.0;
+  Manifold sphere = manifold_sphere(r, 20);
+  Manifold cube = manifold_cube((ManifoldVec3){w, w, w}, false);
+  Manifold difference = manifold_minkowski_difference(&cube, &sphere);
+  double analyticalVolume = (w - 2*r) * (w - 2*r) * (w - 2*r);
+  double analyticalArea = 6 * (w - 2*r) * (w - 2*r);
+  EXPECT_NEAR(manifold_volume(&difference), analyticalVolume, 0.1);
+  EXPECT_NEAR(manifold_surface_area(&difference), analyticalArea, 0.1);
+  EXPECT_EQ(manifold_genus(&difference), 0);
+
+  manifold_destroy(&sphere);
+  manifold_destroy(&cube);
+  manifold_destroy(&difference);
+}
+
+// ==================== CBIND level_set_64 ====================
+
+static double ellipsoid_sdf(double x, double y, double z, void *ctx) {
+  (void)ctx;
+  double radius = 15;
+  double xscale = 3, yscale = 1, zscale = 1;
+  double xs = x / xscale, ys = y / yscale, zs = z / zscale;
+  return radius - sqrt(xs * xs + ys * ys + zs * zs);
+}
+
+static double ellipsoid_sdf_ctx(double x, double y, double z, void *ctx) {
+  double *c = (double*)ctx;
+  double radius = c[0], xscale = c[1], yscale = c[2], zscale = c[3];
+  double xs = x / xscale, ys = y / yscale, zs = z / zscale;
+  return radius - sqrt(xs * xs + ys * ys + zs * zs);
+}
+
+static void test_CBIND_level_set_64(void) {
+  double context[4] = {15.0, 3.0, 1.0, 1.0};
+  double bb = 30;
+  ManifoldBox bounds = {{-bb * 3, -bb * 1, -bb * 1}, {bb * 3, bb * 1, bb * 1}};
+  Manifold sdf_man = manifold_level_set(ellipsoid_sdf, NULL, bounds, 0.5, 0, 0);
+  Manifold sdf_man_ctx = manifold_level_set(ellipsoid_sdf_ctx, context, bounds, 0.5, 0, 0);
+
+  EXPECT_EQ(manifold_status(&sdf_man), MANIFOLD_ERROR_NO_ERROR);
+  EXPECT_EQ(manifold_status(&sdf_man_ctx), MANIFOLD_ERROR_NO_ERROR);
+
+  double a = context[0] * context[1]; // 45
+  double b = context[0] * context[2]; // 15
+  double c = context[0] * context[3]; // 15
+  double s = 4.0 * kPi *
+    pow((pow(a*b, 1.6) + pow(a*c, 1.6) + pow(b*c, 1.6)) / 3.0, 1.0/1.6);
+  double v = 4.0 * kPi / 3.0 * a * b * c;
+
+  EXPECT_FLOAT_EQ(manifold_volume(&sdf_man), manifold_volume(&sdf_man_ctx));
+  EXPECT_FLOAT_EQ(manifold_surface_area(&sdf_man),
+                  manifold_surface_area(&sdf_man_ctx));
+  EXPECT_NEAR(v, manifold_volume(&sdf_man), 0.005 * v);
+  EXPECT_NEAR(s, manifold_surface_area(&sdf_man), 0.005 * s);
+
+  manifold_destroy(&sdf_man);
+  manifold_destroy(&sdf_man_ctx);
+}
+
+// ==================== BooleanComplex Cylinders ====================
+
+static void test_BooleanComplex_Cylinders(void) {
+  Manifold rod = manifold_cylinder(1.0, 0.4, -1.0, 12, false);
+  double arrays1[][12] = {
+    {0,0,1,3,  -1,0,0,3,  0,-1,0,6},
+    {0,0,1,2,  -1,0,0,3,  0,-1,0,8},
+    {0,0,1,1,  -1,0,0,2,  0,-1,0,7},
+    {1,0,0,3,   0,1,0,2,  0, 0,1,6},
+    {0,0,1,3,  -1,0,0,3,  0,-1,0,7},
+    {0,0,1,1,  -1,0,0,3,  0,-1,0,7},
+    {1,0,0,3,   0,0,1,4,  0,-1,0,6},
+    {1,0,0,4,   0,0,1,4,  0,-1,0,6},
+  };
+  double arrays2[][12] = {
+    {1,0,0,3,   0,0,1,2,  0,-1,0,6},
+    {1,0,0,4,   0,1,0,3,  0, 0,1,6},
+    {0,0,1,2,  -1,0,0,2,  0,-1,0,7},
+    {1,0,0,3,   0,1,0,3,  0, 0,1,7},
+    {1,0,0,2,   0,1,0,3,  0, 0,1,7},
+    {1,0,0,1,   0,1,0,3,  0, 0,1,7},
+    {1,0,0,3,   0,1,0,4,  0, 0,1,7},
+    {1,0,0,3,   0,1,0,5,  0, 0,1,6},
+    {0,0,1,3,  -1,0,0,4,  0,-1,0,6},
+  };
+
+  // C++ mat3x4: mat[col][row], so mat[0] is first column
+  // C++ loop: mat[i][j] = array[j*4+i]  means col i, row j = array[j*4+i]
+  // Our ManifoldMat3x4 cols[4]: cols[col] = (row0, row1, row2)
+  Manifold m1 = manifold_empty();
+  for (int i = 0; i < 8; i++) {
+    double *a = arrays1[i];
+    ManifoldMat3x4 mat;
+    for (int ci = 0; ci < 4; ci++)
+      mat.cols[ci] = (ManifoldVec3){a[0*4+ci], a[1*4+ci], a[2*4+ci]};
+    Manifold t = manifold_transform(&rod, mat);
+    Manifold tmp = manifold_union(&m1, &t);
+    manifold_destroy(&m1); manifold_destroy(&t);
+    m1 = tmp;
+  }
+
+  Manifold m2 = manifold_empty();
+  for (int i = 0; i < 9; i++) {
+    double *a = arrays2[i];
+    ManifoldMat3x4 mat;
+    for (int ci = 0; ci < 4; ci++)
+      mat.cols[ci] = (ManifoldVec3){a[0*4+ci], a[1*4+ci], a[2*4+ci]};
+    Manifold t = manifold_transform(&rod, mat);
+    Manifold tmp = manifold_union(&m2, &t);
+    manifold_destroy(&m2); manifold_destroy(&t);
+    m2 = tmp;
+  }
+
+  Manifold result = manifold_union(&m1, &m2);
+  EXPECT_TRUE(manifold_matches_tri_normals(&result));
+  EXPECT_LE(manifold_num_degenerate_tris(&result), 12);
+
+  manifold_destroy(&rod);
+  manifold_destroy(&m1);
+  manifold_destroy(&m2);
+  manifold_destroy(&result);
+}
+
 // ==================== Main ====================
 
 int main(void) {
@@ -2360,6 +2684,13 @@ int main(void) {
   RUN_TEST(Properties_MinGapClosestPointOnEdge);
   RUN_TEST(Properties_MinGapClosestPointOnTriangleFace);
   RUN_TEST(Properties_MinGapCubeSphereOverlapping);
+  RUN_TEST(Properties_MingapAfterTransformations);
+  RUN_TEST(Properties_MinGapAfterTransformationsOutOfBounds);
+  RUN_TEST(Properties_TriangleDistanceClosestPointsOnVertices);
+  RUN_TEST(Properties_TriangleDistanceClosestPointOnEdge);
+  RUN_TEST(Properties_TriangleDistanceClosestPointOnEdge2);
+  RUN_TEST(Properties_TriangleDistanceClosestPointOnFace);
+  RUN_TEST(Properties_TriangleDistanceOverlapping);
 
   // Manifold constructor tests
   printf("--- Manifold ---\n");
@@ -2414,6 +2745,8 @@ int main(void) {
   RUN_TEST(Boolean_Precision);
   RUN_TEST(Boolean_BatchBoolean);
   RUN_TEST(Boolean_ConvexConvexMinkowski);
+  RUN_TEST(Boolean_ConvexConvexMinkowskiDifference);
+  RUN_TEST(Boolean_SimplifyCracks);
   RUN_TEST(Boolean_SelfIntersect);
   RUN_TEST(Boolean_SelfUnion);
   RUN_TEST(Boolean_Perturb1);
@@ -2450,6 +2783,7 @@ int main(void) {
   RUN_TEST(SDF_Bounds3);
   RUN_TEST(SDF_Void);
   RUN_TEST(SDF_Resize);
+  RUN_TEST(SDF_SineSurface);
 
   // Smooth tests
   printf("--- Smooth ---\n");
@@ -2460,6 +2794,8 @@ int main(void) {
   RUN_TEST(Smooth_Mirrored);
   RUN_TEST(Smooth_RefineQuads);
   RUN_TEST(Smooth_ToLength);
+  RUN_TEST(Smooth_Csaszar);
+  RUN_TEST(Smooth_SineSurface);
 
   // Samples tests
   printf("--- Samples ---\n");
@@ -2477,12 +2813,14 @@ int main(void) {
   RUN_TEST(CBIND_properties);
   RUN_TEST(CBIND_triangulation);
   RUN_TEST(CBIND_polygons);
+  RUN_TEST(CBIND_level_set_64);
 
   // Boolean Complex tests
   printf("--- BooleanComplex ---\n");
   RUN_TEST(BooleanComplex_SelfIntersect);
   RUN_TEST(BooleanComplex_Subtract);
   RUN_TEST(BooleanComplex_BooleanVolumes);
+  RUN_TEST(BooleanComplex_Cylinders);
 
   // Quality tests
   printf("--- Quality ---\n");
@@ -2496,6 +2834,7 @@ int main(void) {
   RUN_TEST(Smooth_Sphere);
   RUN_TEST(Hull_Sphere);
   RUN_TEST(Properties_ToleranceSphere);
+  RUN_TEST(BooleanComplex_Spiral);
 
   // Crash-prone under -O2 (boolean memory corruption) - run last
   RUN_TEST(Boolean_Perturb3);
