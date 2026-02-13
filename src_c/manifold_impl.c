@@ -1243,9 +1243,10 @@ void manifold_impl_simplify_topology(ManifoldImpl *impl, int firstNewVert) {
   if (!impl->halfedge.len) return;
   (void)firstNewVert;
 
-  // Only do minimal cleanup: split pinched verts and recalculate normals.
-  // Full edge collapse/swap is complex and currently causes issues with
-  // some mesh configurations. The boolean result is still valid without it,
+  // Short edge collapse and colinear edge collapse are available
+  // (impl_collapse_edge, impl_recursive_edge_swap) but currently disabled
+  // because they can produce invalid topology on some boolean results.
+  // The boolean result is still valid without simplification,
   // just has more triangles at intersection edges.
   manifold_impl_split_pinched_verts(impl);
   manifold_impl_calculate_vert_normals(impl);
@@ -1254,7 +1255,6 @@ void manifold_impl_simplify_topology(ManifoldImpl *impl, int firstNewVert) {
 void manifold_impl_remove_degenerates(ManifoldImpl *impl, int firstNewVert) {
   if (!impl->halfedge.len) return;
   (void)firstNewVert;
-  // Minimal cleanup only
   manifold_impl_split_pinched_verts(impl);
   manifold_impl_calculate_vert_normals(impl);
 }

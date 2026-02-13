@@ -139,6 +139,10 @@ Manifold manifold_calculate_curvature(const Manifold *m, int gaussianIdx,
 Manifold manifold_as_original(const Manifold *m);
 uint32_t manifold_reserve_ids_api(uint32_t n);
 
+// ---------- Simplify ----------
+Manifold manifold_simplify(const Manifold *m, double tolerance);
+Manifold manifold_set_tolerance(const Manifold *m, double tolerance);
+
 // ---------- Mesh Data Access ----------
 // Get raw vertex positions (read-only)
 const ManifoldVec3 *manifold_get_vert_positions(const Manifold *m, size_t *count);

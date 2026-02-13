@@ -709,3 +709,32 @@ Manifold manifold_as_original(const Manifold *m) {
 uint32_t manifold_reserve_ids_api(uint32_t n) {
   return manifold_reserve_ids(n);
 }
+
+Manifold manifold_simplify(const Manifold *m, double tolerance) {
+  Manifold out;
+  manifold_copy(&out, m);
+  double oldTolerance = out.impl.tolerance;
+  if (tolerance == 0) tolerance = oldTolerance;
+  if (tolerance > oldTolerance) {
+    out.impl.tolerance = tolerance;
+    manifold_impl_set_normals_and_coplanar(&out.impl);
+  }
+  manifold_impl_simplify_topology(&out.impl, 0);
+  manifold_impl_sort_geometry(&out.impl);
+  out.impl.tolerance = oldTolerance;
+  return out;
+}
+
+Manifold manifold_set_tolerance(const Manifold *m, double tolerance) {
+  Manifold out;
+  manifold_copy(&out, m);
+  if (tolerance > out.impl.tolerance) {
+    out.impl.tolerance = tolerance;
+    manifold_impl_set_normals_and_coplanar(&out.impl);
+    manifold_impl_simplify_topology(&out.impl, 0);
+    manifold_impl_sort_geometry(&out.impl);
+  } else {
+    out.impl.tolerance = fmax(out.impl.epsilon, tolerance);
+  }
+  return out;
+}
