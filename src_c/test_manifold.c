@@ -806,6 +806,7 @@ static void test_boolean_corner_union(void) {
 
 static void test_boolean_multi_coplanar(void) {
   // Sequential subtracts with coplanar faces (previously crashed)
+  // Matches C++ test: volume=0.18, surfaceArea=2.76
   Manifold c1 = manifold_cube(manifold_vec3(1.0, 1.0, 1.0), false);
   Manifold c2_base = manifold_cube(manifold_vec3(1.0, 1.0, 1.0), false);
   Manifold c2 = manifold_translate(&c2_base, manifold_vec3(0.3, 0.3, 0.0));
@@ -816,8 +817,8 @@ static void test_boolean_multi_coplanar(void) {
   Manifold c3 = manifold_translate(&c3_base, manifold_vec3(-0.3, -0.3, 0.0));
   Manifold result = manifold_boolean(&first, &c3, MANIFOLD_OP_SUBTRACT);
   ASSERT_TRUE(manifold_num_vert(&result) > 0);
-  ASSERT_TRUE(manifold_volume(&result) > 0.0);
-  ASSERT_TRUE(manifold_volume(&result) < 1.0);
+  ASSERT_NEAR(manifold_volume(&result), 0.18, 0.05);
+  ASSERT_NEAR(manifold_surface_area(&result), 2.76, 1.0);
 
   manifold_destroy(&c1);
   manifold_destroy(&c2_base);
@@ -862,6 +863,85 @@ static void test_extrude_cone(void) {
   // Volume of pyramid: base_area * height / 3 = 1 * 3 / 3 = 1
   ASSERT_NEAR(manifold_volume(&m), 1.0, 0.1);
   manifold_destroy(&m);
+}
+
+static void test_boolean_tetra(void) {
+  // Simplest boolean: subtract translated tetrahedra (from C++ test suite)
+  Manifold tetra = manifold_tetrahedron();
+  Manifold tetra2_base = manifold_tetrahedron();
+  Manifold tetra2 = manifold_translate(&tetra2_base, manifold_vec3(0.5, 0.5, 0.5));
+  Manifold result = manifold_boolean(&tetra2, &tetra, MANIFOLD_OP_SUBTRACT);
+  ASSERT_EQ(manifold_status(&result), MANIFOLD_ERROR_NO_ERROR);
+  ASSERT_TRUE(manifold_num_vert(&result) >= 4);
+  ASSERT_TRUE(manifold_volume(&result) > 0.0);
+  manifold_destroy(&tetra);
+  manifold_destroy(&tetra2_base);
+  manifold_destroy(&tetra2);
+  manifold_destroy(&result);
+}
+
+static void test_boolean_mirrored(void) {
+  // Cube minus itself (same position) should be empty or near-zero
+  Manifold cube = manifold_cube(manifold_vec3(2.0, 2.0, 2.0), true);
+  Manifold cube2 = manifold_cube(manifold_vec3(2.0, 2.0, 2.0), true);
+  Manifold result = manifold_boolean(&cube, &cube2, MANIFOLD_OP_SUBTRACT);
+  ASSERT_EQ(manifold_status(&result), MANIFOLD_ERROR_NO_ERROR);
+  // Self-subtract should give zero volume
+  ASSERT_NEAR(manifold_volume(&result), 0.0, 0.01);
+  manifold_destroy(&cube);
+  manifold_destroy(&cube2);
+  manifold_destroy(&result);
+}
+
+static void test_boolean_union_difference(void) {
+  // UnionDifference test: volume conservation
+  Manifold cube = manifold_cube(manifold_vec3(1.0, 1.0, 1.0), false);
+  Manifold cube2_base = manifold_cube(manifold_vec3(1.0, 1.0, 1.0), false);
+  Manifold cube2 = manifold_translate(&cube2_base, manifold_vec3(0.5, 0.5, 0.5));
+  
+  Manifold u = manifold_boolean(&cube, &cube2, MANIFOLD_OP_ADD);
+  Manifold d = manifold_boolean(&cube, &cube2, MANIFOLD_OP_SUBTRACT);
+  Manifold i = manifold_boolean(&cube, &cube2, MANIFOLD_OP_INTERSECT);
+  
+  double vol_a = manifold_volume(&cube);
+  double vol_b = manifold_volume(&cube2);
+  double vol_u = manifold_volume(&u);
+  double vol_d = manifold_volume(&d);
+  double vol_i = manifold_volume(&i);
+  
+  // Volume(A ∪ B) = Volume(A) + Volume(B) - Volume(A ∩ B)
+  ASSERT_NEAR(vol_u, vol_a + vol_b - vol_i, 0.2);
+  // Volume(A - B) = Volume(A) - Volume(A ∩ B)
+  ASSERT_NEAR(vol_d, vol_a - vol_i, 0.2);
+  
+  manifold_destroy(&cube);
+  manifold_destroy(&cube2_base);
+  manifold_destroy(&cube2);
+  manifold_destroy(&u);
+  manifold_destroy(&d);
+  manifold_destroy(&i);
+}
+
+static void test_boolean_split(void) {
+  // Split: cube intersection + difference = whole cube volume
+  Manifold cube = manifold_cube(manifold_vec3(2.0, 2.0, 2.0), true);
+  Manifold sphere = manifold_sphere(1.0, 4);
+  Manifold sphere_t = manifold_translate(&sphere, manifold_vec3(0.0, 0.0, 1.0));
+  
+  Manifold inside = manifold_boolean(&cube, &sphere_t, MANIFOLD_OP_INTERSECT);
+  Manifold outside = manifold_boolean(&cube, &sphere_t, MANIFOLD_OP_SUBTRACT);
+  
+  double vol_cube = manifold_volume(&cube);
+  double vol_in = manifold_volume(&inside);
+  double vol_out = manifold_volume(&outside);
+  
+  ASSERT_NEAR(vol_in + vol_out, vol_cube, 1.0);
+  
+  manifold_destroy(&cube);
+  manifold_destroy(&sphere);
+  manifold_destroy(&sphere_t);
+  manifold_destroy(&inside);
+  manifold_destroy(&outside);
 }
 
 // ============== Main ==============
@@ -934,6 +1014,12 @@ int main(void) {
   RUN_TEST(extrude_triangle);
   RUN_TEST(extrude_cone);
 
+  printf("\nAdvanced Boolean:\n");
+  RUN_TEST(boolean_tetra);
+  RUN_TEST(boolean_mirrored);
+  RUN_TEST(boolean_union_difference);
+  RUN_TEST(boolean_split);
+
   printf("\nConvex Hull:\n");
   RUN_TEST(hull_cube);
   RUN_TEST(hull_points);
@@ -947,6 +1033,6 @@ int main(void) {
   RUN_TEST(hull_tetrahedron);
   RUN_TEST(sdf_volume_accuracy);
 
-  printf("\n=== All %d tests passed! ===\n", 47);
+  printf("\n=== All %d tests passed! ===\n", 51);
   return 0;
 }
