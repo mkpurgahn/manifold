@@ -2269,6 +2269,108 @@ static void test_cylinder_cone(void) {
   manifold_destroy(&cone);
 }
 
+// ---------- Batch boolean union ----------
+
+static void test_batch_union(void) {
+  // Create 3 non-overlapping cubes and union them
+  Manifold cubes[3];
+  cubes[0] = manifold_cube(manifold_vec3(1, 1, 1), false);
+  Manifold c2 = manifold_cube(manifold_vec3(1, 1, 1), false);
+  cubes[1] = manifold_translate(&c2, manifold_vec3(2, 0, 0));
+  Manifold c3 = manifold_cube(manifold_vec3(1, 1, 1), false);
+  cubes[2] = manifold_translate(&c3, manifold_vec3(4, 0, 0));
+
+  Manifold result = manifold_batch_boolean(cubes, 3, MANIFOLD_OP_ADD);
+  ASSERT_TRUE(!manifold_is_empty(&result));
+  ASSERT_NEAR(manifold_volume(&result), 3.0, 0.1);
+
+  manifold_destroy(&c2);
+  manifold_destroy(&c3);
+  for (int i = 0; i < 3; i++) manifold_destroy(&cubes[i]);
+  manifold_destroy(&result);
+}
+
+// ---------- Warp with scaling function ----------
+
+static void warp_scale_fn(double *x, double *y, double *z, void *ctx) {
+  (void)ctx;
+  *x *= 2;
+  *y *= 2;
+  *z *= 2;
+}
+
+static void test_warp_scale(void) {
+  Manifold m = manifold_cube(manifold_vec3(1, 1, 1), false);
+  Manifold w = manifold_warp(&m, warp_scale_fn, NULL);
+  ASSERT_NEAR(manifold_volume(&w), 8.0, 0.01);
+  manifold_destroy(&m);
+  manifold_destroy(&w);
+}
+
+// ---------- Multiple mirror ----------
+
+static void test_mirror_multiple(void) {
+  Manifold c = manifold_cube(manifold_vec3(1, 1, 1), false);
+  Manifold t = manifold_translate(&c, manifold_vec3(1, 0, 0));
+
+  // Mirror across YZ
+  Manifold m1 = manifold_mirror(&t, manifold_vec3(1, 0, 0));
+  // Mirror across XZ
+  Manifold m2 = manifold_mirror(&t, manifold_vec3(0, 1, 0));
+
+  ASSERT_NEAR(manifold_volume(&m1), 1.0, 0.01);
+  ASSERT_NEAR(manifold_volume(&m2), 1.0, 0.01);
+
+  // Union original + mirrored = 2 cubes
+  Manifold u = manifold_union(&t, &m1);
+  ASSERT_NEAR(manifold_volume(&u), 2.0, 0.1);
+
+  manifold_destroy(&c);
+  manifold_destroy(&t);
+  manifold_destroy(&m1);
+  manifold_destroy(&m2);
+  manifold_destroy(&u);
+}
+
+// ---------- SetProperties test ----------
+
+static void prop_add_color(double *newProp, ManifoldVec3 pos,
+                           const double *oldProp, void *ctx) {
+  (void)oldProp;
+  (void)ctx;
+  // Set properties to position-based colors (RGB = XYZ)
+  newProp[0] = pos.x;
+  newProp[1] = pos.y;
+  newProp[2] = pos.z;
+}
+
+static void test_set_properties_color(void) {
+  Manifold m = manifold_cube(manifold_vec3(1, 1, 1), false);
+  Manifold colored = manifold_set_properties(&m, 3, prop_add_color, NULL);
+
+  ASSERT_EQ(manifold_num_prop(&colored), (size_t)3);
+  ASSERT_TRUE(manifold_num_prop_vert(&colored) > 0);
+  ASSERT_NEAR(manifold_volume(&colored), 1.0, 0.01);
+
+  manifold_destroy(&m);
+  manifold_destroy(&colored);
+}
+
+// ---------- Trim by plane at angle ----------
+
+static void test_trim_angled(void) {
+  Manifold c = manifold_cube(manifold_vec3(2, 2, 2), true);
+  // Trim by diagonal plane
+  Manifold t = manifold_trim_by_plane(&c, manifold_vec3(1, 1, 0), 0);
+  ASSERT_TRUE(!manifold_is_empty(&t));
+  double vol = manifold_volume(&t);
+  // Should be half the cube = 4
+  ASSERT_NEAR(vol, 4.0, 1.0);
+
+  manifold_destroy(&c);
+  manifold_destroy(&t);
+}
+
 // ============== Main ==============
 
 int main(void) {
@@ -2467,7 +2569,12 @@ int main(void) {
   RUN_TEST(extrude_divisions);
   RUN_TEST(mirror_axis);
   RUN_TEST(cylinder_cone);
+  RUN_TEST(batch_union);
+  RUN_TEST(warp_scale);
+  RUN_TEST(mirror_multiple);
+  RUN_TEST(set_properties_color);
+  RUN_TEST(trim_angled);
 
-  printf("\n=== All %d tests passed! ===\n", 134);
+  printf("\n=== All %d tests passed! ===\n", 140);
   return 0;
 }
