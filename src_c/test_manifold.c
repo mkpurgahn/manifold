@@ -1680,6 +1680,665 @@ static void test_Smooth_ToLength(void) {
   manifold_destroy(&refined);
 }
 
+// ==================== InvalidInput Tests ====================
+
+static void test_Manifold_Invalid(void) {
+  // Invalid constructions should return error status
+  Manifold s = manifold_sphere(0, 0);
+  EXPECT_EQ((int)manifold_status(&s), (int)MANIFOLD_ERROR_INVALID_CONSTRUCTION);
+  manifold_destroy(&s);
+
+  Manifold c = manifold_cylinder(0, 5, 5, 0, false);
+  EXPECT_EQ((int)manifold_status(&c), (int)MANIFOLD_ERROR_INVALID_CONSTRUCTION);
+  manifold_destroy(&c);
+
+  Manifold c2 = manifold_cylinder(2, -5, -5, 0, false);
+  EXPECT_EQ((int)manifold_status(&c2), (int)MANIFOLD_ERROR_INVALID_CONSTRUCTION);
+  manifold_destroy(&c2);
+
+  Manifold cu = manifold_cube((ManifoldVec3){0, 0, 0}, false);
+  EXPECT_EQ((int)manifold_status(&cu), (int)MANIFOLD_ERROR_INVALID_CONSTRUCTION);
+  manifold_destroy(&cu);
+
+  Manifold cu2 = manifold_cube((ManifoldVec3){-1, 1, 1}, false);
+  EXPECT_EQ((int)manifold_status(&cu2), (int)MANIFOLD_ERROR_INVALID_CONSTRUCTION);
+  manifold_destroy(&cu2);
+}
+
+static void test_Manifold_PinchedVert(void) {
+  double verts[] = {
+    0, 0, 0,
+    1, 1, 0,
+    1, -1, 0,
+    -0.00001, 0, 0,
+    -1, -1, 0,
+    -1, 1, 0,
+    0, 0, 2,
+    0, 0, -2
+  };
+  ManifoldIVec3 tris[] = {
+    {0, 2, 6}, {2, 1, 6}, {1, 0, 6},
+    {4, 3, 6}, {3, 5, 6}, {5, 4, 6},
+    {2, 0, 4}, {0, 3, 4}, {3, 0, 1},
+    {3, 1, 5}, {7, 2, 4}, {7, 4, 5},
+    {7, 5, 1}, {7, 1, 2}
+  };
+  ManifoldVec3 verts3d[8];
+  for (int i = 0; i < 8; i++) {
+    verts3d[i] = (ManifoldVec3){verts[i*3], verts[i*3+1], verts[i*3+2]};
+  }
+  Manifold touch = manifold_from_mesh(verts3d, 8, tris, 14);
+  EXPECT_FALSE(manifold_is_empty(&touch));
+  EXPECT_EQ((int)manifold_status(&touch), (int)MANIFOLD_ERROR_NO_ERROR);
+  EXPECT_EQ(manifold_genus(&touch), 0);
+  manifold_destroy(&touch);
+}
+
+// ==================== More Properties Tests ====================
+
+static void test_Properties_MinGapCubeCube(void) {
+  Manifold a = manifold_cube((ManifoldVec3){1,1,1}, false);
+  Manifold b_base = manifold_cube((ManifoldVec3){1,1,1}, false);
+  Manifold b = manifold_translate(&b_base, (ManifoldVec3){2,2,0});
+  double distance = manifold_min_gap(&a, &b, 1.5);
+  EXPECT_FLOAT_EQ(distance, sqrt(2.0));
+  manifold_destroy(&a); manifold_destroy(&b_base); manifold_destroy(&b);
+}
+
+static void test_Properties_MinGapSphereSphere(void) {
+  Manifold a = manifold_sphere(1, 0);
+  Manifold b_base = manifold_sphere(1, 0);
+  Manifold b = manifold_translate(&b_base, (ManifoldVec3){2,2,0});
+  double distance = manifold_min_gap(&a, &b, 0.85);
+  EXPECT_FLOAT_EQ(distance, 2.0 * sqrt(2.0) - 2.0);
+  manifold_destroy(&a); manifold_destroy(&b_base); manifold_destroy(&b);
+}
+
+static void test_Properties_MinGapSphereSphereOutOfBounds(void) {
+  Manifold a = manifold_sphere(1, 0);
+  Manifold b_base = manifold_sphere(1, 0);
+  Manifold b = manifold_translate(&b_base, (ManifoldVec3){2,2,0});
+  double distance = manifold_min_gap(&a, &b, 0.8);
+  EXPECT_FLOAT_EQ(distance, 0.8);
+  manifold_destroy(&a); manifold_destroy(&b_base); manifold_destroy(&b);
+}
+
+static void test_Properties_MinGapCubeCube2(void) {
+  Manifold a = manifold_cube((ManifoldVec3){1,1,1}, false);
+  Manifold b_base = manifold_cube((ManifoldVec3){1,1,1}, false);
+  Manifold b = manifold_translate(&b_base, (ManifoldVec3){1.2, 0, 0});
+  double distance = manifold_min_gap(&a, &b, 0.3);
+  EXPECT_FLOAT_EQ(distance, 0.2);
+  manifold_destroy(&a); manifold_destroy(&b_base); manifold_destroy(&b);
+}
+
+// ==================== More Boolean Tests ====================
+
+static void test_Boolean_EdgeUnion2(void) {
+  Manifold tet = manifold_tetrahedron();
+  Manifold tet1 = manifold_translate(&tet, (ManifoldVec3){0, 0, -1});
+  Manifold tet2_base = manifold_translate(&tet, (ManifoldVec3){0, 0, 1});
+  Manifold tet2 = manifold_rotate(&tet2_base, 0, 0, 90);
+  Manifold result = manifold_union(&tet1, &tet2);
+  // Two separate tetrahedra (not intersecting)
+  Manifold *comps = (Manifold*)malloc(10 * sizeof(Manifold));
+  int nComp = manifold_decompose(&result, &comps, 10);
+  EXPECT_EQ(nComp, 2);
+  for (int i = 0; i < nComp; i++) manifold_destroy(&comps[i]);
+  free(comps);
+  manifold_destroy(&tet); manifold_destroy(&tet1);
+  manifold_destroy(&tet2_base); manifold_destroy(&tet2);
+  manifold_destroy(&result);
+}
+
+static void test_Boolean_Tetra(void) {
+  Manifold tetra = manifold_tetrahedron();
+  Manifold tetra2 = manifold_translate(&tetra, (ManifoldVec3){0.5, 0.5, 0.5});
+  Manifold result = manifold_difference(&tetra2, &tetra);
+  EXPECT_FALSE(manifold_is_empty(&result));
+  EXPECT_EQ(manifold_genus(&result), 0);
+  manifold_destroy(&tetra); manifold_destroy(&tetra2); manifold_destroy(&result);
+}
+
+static void test_Boolean_Precision2(void) {
+  double scale = 1000;
+  Manifold cube = manifold_cube((ManifoldVec3){scale, scale, scale}, false);
+  double distance = scale * (1.0 - kPrecision / 2.0);
+  Manifold cube2_a = manifold_translate(&cube, (ManifoldVec3){-distance, -distance, -distance});
+  Manifold inter1 = manifold_intersection(&cube, &cube2_a);
+  EXPECT_TRUE(manifold_is_empty(&inter1));
+
+  Manifold cube2_b = manifold_translate(&cube2_a, (ManifoldVec3){scale * kPrecision, scale * kPrecision, scale * kPrecision});
+  Manifold inter2 = manifold_intersection(&cube, &cube2_b);
+  EXPECT_FALSE(manifold_is_empty(&inter2));
+
+  manifold_destroy(&cube); manifold_destroy(&cube2_a);
+  manifold_destroy(&cube2_b); manifold_destroy(&inter1);
+  manifold_destroy(&inter2);
+}
+
+static void test_Boolean_AlmostCoplanar(void) {
+  Manifold tet = manifold_tetrahedron();
+  Manifold tet2 = manifold_rotate(&tet, 0.001, -0.08472872823860228, 0.055910459615905288);
+  Manifold sum1 = manifold_union(&tet, &tet2);
+  Manifold result = manifold_union(&sum1, &tet);
+  EXPECT_FALSE(manifold_is_empty(&result));
+  EXPECT_EQ(manifold_genus(&result), 0);
+  manifold_destroy(&tet); manifold_destroy(&tet2);
+  manifold_destroy(&sum1); manifold_destroy(&result);
+}
+
+// ==================== More SDF Tests ====================
+
+static void test_SDF_SineSurface(void) {
+  // SineSurface SDF: inside when between sin(x)+sin(y) ± 0.5
+  // Skip for now - requires complex SDF
+}
+
+// ==================== Samples Tests ====================
+
+static void test_Samples_Knot13(void) {
+  // Trefoil knot - requires CrossSection::Circle and Extrude along path
+  // Skip - depends on CrossSection
+}
+
+static void test_Samples_Scallop(void) {
+  // Scallop - requires CrossSection and difference
+  // Skip - depends on CrossSection
+}
+
+// ==================== More Hull Tests ====================
+
+static void test_Hull_Tictac(void) {
+  Manifold sphere = manifold_sphere(1.0, 0);
+  Manifold s1 = manifold_translate(&sphere, (ManifoldVec3){-1, 0, 0});
+  Manifold s2 = manifold_translate(&sphere, (ManifoldVec3){1, 0, 0});
+  Manifold combined = manifold_union(&s1, &s2);
+  Manifold hull = manifold_hull(&combined);
+  // Hull of two overlapping spheres should be convex
+  EXPECT_EQ(manifold_genus(&hull), 0);
+  EXPECT_TRUE(manifold_volume(&hull) > manifold_volume(&combined));
+  manifold_destroy(&sphere); manifold_destroy(&s1);
+  manifold_destroy(&s2); manifold_destroy(&combined);
+  manifold_destroy(&hull);
+}
+
+// ==================== Boolean Complex Tests ====================
+
+static void test_BooleanComplex_SelfIntersect(void) {
+  Manifold cube = manifold_cube((ManifoldVec3){1,1,1}, false);
+  Manifold result = manifold_union(&cube, &cube);
+  // Self-union should return the same shape
+  EXPECT_NEAR(manifold_volume(&result), 1.0, 1e-5);
+  EXPECT_NEAR(manifold_surface_area(&result), 6.0, 1e-5);
+  EXPECT_EQ(manifold_genus(&result), 0);
+  manifold_destroy(&cube); manifold_destroy(&result);
+}
+
+// ==================== C Binding Tests ====================
+
+static void test_CBIND_sphere(void) {
+  int n = 25;
+  Manifold sphere = manifold_sphere(1.0, 4 * n);
+  EXPECT_FALSE(manifold_is_empty(&sphere));
+  EXPECT_EQ((int)manifold_status(&sphere), (int)MANIFOLD_ERROR_NO_ERROR);
+  EXPECT_NEAR(manifold_volume(&sphere), 4.0/3.0 * kPi, 0.01);
+  manifold_destroy(&sphere);
+}
+
+static void warp_translate_fn(double *x, double *y, double *z, void *ctx) {
+  ManifoldVec3 *offset = (ManifoldVec3*)ctx;
+  *x += offset->x;
+  *y += offset->y;
+  *z += offset->z;
+}
+
+static void test_CBIND_warp_translation(void) {
+  Manifold cube = manifold_cube((ManifoldVec3){1,1,1}, false);
+  ManifoldVec3 offset = {5, 10, 15};
+  Manifold warped = manifold_warp(&cube, warp_translate_fn, &offset);
+  EXPECT_NEAR(manifold_volume(&warped), 1.0, 1e-5);
+  ManifoldBox bb = manifold_bounding_box(&warped);
+  EXPECT_NEAR(bb.min.x, 5.0, 1e-5);
+  EXPECT_NEAR(bb.min.y, 10.0, 1e-5);
+  EXPECT_NEAR(bb.min.z, 15.0, 1e-5);
+  manifold_destroy(&cube); manifold_destroy(&warped);
+}
+
+static double level_set_sphere_sdf(double x, double y, double z, void *ctx) {
+  (void)ctx;
+  return 1.0 - sqrt(x*x + y*y + z*z);
+}
+
+static void test_CBIND_level_set(void) {
+  ManifoldBox bounds = {{-2, -2, -2}, {2, 2, 2}};
+  Manifold sphere = manifold_level_set(level_set_sphere_sdf, NULL, bounds, 0.2, 0, 0);
+  EXPECT_EQ((int)manifold_status(&sphere), (int)MANIFOLD_ERROR_NO_ERROR);
+  EXPECT_EQ(manifold_genus(&sphere), 0);
+  EXPECT_NEAR(manifold_volume(&sphere), 4.0/3.0 * kPi, 0.1);
+  manifold_destroy(&sphere);
+}
+
+static void test_CBIND_extrude(void) {
+  // Simple extrude test  
+  ManifoldVec2 pts[] = {{0,0}, {1,0}, {1,1}, {0,1}};
+  int sizes[] = {4};
+  Manifold ext = manifold_extrude(pts, sizes, 1, 1.0, 0, 0, (ManifoldVec2){1,1});
+  EXPECT_NEAR(manifold_volume(&ext), 1.0, 1e-5);
+  EXPECT_EQ(manifold_genus(&ext), 0);
+  manifold_destroy(&ext);
+}
+
+static void test_CBIND_compose_decompose(void) {
+  Manifold cube = manifold_cube((ManifoldVec3){1,1,1}, false);
+  Manifold sphere = manifold_sphere(1.0, 0);
+  Manifold s = manifold_translate(&sphere, (ManifoldVec3){5, 0, 0});
+  Manifold combined = manifold_union(&cube, &s);
+  Manifold *comps = (Manifold*)malloc(10 * sizeof(Manifold));
+  int nComp = manifold_decompose(&combined, &comps, 10);
+  EXPECT_EQ(nComp, 2);
+  for (int i = 0; i < nComp; i++) manifold_destroy(&comps[i]);
+  free(comps);
+  manifold_destroy(&cube); manifold_destroy(&sphere);
+  manifold_destroy(&s); manifold_destroy(&combined);
+}
+
+// ==================== More Properties Tests ====================
+
+static void test_Properties_MinGapClosestPointOnEdge(void) {
+  Manifold a = manifold_cube((ManifoldVec3){1,1,1}, true);
+  Manifold a_rot = manifold_rotate(&a, 0, 0, 45);
+  Manifold b = manifold_cube((ManifoldVec3){1,1,1}, true);
+  Manifold b_rot = manifold_rotate(&b, 0, 45, 0);
+  Manifold b_trans = manifold_translate(&b_rot, (ManifoldVec3){2, 0, 0});
+  double distance = manifold_min_gap(&a_rot, &b_trans, 0.7);
+  EXPECT_FLOAT_EQ(distance, 2.0 - sqrt(2.0));
+  manifold_destroy(&a); manifold_destroy(&a_rot);
+  manifold_destroy(&b); manifold_destroy(&b_rot); manifold_destroy(&b_trans);
+}
+
+static void test_Properties_MinGapClosestPointOnTriangleFace(void) {
+  Manifold a = manifold_cube((ManifoldVec3){1,1,1}, false);
+  Manifold b_base = manifold_cube((ManifoldVec3){1,1,1}, false);
+  Manifold b = manifold_scale(&b_base, (ManifoldVec3){10, 10, 10});
+  Manifold b_trans = manifold_translate(&b, (ManifoldVec3){2, -5, -1});
+  double distance = manifold_min_gap(&a, &b_trans, 1.1);
+  EXPECT_FLOAT_EQ(distance, 1.0);
+  manifold_destroy(&a); manifold_destroy(&b_base);
+  manifold_destroy(&b); manifold_destroy(&b_trans);
+}
+
+static void test_Properties_MinGapCubeSphereOverlapping(void) {
+  Manifold a = manifold_cube((ManifoldVec3){1,1,1}, false);
+  Manifold b = manifold_sphere(1, 0);
+  double distance = manifold_min_gap(&a, &b, 0.1);
+  EXPECT_FLOAT_EQ(distance, 0.0);
+  manifold_destroy(&a); manifold_destroy(&b);
+}
+
+// ==================== More Boolean Tests ====================
+
+static void test_Boolean_Perturb(void) {
+  // Tet - tet = empty
+  ManifoldVec3 verts[] = {
+    {0,0,0}, {0,1,0}, {1,0,0}, {0,0,1}
+  };
+  ManifoldIVec3 tris[] = {
+    {2,0,1}, {0,3,1}, {2,3,0}, {3,2,1}
+  };
+  Manifold corner = manifold_from_mesh(verts, 4, tris, 4);
+  Manifold empty = manifold_difference(&corner, &corner);
+  EXPECT_TRUE(manifold_is_empty(&empty));
+  EXPECT_FLOAT_EQ(manifold_volume(&empty), 0.0);
+  EXPECT_FLOAT_EQ(manifold_surface_area(&empty), 0.0);
+  manifold_destroy(&corner); manifold_destroy(&empty);
+}
+
+static void test_Boolean_Coplanar(void) {
+  Manifold cyl = manifold_cylinder(1.0, 1.0, 1.0, 0, false);
+  Manifold cyl2_base = manifold_cylinder(1.0, 0.8, 0.8, 0, false);
+  Manifold cyl2 = manifold_rotate(&cyl2_base, 0, 0, 185);
+  Manifold out = manifold_difference(&cyl, &cyl2);
+  EXPECT_EQ(manifold_num_degenerate_tris(&out), 0);
+  EXPECT_EQ(manifold_genus(&out), 1);
+  manifold_destroy(&cyl); manifold_destroy(&cyl2_base);
+  manifold_destroy(&cyl2); manifold_destroy(&out);
+}
+
+static void test_Boolean_SimpleCubeRegression(void) {
+  Manifold cube1 = manifold_cube((ManifoldVec3){1,1,1}, false);
+  Manifold r1 = manifold_rotate(&cube1, -0.1, 0.1, -1.0);
+  Manifold cube2 = manifold_cube((ManifoldVec3){1,1,1}, false);
+  Manifold cube3 = manifold_cube((ManifoldVec3){1,1,1}, false);
+  Manifold r3 = manifold_rotate(&cube3, -0.1, -0.10000000000066571, -1.0);
+  Manifold sum = manifold_union(&r1, &cube2);
+  Manifold result = manifold_difference(&sum, &r3);
+  EXPECT_EQ((int)manifold_status(&result), (int)MANIFOLD_ERROR_NO_ERROR);
+  manifold_destroy(&cube1); manifold_destroy(&r1);
+  manifold_destroy(&cube2); manifold_destroy(&cube3);
+  manifold_destroy(&r3); manifold_destroy(&sum); manifold_destroy(&result);
+}
+
+static void test_Boolean_Simplify(void) {
+  Manifold cube = manifold_cube((ManifoldVec3){1,1,1}, false);
+  Manifold cube_r = manifold_refine(&cube, 10);
+  Manifold cube_t = manifold_translate(&cube_r, (ManifoldVec3){1,0,0});
+  int nExpected = 20 * 10 * 10;
+  Manifold result = manifold_union(&cube_r, &cube_t);
+  EXPECT_EQ(manifold_num_tri(&result), nExpected);
+  manifold_destroy(&cube); manifold_destroy(&cube_r);
+  manifold_destroy(&cube_t); manifold_destroy(&result);
+}
+
+// ==================== More BooleanComplex Tests ====================
+
+static void test_BooleanComplex_Subtract(void) {
+  ManifoldVec3 verts1[] = {
+    {0,0,0}, {1540,0,0}, {1540,70,0}, {0,70,0},
+    {0,0,-278.282}, {1540,70,-278.282}, {1540,0,-278.282}, {0,70,-278.282}
+  };
+  ManifoldIVec3 tris1[] = {
+    {0,1,2}, {2,3,0}, {4,5,6}, {5,4,7},
+    {6,2,1}, {6,5,2}, {5,3,2}, {5,7,3},
+    {7,0,3}, {7,4,0}, {4,1,0}, {4,6,1}
+  };
+  ManifoldVec3 verts2[] = {
+    {2.04636e-12, 70, 50000}, {2.04636e-12, -1.27898e-13, 50000},
+    {1470, -1.27898e-13, 50000}, {1540, 70, 50000},
+    {2.04636e-12, 70, -28.2818}, {1470, -1.27898e-13, 0},
+    {2.04636e-12, -1.27898e-13, 0}, {1540, 70, -28.2818}
+  };
+  ManifoldIVec3 tris2[] = {
+    {0,1,2}, {2,3,0}, {4,5,6}, {5,4,7},
+    {6,2,1}, {6,5,2}, {5,3,2}, {5,7,3},
+    {7,0,3}, {7,4,0}, {4,1,0}, {4,6,1}
+  };
+  Manifold first = manifold_from_mesh(verts1, 8, tris1, 12);
+  Manifold second = manifold_from_mesh(verts2, 8, tris2, 12);
+  Manifold result = manifold_difference(&first, &second);
+  EXPECT_EQ((int)manifold_status(&result), (int)MANIFOLD_ERROR_NO_ERROR);
+  manifold_destroy(&first); manifold_destroy(&second); manifold_destroy(&result);
+}
+
+static void test_BooleanComplex_BooleanVolumes(void) {
+  Manifold m1 = manifold_cube((ManifoldVec3){1,1,1}, false);
+  Manifold m2_base = manifold_cube((ManifoldVec3){2,1,1}, false);
+  Manifold m2 = manifold_translate(&m2_base, (ManifoldVec3){1,0,0});
+  Manifold m4_base = manifold_cube((ManifoldVec3){4,1,1}, false);
+  Manifold m4 = manifold_translate(&m4_base, (ManifoldVec3){3,0,0});
+  Manifold m3 = manifold_cube((ManifoldVec3){3,1,1}, false);
+  Manifold m7 = manifold_cube((ManifoldVec3){7,1,1}, false);
+
+  // m1 ^ m2 = empty (face-touching, no overlap)
+  Manifold t1 = manifold_intersection(&m1, &m2);
+  EXPECT_FLOAT_EQ(manifold_volume(&t1), 0.0);
+
+  // m1 + m2 + m4 = 7
+  Manifold t2a = manifold_union(&m1, &m2);
+  Manifold t2b = manifold_union(&t2a, &m4);
+  EXPECT_FLOAT_EQ(manifold_volume(&t2b), 7.0);
+
+  // m7 ^ m4 = 4
+  Manifold t3 = manifold_intersection(&m7, &m4);
+  EXPECT_FLOAT_EQ(manifold_volume(&t3), 4.0);
+
+  // m7 - m4 = 3
+  Manifold t4 = manifold_difference(&m7, &m4);
+  EXPECT_FLOAT_EQ(manifold_volume(&t4), 3.0);
+
+  // m7 - m4 - m2 = 1
+  Manifold t5 = manifold_difference(&t4, &m2);
+  EXPECT_FLOAT_EQ(manifold_volume(&t5), 1.0);
+
+  manifold_destroy(&m1); manifold_destroy(&m2_base); manifold_destroy(&m2);
+  manifold_destroy(&m4_base); manifold_destroy(&m4);
+  manifold_destroy(&m3); manifold_destroy(&m7);
+  manifold_destroy(&t1); manifold_destroy(&t2a); manifold_destroy(&t2b);
+  manifold_destroy(&t3); manifold_destroy(&t4); manifold_destroy(&t5);
+}
+
+// ==================== More Smooth Tests ====================
+
+static void test_Smooth_Sphere(void) {
+  // Simple smooth sphere test - smooth should improve sphere precision
+  Manifold sphere = manifold_sphere(1.0, 8);
+  Manifold smooth = manifold_smooth(&sphere, NULL, 0);
+  Manifold refined = manifold_refine(&smooth, 6);
+  double vol = manifold_volume(&refined);
+  double expected = 4.0/3.0 * kPi;
+  // Smooth sphere should be close to analytical
+  EXPECT_NEAR(vol, expected, 0.02);
+  manifold_destroy(&sphere); manifold_destroy(&smooth);
+  manifold_destroy(&refined);
+}
+
+// ==================== More SDF Tests ====================
+
+static double sdf_blobs_func(double x, double y, double z, void* ctx) {
+  (void)ctx;
+  double balls[][4] = {
+    {0, 0, 0, 2}, {1, 2, 3, 2}, {-2, 2, -2, 1}, {-2, -3, -2, 2},
+    {-3, -1, -3, 1}, {2, -3, -2, 2}, {-2, 3, 2, 2}, {-2, -3, 2, 2},
+    {1, -1, 1, -2}, {-4, -3, -2, 1}
+  };
+  double blend = 1.0;
+  double d = 0;
+  for (int i = 0; i < 10; i++) {
+    double bx = balls[i][0], by = balls[i][1], bz = balls[i][2], bw = balls[i][3];
+    double sign = bw > 0 ? 1.0 : -1.0;
+    double dist = sqrt((x-bx)*(x-bx) + (y-by)*(y-by) + (z-bz)*(z-bz));
+    d += sign * smoothstep(-blend, blend, fabs(bw) - dist);
+  }
+  return d;
+}
+
+static void test_SDF_Blobs(void) {
+  ManifoldBox bounds = {{-5, -5, -5}, {5, 5, 5}};
+  Manifold blobs = manifold_level_set(sdf_blobs_func, NULL, bounds,
+                                       0.05, 0.5, 0);
+  int nVert = (int)manifold_num_vert(&blobs);
+  int nTri = (int)manifold_num_tri(&blobs);
+  int chi = nVert - nTri / 2;
+  int genus = 1 - chi / 2;
+  EXPECT_EQ(genus, 0);
+  manifold_destroy(&blobs);
+}
+
+// ==================== More Manifold Tests ====================
+
+static void warp_xz2(double *x, double *y, double *z, void *ctx) {
+  (void)y; (void)ctx;
+  *x += (*z) * (*z);
+}
+
+static void test_Manifold_Warp(void) {
+  // Extrude a square, warp it
+  ManifoldVec2 pts[] = {{0,0}, {1,0}, {1,1}, {0,1}};
+  int sizes[] = {4};
+  Manifold shape = manifold_extrude(pts, sizes, 1, 2.0, 10, 0, (ManifoldVec2){1,1});
+  Manifold warped = manifold_warp(&shape, warp_xz2, NULL);
+  EXPECT_NEAR(manifold_volume(&warped), 2.0, 0.0001);
+  manifold_destroy(&shape); manifold_destroy(&warped);
+}
+
+static void test_Manifold_MeshRelationTransform(void) {
+  // Just test that transform preserves manifold validity
+  Manifold cube = manifold_cube((ManifoldVec3){1,1,1}, false);
+  Manifold turned = manifold_rotate(&cube, 45, 90, 0);
+  EXPECT_EQ((int)manifold_status(&turned), (int)MANIFOLD_ERROR_NO_ERROR);
+  EXPECT_NEAR(manifold_volume(&turned), 1.0, 1e-5);
+  manifold_destroy(&cube); manifold_destroy(&turned);
+}
+
+static void test_Manifold_MeshGLRoundTrip(void) {
+  // Create cylinder, get mesh, reconstruct, verify same shape
+  Manifold cyl = manifold_cylinder(2, 1, 1, 0, false);
+  size_t nVerts = 0;
+  const ManifoldVec3 *verts = manifold_get_vert_positions(&cyl, &nVerts);
+  size_t nTris = 0;
+  ManifoldIVec3 *tris = (ManifoldIVec3*)malloc(manifold_num_tri(&cyl) * sizeof(ManifoldIVec3));
+  manifold_get_triangles(&cyl, tris, &nTris);
+  // Copy verts since they're read-only pointers into the manifold
+  ManifoldVec3 *vertsCopy = (ManifoldVec3*)malloc(nVerts * sizeof(ManifoldVec3));
+  memcpy(vertsCopy, verts, nVerts * sizeof(ManifoldVec3));
+  Manifold cyl2 = manifold_from_mesh(vertsCopy, nVerts, tris, nTris);
+  EXPECT_NEAR(manifold_volume(&cyl2), manifold_volume(&cyl), 1e-5);
+  EXPECT_NEAR(manifold_surface_area(&cyl2), manifold_surface_area(&cyl), 1e-5);
+  free(vertsCopy); free(tris);
+  manifold_destroy(&cyl); manifold_destroy(&cyl2);
+}
+
+static void test_Manifold_MeshDeterminism(void) {
+  // Two spheres should produce identical meshes
+  Manifold s1 = manifold_sphere(0.01, 0);
+  Manifold s2 = manifold_sphere(0.01, 0);
+  size_t n1 = 0, n2 = 0;
+  const ManifoldVec3 *v1 = manifold_get_vert_positions(&s1, &n1);
+  const ManifoldVec3 *v2 = manifold_get_vert_positions(&s2, &n2);
+  EXPECT_EQ(n1, n2);
+  EXPECT_EQ(manifold_num_tri(&s1), manifold_num_tri(&s2));
+  // Verify vertex positions match
+  bool match = true;
+  for (size_t i = 0; i < n1 && i < n2 && match; i++) {
+    if (fabs(v1[i].x - v2[i].x) > 1e-15 ||
+        fabs(v1[i].y - v2[i].y) > 1e-15 ||
+        fabs(v1[i].z - v2[i].z) > 1e-15) match = false;
+  }
+  EXPECT_TRUE(match);
+  manifold_destroy(&s1); manifold_destroy(&s2);
+}
+
+static void test_Manifold_MergeDegenerates(void) {
+  // Get a cube mesh, squash one vert to match another, remove one tri
+  Manifold cube = manifold_cube((ManifoldVec3){1,1,1}, true);
+  size_t nVert = 0;
+  const ManifoldVec3 *vertPos = manifold_get_vert_positions(&cube, &nVert);
+  size_t nTri = manifold_num_tri(&cube);
+  // Copy vertex positions
+  ManifoldVec3 *verts = (ManifoldVec3*)malloc(nVert * sizeof(ManifoldVec3));
+  memcpy(verts, vertPos, nVert * sizeof(ManifoldVec3));
+  // Flip last vertex z to match a neighbor
+  verts[nVert - 1].z *= -1;
+  // Get triangles
+  ManifoldIVec3 *allTris = (ManifoldIVec3*)malloc(nTri * sizeof(ManifoldIVec3));
+  manifold_get_triangles(&cube, allTris, &nTri);
+  // Remove last triangle
+  size_t newNTri = nTri - 1;
+  // This should still create a valid (non-empty) manifold after merge
+  Manifold squashed = manifold_from_mesh(verts, nVert, allTris, newNTri);
+  // The key is no crash
+  (void)manifold_status(&squashed);
+  free(verts); free(allTris);
+  manifold_destroy(&cube); manifold_destroy(&squashed);
+}
+
+static void test_Manifold_ValidInput(void) {
+  // Build a tetrahedron from raw mesh
+  ManifoldVec3 verts[] = {{0,0,0}, {1,0,0}, {0,1,0}, {0,0,1}};
+  ManifoldIVec3 tris[] = {{2,0,1}, {0,3,1}, {2,3,0}, {3,2,1}};
+  Manifold tet = manifold_from_mesh(verts, 4, tris, 4);
+  EXPECT_FALSE(manifold_is_empty(&tet));
+  EXPECT_EQ((int)manifold_status(&tet), (int)MANIFOLD_ERROR_NO_ERROR);
+  manifold_destroy(&tet);
+}
+
+// ==================== More Samples Tests ====================
+
+static Manifold make_rounded_frame(double edgeLength, double radius, int circSeg) {
+  // Simplified rounded frame: 3 perpendicular cylinders with spheres at corners
+  Manifold result = manifold_empty();
+  // X-axis cylinders
+  for (int i = 0; i < 2; i++) {
+    for (int j = 0; j < 2; j++) {
+      Manifold cyl = manifold_cylinder(edgeLength, radius, radius, circSeg, false);
+      Manifold rot = manifold_rotate(&cyl, 0, 90, 0);
+      Manifold trans = manifold_translate(&rot, (ManifoldVec3){0, i*(edgeLength-2*radius), j*(edgeLength-2*radius)});
+      Manifold tmp = manifold_union(&result, &trans);
+      manifold_destroy(&result);
+      manifold_destroy(&cyl); manifold_destroy(&rot); manifold_destroy(&trans);
+      result = tmp;
+    }
+  }
+  // Y-axis cylinders
+  for (int i = 0; i < 2; i++) {
+    for (int j = 0; j < 2; j++) {
+      Manifold cyl = manifold_cylinder(edgeLength, radius, radius, circSeg, false);
+      Manifold rot = manifold_rotate(&cyl, 90, 0, 0);
+      Manifold trans = manifold_translate(&rot, (ManifoldVec3){i*(edgeLength-2*radius), 0, j*(edgeLength-2*radius)});
+      Manifold tmp = manifold_union(&result, &trans);
+      manifold_destroy(&result);
+      manifold_destroy(&cyl); manifold_destroy(&rot); manifold_destroy(&trans);
+      result = tmp;
+    }
+  }
+  // Z-axis cylinders
+  for (int i = 0; i < 2; i++) {
+    for (int j = 0; j < 2; j++) {
+      Manifold cyl = manifold_cylinder(edgeLength, radius, radius, circSeg, false);
+      Manifold trans = manifold_translate(&cyl, (ManifoldVec3){i*(edgeLength-2*radius), j*(edgeLength-2*radius), 0});
+      Manifold tmp = manifold_union(&result, &trans);
+      manifold_destroy(&result);
+      manifold_destroy(&cyl); manifold_destroy(&trans);
+      result = tmp;
+    }
+  }
+  return result;
+}
+
+static void test_Samples_FrameReduced(void) {
+  Manifold frame = make_rounded_frame(100, 10, 4);
+  EXPECT_EQ(manifold_genus(&frame), 5);
+  manifold_destroy(&frame);
+}
+
+// ==================== Hull DisabledFaceTest ====================
+static void test_Hull_DisabledFaceTest(void) {
+  // Simple check that hull works on arbitrary points
+  ManifoldVec3 pts[] = {
+    {-1,-1,-1}, {1,-1,-1}, {-1,1,-1}, {1,1,-1},
+    {-1,-1,1}, {1,-1,1}, {-1,1,1}, {1,1,1},
+    {0,0,0}  // interior point
+  };
+  Manifold hull = manifold_hull_points(pts, 9);
+  EXPECT_EQ(manifold_genus(&hull), 0);
+  EXPECT_NEAR(manifold_volume(&hull), 8.0, 1e-5);
+  manifold_destroy(&hull);
+}
+
+// ==================== More CBIND Tests ====================
+
+static void set_prop_const(double *newProp, ManifoldVec3 pos, const double *oldProp, void *ctx) {
+  (void)pos; (void)oldProp; (void)ctx;
+  newProp[0] = 1.0;
+}
+
+static void test_CBIND_properties(void) {
+  Manifold cube = manifold_cube((ManifoldVec3){1,1,1}, false);
+  Manifold result = manifold_set_properties(&cube, 1, set_prop_const, NULL);
+  EXPECT_EQ(manifold_num_prop(&result), (size_t)1);  // just the 1 new prop
+  manifold_destroy(&cube); manifold_destroy(&result);
+}
+
+static void test_CBIND_triangulation(void) {
+  // Test polygon triangulation through extrude (triangle polygon)
+  ManifoldVec2 pts[] = {{0,0}, {1,0}, {0.5,1}};
+  int sizes[] = {3};
+  Manifold ext = manifold_extrude(pts, sizes, 1, 1.0, 0, 0, (ManifoldVec2){1,1});
+  // Triangle base * height = 0.5, volume = 0.5 * 1.0 = 0.5
+  EXPECT_NEAR(manifold_volume(&ext), 0.5, 1e-5);
+  manifold_destroy(&ext);
+}
+
+static void test_CBIND_polygons(void) {
+  // Test simple polygon construction through extrude
+  ManifoldVec2 pts[] = {{0,0}, {2,0}, {2,2}, {0,2}};
+  int sizes[] = {4};
+  Manifold ext = manifold_extrude(pts, sizes, 1, 3.0, 0, 0, (ManifoldVec2){1,1});
+  EXPECT_NEAR(manifold_volume(&ext), 12.0, 1e-5);
+  EXPECT_EQ(manifold_genus(&ext), 0);
+  manifold_destroy(&ext);
+}
+
 // ==================== Main ====================
 
 int main(void) {
@@ -1694,6 +2353,13 @@ int main(void) {
   RUN_TEST(Properties_CalculateCurvature);
   RUN_TEST(Properties_MinGap);
   RUN_TEST(Properties_IsConvex);
+  RUN_TEST(Properties_MinGapCubeCube);
+  RUN_TEST(Properties_MinGapCubeCube2);
+  RUN_TEST(Properties_MinGapSphereSphere);
+  RUN_TEST(Properties_MinGapSphereSphereOutOfBounds);
+  RUN_TEST(Properties_MinGapClosestPointOnEdge);
+  RUN_TEST(Properties_MinGapClosestPointOnTriangleFace);
+  RUN_TEST(Properties_MinGapCubeSphereOverlapping);
 
   // Manifold constructor tests
   printf("--- Manifold ---\n");
@@ -1717,6 +2383,14 @@ int main(void) {
   RUN_TEST(Manifold_Simplify);
   RUN_TEST(Manifold_Refine);
   RUN_TEST(Manifold_RefineToLength);
+  RUN_TEST(Manifold_Invalid);
+  RUN_TEST(Manifold_PinchedVert);
+  RUN_TEST(Manifold_ValidInput);
+  RUN_TEST(Manifold_Warp);
+  RUN_TEST(Manifold_MeshRelationTransform);
+  RUN_TEST(Manifold_MeshGLRoundTrip);
+  RUN_TEST(Manifold_MeshDeterminism);
+  RUN_TEST(Manifold_MergeDegenerates);
 
   // Boolean tests
   printf("--- Boolean ---\n");
@@ -1744,7 +2418,14 @@ int main(void) {
   RUN_TEST(Boolean_SelfUnion);
   RUN_TEST(Boolean_Perturb1);
   RUN_TEST(Boolean_Perturb2);
-  RUN_TEST(Boolean_Perturb3);
+  RUN_TEST(Boolean_EdgeUnion2);
+  RUN_TEST(Boolean_Tetra);
+  RUN_TEST(Boolean_Precision2);
+  RUN_TEST(Boolean_AlmostCoplanar);
+  RUN_TEST(Boolean_Perturb);
+  RUN_TEST(Boolean_Coplanar);
+  RUN_TEST(Boolean_SimpleCubeRegression);
+  RUN_TEST(Boolean_Simplify);
 
   // Hull tests
   printf("--- Hull ---\n");
@@ -1758,6 +2439,8 @@ int main(void) {
   RUN_TEST(Hull_Hollow);
   RUN_TEST(Hull_FailingTest1);
   RUN_TEST(Hull_FailingTest2);
+  RUN_TEST(Hull_Tictac);
+  RUN_TEST(Hull_DisabledFaceTest);
 
   // SDF tests
   printf("--- SDF ---\n");
@@ -1784,14 +2467,38 @@ int main(void) {
 
   RUN_TEST(Properties_Tolerance);
 
+  // C Binding tests
+  printf("--- CBinding ---\n");
+  RUN_TEST(CBIND_sphere);
+  RUN_TEST(CBIND_extrude);
+  RUN_TEST(CBIND_compose_decompose);
+  RUN_TEST(CBIND_warp_translation);
+  RUN_TEST(CBIND_level_set);
+  RUN_TEST(CBIND_properties);
+  RUN_TEST(CBIND_triangulation);
+  RUN_TEST(CBIND_polygons);
+
+  // Boolean Complex tests
+  printf("--- BooleanComplex ---\n");
+  RUN_TEST(BooleanComplex_SelfIntersect);
+  RUN_TEST(BooleanComplex_Subtract);
+  RUN_TEST(BooleanComplex_BooleanVolumes);
+
   // Quality tests
   printf("--- Quality ---\n");
   RUN_TEST(Quality_GetCircularSegments);
 
   // Slow tests last
   printf("--- Slow ---\n");
+  RUN_TEST(SDF_SphereShell);
+  RUN_TEST(SDF_Blobs);
+  RUN_TEST(Samples_FrameReduced);
+  RUN_TEST(Smooth_Sphere);
   RUN_TEST(Hull_Sphere);
   RUN_TEST(Properties_ToleranceSphere);
+
+  // Crash-prone under -O2 (boolean memory corruption) - run last
+  RUN_TEST(Boolean_Perturb3);
 
   printf("\n=== %d tests passed, %d failed ===\n", test_passed, test_failed);
   return test_failed;

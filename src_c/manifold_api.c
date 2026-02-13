@@ -120,8 +120,7 @@ Manifold manifold_tetrahedron(void) {
 
 Manifold manifold_cube(ManifoldVec3 size, bool center) {
   Manifold m;
-  if (size.x < 0 || size.y < 0 || size.z < 0 ||
-      (size.x == 0 && size.y == 0 && size.z == 0)) {
+  if (size.x <= 0 || size.y <= 0 || size.z <= 0) {
     manifold_impl_init(&m.impl);
     manifold_impl_make_empty(&m.impl, MANIFOLD_ERROR_INVALID_CONSTRUCTION);
     return m;
