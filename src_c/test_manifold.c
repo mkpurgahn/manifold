@@ -2371,6 +2371,134 @@ static void test_trim_angled(void) {
   manifold_destroy(&t);
 }
 
+// ---------- Boolean precision test ----------
+
+static void test_boolean_precision(void) {
+  // Two cubes with very small overlap
+  Manifold c1 = manifold_cube(manifold_vec3(1, 1, 1), false);
+  Manifold c2_base = manifold_cube(manifold_vec3(1, 1, 1), false);
+  Manifold c2 = manifold_translate(&c2_base, manifold_vec3(0.99, 0, 0));
+
+  Manifold u = manifold_union(&c1, &c2);
+  Manifold i = manifold_intersection(&c1, &c2);
+  Manifold d = manifold_difference(&c1, &c2);
+
+  // Union ≈ 1.99, intersection ≈ 0.01, difference ≈ 0.99
+  double u_vol = manifold_volume(&u);
+  double i_vol = manifold_volume(&i);
+  double d_vol = manifold_volume(&d);
+
+  // Volume conservation: V(A) + V(B) = V(A∪B) + V(A∩B)
+  ASSERT_NEAR(1.0 + 1.0, u_vol + i_vol, 0.05);
+  // V(A-B) = V(A) - V(A∩B)
+  ASSERT_NEAR(d_vol, 1.0 - i_vol, 0.05);
+
+  manifold_destroy(&c1);
+  manifold_destroy(&c2_base);
+  manifold_destroy(&c2);
+  manifold_destroy(&u);
+  manifold_destroy(&i);
+  manifold_destroy(&d);
+}
+
+// ---------- Revolve 360 degrees ----------
+
+static void test_revolve_full(void) {
+  // Rectangle profile creating annular solid
+  ManifoldVec2 profile[4] = {
+    {2, 0}, {3, 0}, {3, 1}, {2, 1}
+  };
+  int sizes[] = {4};
+
+  manifold_set_circular_segments(24);
+  Manifold m = manifold_revolve(profile, sizes, 1, 24, 360.0);
+  ASSERT_TRUE(!manifold_is_empty(&m));
+  // Volume of annular cylinder: pi*(R^2-r^2)*h = pi*(9-4)*1 = 5*pi ≈ 15.7
+  ASSERT_NEAR(manifold_volume(&m), 5.0 * MANIFOLD_PI, 2.0);
+
+  manifold_quality_reset();
+  manifold_destroy(&m);
+}
+
+// ---------- Hull from manifold points ----------
+
+static void test_hull_of_two_cubes(void) {
+  Manifold c1 = manifold_cube(manifold_vec3(1, 1, 1), false);
+  Manifold c2_base = manifold_cube(manifold_vec3(1, 1, 1), false);
+  Manifold c2 = manifold_translate(&c2_base, manifold_vec3(3, 3, 3));
+
+  // Union then hull should give convex hull of both cubes
+  Manifold u = manifold_union(&c1, &c2);
+  Manifold h = manifold_hull(&u);
+  ASSERT_TRUE(!manifold_is_empty(&h));
+
+  // Hull should contain both cubes
+  ManifoldBox bb = manifold_bounding_box(&h);
+  ASSERT_NEAR(bb.min.x, 0.0, 0.01);
+  ASSERT_NEAR(bb.min.y, 0.0, 0.01);
+  ASSERT_NEAR(bb.min.z, 0.0, 0.01);
+  ASSERT_NEAR(bb.max.x, 4.0, 0.01);
+  ASSERT_NEAR(bb.max.y, 4.0, 0.01);
+  ASSERT_NEAR(bb.max.z, 4.0, 0.01);
+
+  manifold_destroy(&c1);
+  manifold_destroy(&c2_base);
+  manifold_destroy(&c2);
+  manifold_destroy(&u);
+  manifold_destroy(&h);
+}
+
+// ---------- Large translate epsilon ----------
+
+static void test_large_translate_epsilon(void) {
+  Manifold c = manifold_cube(manifold_vec3(1, 1, 1), false);
+  double e1 = manifold_get_epsilon(&c);
+
+  Manifold t = manifold_translate(&c, manifold_vec3(-100, -10, -1));
+  double e2 = manifold_get_epsilon(&t);
+  // Epsilon should increase with larger bounding box
+  ASSERT_TRUE(e2 >= e1);
+
+  manifold_destroy(&c);
+  manifold_destroy(&t);
+}
+
+// ---------- Test curvature on scaled sphere ----------
+
+static void test_curvature_scaled(void) {
+  manifold_set_circular_segments(16);
+  Manifold s = manifold_sphere(1.0, 16);
+  Manifold c = manifold_calculate_curvature(&s, 0, 1);
+
+  ASSERT_EQ(manifold_num_prop(&c), (size_t)2);
+  ASSERT_TRUE(manifold_num_prop_vert(&c) > 0);
+  ASSERT_NEAR(manifold_volume(&c), manifold_volume(&s), 0.01);
+
+  manifold_quality_reset();
+  manifold_destroy(&s);
+  manifold_destroy(&c);
+}
+
+// ---------- GetMesh round trip ----------
+
+static void test_get_mesh_data(void) {
+  Manifold m = manifold_cube(manifold_vec3(1, 1, 1), false);
+
+  float *vertProps = NULL;
+  int *triVerts = NULL;
+  size_t nVert, nProp, nTri;
+  manifold_get_mesh(&m, &vertProps, &nVert, &nProp, &triVerts, &nTri);
+
+  ASSERT_EQ(nVert, (size_t)8);
+  ASSERT_EQ(nTri, (size_t)12);
+  ASSERT_TRUE(nProp >= 3);
+  ASSERT_TRUE(vertProps != NULL);
+  ASSERT_TRUE(triVerts != NULL);
+
+  manifold_free_mesh(vertProps, triVerts);
+  manifold_destroy(&m);
+}
+
 // ============== Main ==============
 
 int main(void) {
@@ -2574,7 +2702,13 @@ int main(void) {
   RUN_TEST(mirror_multiple);
   RUN_TEST(set_properties_color);
   RUN_TEST(trim_angled);
+  RUN_TEST(boolean_precision);
+  RUN_TEST(revolve_full);
+  RUN_TEST(hull_of_two_cubes);
+  RUN_TEST(large_translate_epsilon);
+  RUN_TEST(curvature_scaled);
+  RUN_TEST(get_mesh_data);
 
-  printf("\n=== All %d tests passed! ===\n", 140);
+  printf("\n=== All %d tests passed! ===\n", 147);
   return 0;
 }
