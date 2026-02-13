@@ -220,17 +220,110 @@ Manifold manifold_sphere(double radius, int circularSegments) {
     manifold_impl_make_empty(&m.impl, MANIFOLD_ERROR_INVALID_CONSTRUCTION);
     return m;
   }
-  // For simplicity, start with an octahedron
-  // Full sphere would need subdivision, but for now return octahedron scaled
-  manifold_impl_octahedron(&m.impl, mat3x4_identity());
-  // Scale to radius
-  for (size_t i = 0; i < m.impl.vertPos.len; i++) {
-    m.impl.vertPos.data[i] = vec3_scale(
-        vec3_normalize(m.impl.vertPos.data[i]), radius);
+
+  int n = circularSegments > 0 ? (circularSegments + 3) / 4
+                               : manifold_get_circular_segments(radius) / 4;
+  if (n < 1) n = 1;
+
+  // Start with octahedron vertices
+  ManifoldVec3 baseVerts[6] = {
+    {1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}
+  };
+  ManifoldIVec3 baseTris[8] = {
+    {4, 0, 2}, {4, 2, 1}, {4, 1, 3}, {4, 3, 0},
+    {5, 2, 0}, {5, 1, 2}, {5, 3, 1}, {5, 0, 3}
+  };
+
+  // Build vertex and triangle arrays
+  ManifoldVecVec3 verts = {0};
+  for (int i = 0; i < 6; i++) vec_vec3_push(&verts, baseVerts[i]);
+
+  ManifoldVecIVec3 tris = {0};
+  for (int i = 0; i < 8; i++) vec_ivec3_push(&tris, baseTris[i]);
+
+  // Subdivide n-1 times (n=1 means octahedron, n=2 means 1 subdivision, etc.)
+  for (int subdiv = 1; subdiv < n; subdiv++) {
+    // For each triangle, split all 3 edges at midpoint
+    // Use a hashtable to avoid duplicate midpoint vertices
+    ManifoldVecIVec3 newTris = {0};
+
+    // Edge midpoint cache: key = min_vert * MAX + max_vert, value = midpoint index
+    // Simple linear search for small meshes
+    typedef struct { int v0, v1, mid; } EdgeMid;
+    size_t numEdgeMids = 0;
+    size_t capEdgeMids = tris.len * 3;
+    EdgeMid *edgeMids = (EdgeMid *)malloc(capEdgeMids * sizeof(EdgeMid));
+
+    for (size_t t = 0; t < tris.len; t++) {
+      int v[3] = {tris.data[t].x, tris.data[t].y, tris.data[t].z};
+      int mid[3];
+
+      for (int e = 0; e < 3; e++) {
+        int a = v[e], b = v[(e + 1) % 3];
+        int lo = a < b ? a : b;
+        int hi = a < b ? b : a;
+
+        // Search for existing midpoint
+        int found = -1;
+        for (size_t k = 0; k < numEdgeMids; k++) {
+          if (edgeMids[k].v0 == lo && edgeMids[k].v1 == hi) {
+            found = (int)k;
+            break;
+          }
+        }
+
+        if (found >= 0) {
+          mid[e] = edgeMids[found].mid;
+        } else {
+          ManifoldVec3 p = vec3_scale(vec3_add(verts.data[a], verts.data[b]), 0.5);
+          p = vec3_normalize(p); // project to unit sphere
+          mid[e] = (int)verts.len;
+          vec_vec3_push(&verts, p);
+          if (numEdgeMids >= capEdgeMids) {
+            capEdgeMids *= 2;
+            edgeMids = (EdgeMid *)realloc(edgeMids, capEdgeMids * sizeof(EdgeMid));
+          }
+          edgeMids[numEdgeMids++] = (EdgeMid){lo, hi, mid[e]};
+        }
+      }
+
+      // 4 sub-triangles
+      vec_ivec3_push(&newTris, manifold_ivec3(v[0], mid[0], mid[2]));
+      vec_ivec3_push(&newTris, manifold_ivec3(mid[0], v[1], mid[1]));
+      vec_ivec3_push(&newTris, manifold_ivec3(mid[2], mid[1], v[2]));
+      vec_ivec3_push(&newTris, manifold_ivec3(mid[0], mid[1], mid[2]));
+    }
+
+    free(edgeMids);
+    vec_ivec3_free(&tris);
+    tris = newTris;
   }
+
+  // Apply cosine mapping (matching C++ code) then normalize
+  for (size_t i = 0; i < verts.len; i++) {
+    ManifoldVec3 v = verts.data[i];
+    v.x = cos(MANIFOLD_HALF_PI * (1.0 - v.x));
+    v.y = cos(MANIFOLD_HALF_PI * (1.0 - v.y));
+    v.z = cos(MANIFOLD_HALF_PI * (1.0 - v.z));
+    v = vec3_normalize(v);
+    if (isnan(v.x)) v = manifold_vec3(0, 0, 0);
+    verts.data[i] = vec3_scale(v, radius);
+  }
+
+  // Build the manifold
+  manifold_impl_init(&m.impl);
+  m.impl.vertPos = verts;
+
+  ManifoldVecIVec3 emptyTriProp = {0};
+  manifold_impl_create_halfedges(&m.impl, &tris, &emptyTriProp);
+  manifold_impl_initialize_original(&m.impl);
   manifold_impl_calculate_bbox(&m.impl);
   manifold_impl_set_epsilon(&m.impl, -1.0, false);
-  (void)circularSegments;
+  manifold_impl_sort_geometry(&m.impl);
+  manifold_impl_set_normals_and_coplanar(&m.impl);
+
+  vec_ivec3_free(&tris);
+  vec_ivec3_free(&emptyTriProp);
   return m;
 }
 
