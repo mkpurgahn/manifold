@@ -636,7 +636,7 @@ static inline bool is01_longest(ManifoldVec2 v0, ManifoldVec2 v1,
 // that starts at the same vertex. Returns to start.
 typedef void (*ForVertFn)(int edge, void *ctx);
 
-static void impl_for_vert(const ManifoldImpl *impl, int startEdge,
+MANIFOLD_UNUSED static void impl_for_vert(const ManifoldImpl *impl, int startEdge,
                            ForVertFn fn, void *ctx) {
   int current = startEdge;
   do {
@@ -869,7 +869,7 @@ static bool impl_collapse_edge(ManifoldImpl *impl, int edge,
   return true;
 }
 
-static void impl_recursive_edge_swap(ManifoldImpl *impl, int edge,
+MANIFOLD_UNUSED static void impl_recursive_edge_swap(ManifoldImpl *impl, int edge,
                                       int *tag, int *visited,
                                       ManifoldVecInt *edgeSwapStack,
                                       ManifoldVecInt *edges) {

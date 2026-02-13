@@ -6312,6 +6312,6 @@ int main(void) {
   // revolve_clip, partial_revolve_offset disabled — revolve axis clipping/offset differences
   RUN_TEST(calculate_curvature2);
 
-  printf("\n=== All %d tests passed! ===\n", 333);
+  printf("\n=== All %d tests passed! ===\n", 334);
   return 0;
 }

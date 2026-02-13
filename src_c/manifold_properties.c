@@ -502,7 +502,7 @@ typedef struct {
   double minDistSq;
 } MinGapCtx;
 
-static void mingap_callback(int queryIdx, int leafIdx, void *ctx) {
+MANIFOLD_UNUSED static void mingap_callback(int queryIdx, int leafIdx, void *ctx) {
   MinGapCtx *mg = (MinGapCtx *)ctx;
   ManifoldVec3 p[3], q[3];
   for (int j = 0; j < 3; j++) {

@@ -16,6 +16,12 @@
 // Generic dynamic array structure and operations via macros.
 // Usage: MANIFOLD_VEC_DECLARE(int) creates ManifoldVecInt type.
 
+#ifdef __GNUC__
+#define MANIFOLD_UNUSED __attribute__((unused))
+#else
+#define MANIFOLD_UNUSED
+#endif
+
 #define MANIFOLD_VEC_STRUCT(T, NAME) \
   typedef struct { \
     T *data; \
@@ -27,7 +33,7 @@
 
 #define MANIFOLD_VEC_FUNCS(T, NAME, PREFIX) \
 \
-static inline NAME PREFIX##_create(size_t cap) { \
+MANIFOLD_UNUSED static inline NAME PREFIX##_create(size_t cap) { \
   NAME v; \
   v.len = 0; \
   v.cap = cap; \
@@ -35,7 +41,7 @@ static inline NAME PREFIX##_create(size_t cap) { \
   return v; \
 } \
 \
-static inline NAME PREFIX##_create_n(size_t n) { \
+MANIFOLD_UNUSED static inline NAME PREFIX##_create_n(size_t n) { \
   NAME v; \
   v.len = n; \
   v.cap = n; \
@@ -43,20 +49,20 @@ static inline NAME PREFIX##_create_n(size_t n) { \
   return v; \
 } \
 \
-static inline NAME PREFIX##_create_fill(size_t n, T val) { \
+MANIFOLD_UNUSED static inline NAME PREFIX##_create_fill(size_t n, T val) { \
   NAME v = PREFIX##_create_n(n); \
   for (size_t i = 0; i < n; i++) v.data[i] = val; \
   return v; \
 } \
 \
-static inline void PREFIX##_free(NAME *v) { \
+MANIFOLD_UNUSED static inline void PREFIX##_free(NAME *v) { \
   free(v->data); \
   v->data = NULL; \
   v->len = 0; \
   v->cap = 0; \
 } \
 \
-static inline void PREFIX##_reserve(NAME *v, size_t cap) { \
+MANIFOLD_UNUSED static inline void PREFIX##_reserve(NAME *v, size_t cap) { \
   if (cap > v->cap) { \
     T *newbuf = (T*)realloc(v->data, cap * sizeof(T)); \
     assert(newbuf != NULL); \
@@ -65,7 +71,7 @@ static inline void PREFIX##_reserve(NAME *v, size_t cap) { \
   } \
 } \
 \
-static inline void PREFIX##_push(NAME *v, T val) { \
+MANIFOLD_UNUSED static inline void PREFIX##_push(NAME *v, T val) { \
   if (v->len >= v->cap) { \
     size_t newcap = v->cap == 0 ? 128 : v->cap * 2; \
     PREFIX##_reserve(v, newcap); \
@@ -73,32 +79,32 @@ static inline void PREFIX##_push(NAME *v, T val) { \
   v->data[v->len++] = val; \
 } \
 \
-static inline void PREFIX##_resize(NAME *v, size_t n) { \
+MANIFOLD_UNUSED static inline void PREFIX##_resize(NAME *v, size_t n) { \
   PREFIX##_reserve(v, n); \
   v->len = n; \
 } \
 \
-static inline void PREFIX##_resize_fill(NAME *v, size_t n, T val) { \
+MANIFOLD_UNUSED static inline void PREFIX##_resize_fill(NAME *v, size_t n, T val) { \
   size_t old_len = v->len; \
   PREFIX##_resize(v, n); \
   for (size_t i = old_len; i < n; i++) v->data[i] = val; \
 } \
 \
-static inline void PREFIX##_clear(NAME *v) { \
+MANIFOLD_UNUSED static inline void PREFIX##_clear(NAME *v) { \
   v->len = 0; \
 } \
 \
-static inline void PREFIX##_pop(NAME *v) { \
+MANIFOLD_UNUSED static inline void PREFIX##_pop(NAME *v) { \
   assert(v->len > 0); \
   v->len--; \
 } \
 \
-static inline T PREFIX##_back(const NAME *v) { \
+MANIFOLD_UNUSED static inline T PREFIX##_back(const NAME *v) { \
   assert(v->len > 0); \
   return v->data[v->len - 1]; \
 } \
 \
-static inline void PREFIX##_shrink_to_fit(NAME *v) { \
+MANIFOLD_UNUSED static inline void PREFIX##_shrink_to_fit(NAME *v) { \
   if (v->len == 0) { \
     free(v->data); \
     v->data = NULL; \
@@ -109,7 +115,7 @@ static inline void PREFIX##_shrink_to_fit(NAME *v) { \
   } \
 } \
 \
-static inline NAME PREFIX##_copy(const NAME *src) { \
+MANIFOLD_UNUSED static inline NAME PREFIX##_copy(const NAME *src) { \
   NAME v; \
   v.len = src->len; \
   v.cap = src->len; \
@@ -123,7 +129,7 @@ static inline NAME PREFIX##_copy(const NAME *src) { \
   return v; \
 } \
 \
-static inline void PREFIX##_swap(NAME *a, NAME *b) { \
+MANIFOLD_UNUSED static inline void PREFIX##_swap(NAME *a, NAME *b) { \
   NAME tmp = *a; \
   *a = *b; \
   *b = tmp; \
