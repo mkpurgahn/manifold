@@ -162,6 +162,10 @@ void manifold_impl_extrude(ManifoldImpl *impl,
                            const int *polySizes, int nPolys,
                            double height, int nDivisions,
                            double twistDegrees, ManifoldVec2 scaleTop);
+void manifold_impl_revolve(ManifoldImpl *impl,
+                           const ManifoldVec2 *polyVerts,
+                           const int *polySizes, int nPolys,
+                           int circularSegments, double revolveDegrees);
 
 // sdf.c equivalents
 void manifold_impl_level_set(ManifoldImpl *impl,

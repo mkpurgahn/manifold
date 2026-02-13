@@ -39,6 +39,11 @@ Manifold manifold_extrude(const ManifoldVec2 *polyVerts,
                           double height, int nDivisions,
                           double twistDegrees, ManifoldVec2 scaleTop);
 
+// Revolve a 2D polygon cross-section around the Y-axis.
+Manifold manifold_revolve(const ManifoldVec2 *polyVerts,
+                          const int *polySizes, int nPolys,
+                          int circularSegments, double revolveDegrees);
+
 // ---------- Information ----------
 ManifoldError manifold_status(const Manifold *m);
 bool manifold_is_empty(const Manifold *m);

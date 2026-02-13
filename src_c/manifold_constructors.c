@@ -219,3 +219,98 @@ void manifold_impl_extrude(ManifoldImpl *impl,
   vec_ivec3_free(&triVerts);
   vec_ivec3_free(&emptyTriVert);
 }
+
+// Forward declaration
+int manifold_get_circular_segments(double radius);
+
+void manifold_impl_revolve(ManifoldImpl *impl,
+                           const ManifoldVec2 *polyVerts,
+                           const int *polySizes, int nPolys,
+                           int circularSegments, double revolveDegrees) {
+  manifold_impl_init(impl);
+  if (nPolys <= 0) return;
+
+  double radius = 0;
+  int offset = 0;
+  for (int p = 0; p < nPolys; p++) {
+    for (int v = 0; v < polySizes[p]; v++) {
+      if (polyVerts[offset + v].x > radius)
+        radius = polyVerts[offset + v].x;
+    }
+    offset += polySizes[p];
+  }
+  if (radius <= 0.0) return;
+
+  if (revolveDegrees > 360.0) revolveDegrees = 360.0;
+  bool isFullRevolution = (revolveDegrees == 360.0);
+
+  int nDivisions = circularSegments > 2 ? circularSegments :
+                   (int)(manifold_get_circular_segments(radius) * revolveDegrees / 360.0);
+  if (nDivisions < 3) nDivisions = 3;
+
+  int nSlices = isFullRevolution ? nDivisions : nDivisions + 1;
+  double dPhi = revolveDegrees / nDivisions;
+
+  ManifoldVecVec3 vertPos = {0};
+  ManifoldVecIVec3 triVerts = {0};
+
+  offset = 0;
+  for (int p = 0; p < nPolys; p++) {
+    int nPoly = polySizes[p];
+    int nPosVerts = 0, nAxisVerts = 0;
+    for (int v = 0; v < nPoly; v++) {
+      if (polyVerts[offset + v].x > 0) nPosVerts++;
+      else nAxisVerts++;
+    }
+
+    for (int polyVert = 0; polyVert < nPoly; polyVert++) {
+      int startPosIndex = (int)vertPos.len;
+      ManifoldVec2 curr = polyVerts[offset + polyVert];
+      ManifoldVec2 prev = polyVerts[offset + (polyVert == 0 ? nPoly - 1 : polyVert - 1)];
+
+      int prevStartPosIndex = startPosIndex +
+          (polyVert == 0 ? nAxisVerts + (nSlices * nPosVerts) : 0) +
+          (prev.x == 0.0 ? -1 : -nSlices);
+
+      for (int slice = 0; slice < nSlices; slice++) {
+        double phi = slice * dPhi;
+        if (slice == 0 || curr.x > 0) {
+          vec_vec3_push(&vertPos, manifold_vec3(
+              curr.x * cosd(phi), curr.x * sind(phi), curr.y));
+        }
+
+        if (isFullRevolution || slice > 0) {
+          int lastSlice = (slice == 0 ? nDivisions : slice) - 1;
+          if (curr.x > 0.0) {
+            int psi = (prev.x == 0.0) ? prevStartPosIndex : prevStartPosIndex + lastSlice;
+            vec_ivec3_push(&triVerts, manifold_ivec3(
+                startPosIndex + slice, startPosIndex + lastSlice, psi));
+          }
+          if (prev.x > 0.0) {
+            int csi = (curr.x == 0.0) ? startPosIndex : startPosIndex + slice;
+            vec_ivec3_push(&triVerts, manifold_ivec3(
+                prevStartPosIndex + lastSlice, prevStartPosIndex + slice, csi));
+          }
+        }
+      }
+    }
+    offset += nPoly;
+  }
+
+  impl->vertPos = vec_vec3_create_n(vertPos.len);
+  for (size_t i = 0; i < vertPos.len; i++) {
+    impl->vertPos.data[i] = vertPos.data[i];
+  }
+
+  ManifoldVecIVec3 emptyTriVert = {0};
+  manifold_impl_create_halfedges(impl, &triVerts, &emptyTriVert);
+  manifold_impl_initialize_original(impl);
+  manifold_impl_calculate_bbox(impl);
+  manifold_impl_set_epsilon(impl, -1.0, false);
+  manifold_impl_sort_geometry(impl);
+  manifold_impl_set_normals_and_coplanar(impl);
+
+  vec_vec3_free(&vertPos);
+  vec_ivec3_free(&triVerts);
+  vec_ivec3_free(&emptyTriVert);
+}

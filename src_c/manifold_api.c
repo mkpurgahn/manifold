@@ -290,6 +290,16 @@ Manifold manifold_extrude(const ManifoldVec2 *polyVerts,
   return m;
 }
 
+// Revolve
+Manifold manifold_revolve(const ManifoldVec2 *polyVerts,
+                          const int *polySizes, int nPolys,
+                          int circularSegments, double revolveDegrees) {
+  Manifold m;
+  manifold_impl_revolve(&m.impl, polyVerts, polySizes, nPolys,
+                        circularSegments, revolveDegrees);
+  return m;
+}
+
 // Warp
 Manifold manifold_warp(const Manifold *m,
                        void (*warpFn)(double *x, double *y, double *z, void *ctx),

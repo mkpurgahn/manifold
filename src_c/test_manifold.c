@@ -865,6 +865,21 @@ static void test_extrude_cone(void) {
   manifold_destroy(&m);
 }
 
+static void test_revolve_circle(void) {
+  // Revolve a small rectangle around Y-axis to create a torus-like shape
+  // Rectangle at x=[1,2], y=[0,0.5]
+  ManifoldVec2 rect[] = {{1.0, 0.0}, {2.0, 0.0}, {2.0, 0.5}, {1.0, 0.5}};
+  int sizes[] = {4};
+  Manifold m = manifold_revolve(rect, sizes, 1, 8, 360.0);
+  ASSERT_EQ(manifold_status(&m), MANIFOLD_ERROR_NO_ERROR);
+  ASSERT_TRUE(manifold_num_vert(&m) > 0);
+  // Volume of revolution: 2*pi*r_avg * cross_section_area
+  // r_avg = 1.5, area = 1*0.5 = 0.5, so V = 2*pi*1.5*0.5 ≈ 4.71
+  double vol = manifold_volume(&m);
+  ASSERT_NEAR(vol, 4.71, 1.0);
+  manifold_destroy(&m);
+}
+
 static void test_boolean_tetra(void) {
   // Simplest boolean: subtract translated tetrahedra (from C++ test suite)
   Manifold tetra = manifold_tetrahedron();
@@ -1013,6 +1028,7 @@ int main(void) {
   RUN_TEST(extrude_square);
   RUN_TEST(extrude_triangle);
   RUN_TEST(extrude_cone);
+  RUN_TEST(revolve_circle);
 
   printf("\nAdvanced Boolean:\n");
   RUN_TEST(boolean_tetra);
@@ -1033,6 +1049,6 @@ int main(void) {
   RUN_TEST(hull_tetrahedron);
   RUN_TEST(sdf_volume_accuracy);
 
-  printf("\n=== All %d tests passed! ===\n", 51);
+  printf("\n=== All %d tests passed! ===\n", 52);
   return 0;
 }
