@@ -25,6 +25,20 @@ Manifold manifold_sphere(double radius, int circularSegments);
 Manifold manifold_cylinder(double height, double radiusLow, double radiusHigh,
                            int circularSegments, bool center);
 
+// Extrude a 2D polygon cross-section along the Z-axis.
+// crossSection: array of simple polygons (array of vec2 arrays)
+// nPolys: number of polygons
+// polySizes: array of polygon vertex counts (length nPolys)
+// polyVerts: flat array of vec2 vertices for all polygons
+// height: extrusion height
+// nDivisions: number of intermediate layers (0 = just top and bottom)
+// twistDegrees: total twist from bottom to top
+// scaleTop: scale factors at the top (1,1 = no scaling)
+Manifold manifold_extrude(const ManifoldVec2 *polyVerts,
+                          const int *polySizes, int nPolys,
+                          double height, int nDivisions,
+                          double twistDegrees, ManifoldVec2 scaleTop);
+
 // ---------- Information ----------
 ManifoldError manifold_status(const Manifold *m);
 bool manifold_is_empty(const Manifold *m);

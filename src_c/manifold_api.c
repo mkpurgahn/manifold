@@ -279,6 +279,17 @@ Manifold manifold_cylinder(double height, double radiusLow, double radiusHigh,
   return m;
 }
 
+// Extrude
+Manifold manifold_extrude(const ManifoldVec2 *polyVerts,
+                          const int *polySizes, int nPolys,
+                          double height, int nDivisions,
+                          double twistDegrees, ManifoldVec2 scaleTop) {
+  Manifold m;
+  manifold_impl_extrude(&m.impl, polyVerts, polySizes, nPolys,
+                        height, nDivisions, twistDegrees, scaleTop);
+  return m;
+}
+
 // Warp
 Manifold manifold_warp(const Manifold *m,
                        void (*warpFn)(double *x, double *y, double *z, void *ctx),

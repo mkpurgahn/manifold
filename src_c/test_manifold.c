@@ -828,6 +828,42 @@ static void test_boolean_multi_coplanar(void) {
   manifold_destroy(&result);
 }
 
+static void test_extrude_square(void) {
+  // Extrude a unit square to height 2
+  ManifoldVec2 square[] = {{0,0}, {1,0}, {1,1}, {0,1}};
+  int sizes[] = {4};
+  ManifoldVec2 scaleTop = {1.0, 1.0};
+  Manifold m = manifold_extrude(square, sizes, 1, 2.0, 0, 0.0, scaleTop);
+  ASSERT_EQ(manifold_status(&m), MANIFOLD_ERROR_NO_ERROR);
+  ASSERT_NEAR(manifold_volume(&m), 2.0, 0.01);
+  ASSERT_TRUE(manifold_num_vert(&m) >= 8);
+  manifold_destroy(&m);
+}
+
+static void test_extrude_triangle(void) {
+  // Extrude a triangle to height 1
+  ManifoldVec2 tri[] = {{0,0}, {1,0}, {0.5, 0.866}};
+  int sizes[] = {3};
+  ManifoldVec2 scaleTop = {1.0, 1.0};
+  Manifold m = manifold_extrude(tri, sizes, 1, 1.0, 0, 0.0, scaleTop);
+  ASSERT_EQ(manifold_status(&m), MANIFOLD_ERROR_NO_ERROR);
+  double area = 0.5 * 1.0 * 0.866; // triangle area
+  ASSERT_NEAR(manifold_volume(&m), area, 0.05);
+  manifold_destroy(&m);
+}
+
+static void test_extrude_cone(void) {
+  // Extrude a square to a cone (scale 0,0 at top)
+  ManifoldVec2 square[] = {{0,0}, {1,0}, {1,1}, {0,1}};
+  int sizes[] = {4};
+  ManifoldVec2 scaleTop = {0.0, 0.0};
+  Manifold m = manifold_extrude(square, sizes, 1, 3.0, 0, 0.0, scaleTop);
+  ASSERT_EQ(manifold_status(&m), MANIFOLD_ERROR_NO_ERROR);
+  // Volume of pyramid: base_area * height / 3 = 1 * 3 / 3 = 1
+  ASSERT_NEAR(manifold_volume(&m), 1.0, 0.1);
+  manifold_destroy(&m);
+}
+
 // ============== Main ==============
 
 int main(void) {
@@ -893,6 +929,11 @@ int main(void) {
   RUN_TEST(boolean_corner_union);
   RUN_TEST(boolean_multi_coplanar);
 
+  printf("\nExtrude:\n");
+  RUN_TEST(extrude_square);
+  RUN_TEST(extrude_triangle);
+  RUN_TEST(extrude_cone);
+
   printf("\nConvex Hull:\n");
   RUN_TEST(hull_cube);
   RUN_TEST(hull_points);
@@ -906,6 +947,6 @@ int main(void) {
   RUN_TEST(hull_tetrahedron);
   RUN_TEST(sdf_volume_accuracy);
 
-  printf("\n=== All %d tests passed! ===\n", 44);
+  printf("\n=== All %d tests passed! ===\n", 47);
   return 0;
 }

@@ -157,6 +157,11 @@ double manifold_impl_get_surface_area(const ManifoldImpl *impl);
 void manifold_impl_tetrahedron(ManifoldImpl *impl);
 void manifold_impl_cube(ManifoldImpl *impl, ManifoldMat3x4 transform);
 void manifold_impl_octahedron(ManifoldImpl *impl, ManifoldMat3x4 transform);
+void manifold_impl_extrude(ManifoldImpl *impl,
+                           const ManifoldVec2 *polyVerts,
+                           const int *polySizes, int nPolys,
+                           double height, int nDivisions,
+                           double twistDegrees, ManifoldVec2 scaleTop);
 
 // sdf.c equivalents
 void manifold_impl_level_set(ManifoldImpl *impl,
