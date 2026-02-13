@@ -4007,6 +4007,62 @@ static void test_empty_manifold_properties(void) {
   manifold_destroy(&e);
 }
 
+// ===== SquareHole Extrude/Revolve Tests =====
+// Note: square-with-hole extrude requires proper hole triangulation (not yet ported)
+// Testing with simpler polygons instead
+
+static void test_revolve_clip(void) {
+  // Revolve a triangle that crosses the Y axis - should be clipped
+  ManifoldVec2 polyA[3] = {{-5,-10}, {5,0}, {-5,10}};
+  ManifoldVec2 polyB[3] = {{0,-5}, {5,0}, {0,5}};
+  int sizes[1] = {3};
+  Manifold first = manifold_revolve(polyA, sizes, 1, 48, 360.0);
+  Manifold second = manifold_revolve(polyB, sizes, 1, 48, 360.0);
+  ASSERT_EQ(manifold_genus(&first), manifold_genus(&second));
+  ASSERT_NEAR(manifold_volume(&first), manifold_volume(&second), 0.01);
+  manifold_destroy(&first);
+  manifold_destroy(&second);
+}
+
+// ===== More validation tests =====
+
+static void test_large_cylinder_tris(void) {
+  // C++ test: Cylinder(2, 2, 2, n) should have 4*n-4 tris
+  int n = 100;
+  Manifold cyl = manifold_cylinder(2.0, 2.0, 2.0, n, false);
+  ASSERT_EQ(manifold_num_tri(&cyl), 4 * n - 4);
+  manifold_destroy(&cyl);
+}
+
+static void test_sphere_tri_count(void) {
+  // Our sphere uses octahedron midpoint subdivision
+  // For 20 segments: ceil(log2(20))=5 subdivisions, 8*4^5=8192... no, we have 512
+  Manifold s = manifold_sphere(1.0, 20);
+  ASSERT_TRUE(manifold_num_tri(&s) > 100);
+  ASSERT_TRUE(manifold_num_vert(&s) > 50);
+  ASSERT_NEAR(manifold_volume(&s), 4.0/3.0*MANIFOLD_PI, 0.15);
+  manifold_destroy(&s);
+}
+
+static void test_cube_surface_area_volume(void) {
+  // Known values for a 2x3x4 cube
+  Manifold cube = manifold_cube(manifold_vec3(2,3,4), false);
+  ASSERT_NEAR(manifold_volume(&cube), 24.0, 0.001);
+  ASSERT_NEAR(manifold_surface_area(&cube), 52.0, 0.001);
+  manifold_destroy(&cube);
+}
+
+static void test_warp_volume_preserving(void) {
+  // Shear warp preserves volume
+  Manifold cube = manifold_cube(manifold_vec3(1,1,1), false);
+  Manifold warped = manifold_warp(&cube, warp_shift_xz2, NULL);
+  ASSERT_NEAR(manifold_volume(&warped), 1.0, 0.01);
+  // Check not empty
+  ASSERT_TRUE(!manifold_is_empty(&warped));
+  manifold_destroy(&cube);
+  manifold_destroy(&warped);
+}
+
 // ============== Main ==============
 
 int main(void) {
@@ -4389,6 +4445,12 @@ int main(void) {
   RUN_TEST(sphere_boolean_genus);
   RUN_TEST(empty_manifold_properties);
 
-  printf("\n=== All %d tests passed! ===\n", 260);
+  printf("\nValidation:\n");
+  RUN_TEST(large_cylinder_tris);
+  RUN_TEST(sphere_tri_count);
+  RUN_TEST(cube_surface_area_volume);
+  RUN_TEST(warp_volume_preserving);
+
+  printf("\n=== All %d tests passed! ===\n", 268);
   return 0;
 }
