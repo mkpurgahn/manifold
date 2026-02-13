@@ -5944,6 +5944,7 @@ static void test_smooth_sphere(void) {
 // Smooth::Precision - test RefineToTolerance produces vertices within tolerance
 // Checks that smoothed cylinder has reasonable radii on side surface
 static void test_smooth_precision(void) {
+  // Tests face tolerance of refinement — must match C++ accuracy
   double tolerance = 0.001;
   double radius = 10.0;
   double height = 10.0;
@@ -5951,29 +5952,29 @@ static void test_smooth_precision(void) {
   Manifold smoothed = manifold_smooth_out(&cyl, 60.0, 0.0);
   manifold_destroy(&cyl);
 
-  Manifold refined = manifold_refine_to_tolerance(&smoothed, tolerance);
-  manifold_destroy(&smoothed);
+  Manifold ref1 = manifold_refine_to_tolerance(&smoothed, tolerance);
+  // Makes an edge bisector, which is the worst case.
+  Manifold refined = manifold_refine(&ref1, 2);
+  manifold_destroy(&ref1);
 
-  ASSERT_TRUE(manifold_is_manifold(&refined));
-
-  // Check vertices on the cylinder side surface (exclude caps)
   size_t numVert = manifold_num_vert(&refined);
-  double maxR = 0, minR = 2.0 * radius;
-  int count = 0;
+  double maxR2 = 0, minR2 = 2.0 * radius * radius;
   for (size_t v = 0; v < numVert; v++) {
     ManifoldVec3 a = refined.impl.vertPos.data[v];
-    // Skip cap region vertices
-    if (a.z < 1.0 || a.z > height - 1.0) continue;
-    double r = sqrt(a.x * a.x + a.y * a.y);
-    if (r > maxR) maxR = r;
-    if (r < minR) minR = r;
-    count++;
+    // Ignore end caps
+    double r2;
+    if (fabs(a.z) < 0.001 || fabs(a.z - height) < 0.001) {
+      r2 = radius * radius;
+    } else {
+      r2 = a.x * a.x + a.y * a.y;
+    }
+    if (r2 > maxR2) maxR2 = r2;
+    if (r2 < minR2) minR2 = r2;
   }
-  // Side surface vertices should be near the cylinder radius
-  if (count > 0) {
-    ASSERT_TRUE(minR > radius * 0.8);
-    ASSERT_TRUE(maxR < radius * 1.2);
-  }
+  ASSERT_NEAR(sqrt(minR2), radius - tolerance, 1e-4);
+  ASSERT_NEAR(sqrt(maxR2), radius, 1e-8);
+  ASSERT_EQ(smoothed.impl.numTri, 7984);
+  manifold_destroy(&smoothed);
   manifold_destroy(&refined);
 }
 
