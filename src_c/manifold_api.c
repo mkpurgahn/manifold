@@ -151,6 +151,7 @@ Manifold manifold_transform(const Manifold *m, ManifoldMat3x4 t) {
 Manifold manifold_boolean(const Manifold *a, const Manifold *b,
                           ManifoldOpType op) {
   Manifold result;
+  manifold_impl_init(&result.impl);
   manifold_boolean_op(&result.impl, &a->impl, &b->impl, op);
   return result;
 }

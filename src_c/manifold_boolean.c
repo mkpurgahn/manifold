@@ -70,8 +70,15 @@ static Shadow01Result shadow01(int a0, int b1,
                                 const ManifoldImpl *inB,
                                 bool expandP, bool forward) {
   Shadow01Result r = {0, manifold_vec2(NAN, NAN)};
+  if (b1 < 0 || (size_t)b1 >= inB->halfedge.len) return r;
   int b1s = inB->halfedge.data[b1].startVert;
   int b1e = inB->halfedge.data[b1].endVert;
+  if (b1s < 0 || (size_t)b1s >= inB->vertPos.len ||
+      b1e < 0 || (size_t)b1e >= inB->vertPos.len ||
+      a0 < 0 || (size_t)a0 >= inA->vertPos.len) return r;
+  if ((size_t)a0 >= inA->vertNormal.len ||
+      (size_t)b1s >= inB->vertNormal.len ||
+      (size_t)b1e >= inB->vertNormal.len) return r;
   double a0x = inA->vertPos.data[a0].x;
   double b1sx = inB->vertPos.data[b1s].x;
   double b1ex = inB->vertPos.data[b1e].x;
@@ -92,6 +99,10 @@ static Shadow01Result shadow01(int a0, int b1,
                                inB->vertPos.data[b1e],
                                inA->vertPos.data[a0].x);
     int b1pair = inB->halfedge.data[b1].pairedHalfedge;
+    if (b1pair < 0 || (size_t)(b1pair / 3) >= inB->faceNormal.len) {
+      r.s01 = 0;
+      return r;
+    }
     double dir = inB->faceNormal.data[b1 / 3].y +
                  inB->faceNormal.data[b1pair / 3].y;
     if (forward) {
@@ -157,9 +168,13 @@ static Kernel11Result kernel11(int p1, int q1,
     if (k != 2) { res.s11 = 0; return res; }
     res.xyzz11 = bool_intersect(pRL[0], pRL[1], qRL[0], qRL[1]);
     int p1pair = inP->halfedge.data[p1].pairedHalfedge;
+    int q1pair = inQ->halfedge.data[q1].pairedHalfedge;
+    if (p1pair < 0 || (size_t)(p1pair / 3) >= inP->faceNormal.len ||
+        q1pair < 0 || (size_t)(q1pair / 3) >= inQ->faceNormal.len) {
+      res.s11 = 0; return res;
+    }
     double dirP = inP->faceNormal.data[p1 / 3].z +
                   inP->faceNormal.data[p1pair / 3].z;
-    int q1pair = inQ->halfedge.data[q1].pairedHalfedge;
     double dirQ = inQ->faceNormal.data[q1 / 3].z +
                   inQ->faceNormal.data[q1pair / 3].z;
     if (!bool_shadows(res.xyzz11.z, res.xyzz11.w,
@@ -188,6 +203,7 @@ static Kernel02Result kernel02(int a0, int b2,
     int b1 = 3 * b2 + i;
     ManifoldHalfedge edgeB = inB->halfedge.data[b1];
     int b1F = manifold_halfedge_is_forward(&edgeB) ? b1 : edgeB.pairedHalfedge;
+    if (b1F < 0 || (size_t)b1F >= inB->halfedge.len) continue;
 
     Shadow01Result sr = shadow01(a0, b1F, inA, inB, expandP, forward);
     if (isfinite(sr.yz01.x)) {
@@ -260,6 +276,7 @@ static Kernel12Result kernel12(int a1, int b2,
     int b1 = 3 * b2 + i;
     ManifoldHalfedge edgeB = inB->halfedge.data[b1];
     int b1F = manifold_halfedge_is_forward(&edgeB) ? b1 : edgeB.pairedHalfedge;
+    if (b1F < 0 || (size_t)b1F >= inB->halfedge.len) continue;
     Kernel11Result kr;
     if (forward)
       kr = kernel11(a1, b1F, inP, inQ, expandP);
@@ -699,7 +716,7 @@ static void add_new_edge_verts(EdgeMap *edgesP,
     int inclusion = i12->data[i];
 
     ManifoldHalfedge halfedge = halfedgeP->data[edgeP];
-    int keyRightFace = halfedge.pairedHalfedge / 3;
+    int keyRightFace = (halfedge.pairedHalfedge >= 0) ? halfedge.pairedHalfedge / 3 : edgeP / 3;
     int keyLeftFace = edgeP / 3;
 
     int newKeyRightP, newKeyRightQ, newKeyLeftP, newKeyLeftQ;
@@ -1063,19 +1080,29 @@ static ManifoldError boolean3_result(const ManifoldBoolean3 *b3,
     int edgeP = xv12->p1q2.data[idx].v[0];
     int faceQ = xv12->p1q2.data[idx].v[1];
     int inc = abs(i12.data[idx]);
-    sidesPerFace.data[faceQ + manifold_impl_num_tri(inP)] += inc;
-    ManifoldHalfedge he = inP->halfedge.data[edgeP];
-    sidesPerFace.data[edgeP / 3] += inc;
-    sidesPerFace.data[he.pairedHalfedge / 3] += inc;
+    if ((size_t)(faceQ + manifold_impl_num_tri(inP)) < sidesPerFace.len)
+      sidesPerFace.data[faceQ + manifold_impl_num_tri(inP)] += inc;
+    if ((size_t)edgeP < inP->halfedge.len) {
+      ManifoldHalfedge he = inP->halfedge.data[edgeP];
+      if ((size_t)(edgeP / 3) < sidesPerFace.len)
+        sidesPerFace.data[edgeP / 3] += inc;
+      if (he.pairedHalfedge >= 0 && (size_t)(he.pairedHalfedge / 3) < sidesPerFace.len)
+        sidesPerFace.data[he.pairedHalfedge / 3] += inc;
+    }
   }
   for (size_t idx = 0; idx < i21.len; idx++) {
     int edgeQ = xv21->p1q2.data[idx].v[1];
     int faceP = xv21->p1q2.data[idx].v[0];
     int inc = abs(i21.data[idx]);
-    sidesPerFace.data[faceP] += inc;
-    ManifoldHalfedge he = inQ->halfedge.data[edgeQ];
-    sidesPerFace.data[manifold_impl_num_tri(inP) + edgeQ / 3] += inc;
-    sidesPerFace.data[manifold_impl_num_tri(inP) + he.pairedHalfedge / 3] += inc;
+    if ((size_t)faceP < sidesPerFace.len)
+      sidesPerFace.data[faceP] += inc;
+    if ((size_t)edgeQ < inQ->halfedge.len) {
+      ManifoldHalfedge he = inQ->halfedge.data[edgeQ];
+      if ((size_t)(manifold_impl_num_tri(inP) + edgeQ / 3) < sidesPerFace.len)
+        sidesPerFace.data[manifold_impl_num_tri(inP) + edgeQ / 3] += inc;
+      if (he.pairedHalfedge >= 0 && (size_t)(manifold_impl_num_tri(inP) + he.pairedHalfedge / 3) < sidesPerFace.len)
+        sidesPerFace.data[manifold_impl_num_tri(inP) + he.pairedHalfedge / 3] += inc;
+    }
   }
 
   // Build face mapping PQ → R (exclusive scan of keepFace)
@@ -1136,7 +1163,8 @@ static ManifoldError boolean3_result(const ManifoldBoolean3 *b3,
 
     ManifoldHalfedge he = inP->halfedge.data[edgeP];
     wholeP.data[edgeP] = 0;
-    wholeP.data[he.pairedHalfedge] = 0;
+    if (he.pairedHalfedge >= 0 && (size_t)he.pairedHalfedge < wholeP.len)
+      wholeP.data[he.pairedHalfedge] = 0;
 
     int vStart = he.startVert;
     int vEnd = he.endVert;
@@ -1167,8 +1195,10 @@ static ManifoldError boolean3_result(const ManifoldBoolean3 *b3,
 
     // Pair up and add to faces
     int faceLeftP = edgeP / 3;
+    if ((size_t)faceLeftP >= facePQ2R.len) continue;
     int faceLeft = facePQ2R.data[faceLeftP];
-    int faceRightP = he.pairedHalfedge / 3;
+    int faceRightP = (he.pairedHalfedge >= 0) ? he.pairedHalfedge / 3 : faceLeftP;
+    if ((size_t)faceRightP >= facePQ2R.len) faceRightP = faceLeftP;
     int faceRight = facePQ2R.data[faceRightP];
     ManifoldTriRef forwardRef = {0, -1, faceLeftP, -1};
     ManifoldTriRef backwardRef = {0, -1, faceRightP, -1};
@@ -1179,8 +1209,8 @@ static ManifoldError boolean3_result(const ManifoldBoolean3 *b3,
       EdgePos *temp = (EdgePos *)malloc(edgePosP->len * sizeof(EdgePos));
       size_t si = 0, ei = nEdges;
       for (size_t j = 0; j < edgePosP->len; j++) {
-        if (edgePosP->data[j].isStart) temp[si++] = edgePosP->data[j];
-        else temp[ei++] = edgePosP->data[j];
+        if (edgePosP->data[j].isStart && si < nEdges) temp[si++] = edgePosP->data[j];
+        else if (ei < edgePosP->len) temp[ei++] = edgePosP->data[j];
       }
       if (si == nEdges) {
         qsort(temp, nEdges, sizeof(EdgePos), edgepos_cmp);
@@ -1211,7 +1241,8 @@ static ManifoldError boolean3_result(const ManifoldBoolean3 *b3,
 
     ManifoldHalfedge he = inQ->halfedge.data[edgeQ];
     wholeQ.data[edgeQ] = 0;
-    wholeQ.data[he.pairedHalfedge] = 0;
+    if (he.pairedHalfedge >= 0 && (size_t)he.pairedHalfedge < wholeQ.len)
+      wholeQ.data[he.pairedHalfedge] = 0;
 
     ManifoldVec3 edgeVec = vec3_sub(inQ->vertPos.data[he.endVert],
                                      inQ->vertPos.data[he.startVert]);
@@ -1237,9 +1268,14 @@ static ManifoldError boolean3_result(const ManifoldBoolean3 *b3,
     }
 
     int faceLeftQ = edgeQ / 3;
-    int faceLeft = facePQ2R.data[manifold_impl_num_tri(inP) + faceLeftQ];
-    int faceRightQ = he.pairedHalfedge / 3;
-    int faceRight = facePQ2R.data[manifold_impl_num_tri(inP) + faceRightQ];
+    size_t faceLeftQIdx = manifold_impl_num_tri(inP) + faceLeftQ;
+    if (faceLeftQIdx >= facePQ2R.len) continue;
+    int faceLeft = facePQ2R.data[faceLeftQIdx];
+    int faceRightQ = (he.pairedHalfedge >= 0) ? he.pairedHalfedge / 3 : faceLeftQ;
+    size_t faceRightQIdx = manifold_impl_num_tri(inP) + faceRightQ;
+    if (faceRightQIdx >= facePQ2R.len) faceRightQ = faceLeftQ;
+    faceRightQIdx = manifold_impl_num_tri(inP) + faceRightQ;
+    int faceRight = facePQ2R.data[faceRightQIdx];
     ManifoldTriRef forwardRef = {1, -1, faceLeftQ, -1};
     ManifoldTriRef backwardRef = {1, -1, faceRightQ, -1};
 
@@ -1248,8 +1284,8 @@ static ManifoldError boolean3_result(const ManifoldBoolean3 *b3,
       EdgePos *temp = (EdgePos *)malloc(edgePosQ->len * sizeof(EdgePos));
       size_t si = 0, ei = nEdges;
       for (size_t j = 0; j < edgePosQ->len; j++) {
-        if (edgePosQ->data[j].isStart) temp[si++] = edgePosQ->data[j];
-        else temp[ei++] = edgePosQ->data[j];
+        if (edgePosQ->data[j].isStart && si < nEdges) temp[si++] = edgePosQ->data[j];
+        else if (ei < edgePosQ->len) temp[ei++] = edgePosQ->data[j];
       }
       if (si == nEdges) {
         qsort(temp, nEdges, sizeof(EdgePos), edgepos_cmp);
@@ -1294,8 +1330,11 @@ static ManifoldError boolean3_result(const ManifoldBoolean3 *b3,
       edgePos->data[j].edgePos = (dim == 0) ? vp.x : (dim == 1) ? vp.y : vp.z;
     }
 
+    if ((size_t)faceP >= facePQ2R.len) continue;
+    size_t faceQIdx = manifold_impl_num_tri(inP) + faceQ;
+    if (faceQIdx >= facePQ2R.len) continue;
     int faceLeft = facePQ2R.data[faceP];
-    int faceRight = facePQ2R.data[manifold_impl_num_tri(inP) + faceQ];
+    int faceRight = facePQ2R.data[faceQIdx];
     ManifoldTriRef forwardRef = {0, -1, faceP, -1};
     ManifoldTriRef backwardRef = {1, -1, faceQ, -1};
 
@@ -1304,8 +1343,8 @@ static ManifoldError boolean3_result(const ManifoldBoolean3 *b3,
       EdgePos *temp = (EdgePos *)malloc(edgePos->len * sizeof(EdgePos));
       size_t si = 0, ei = nEdges;
       for (size_t j = 0; j < edgePos->len; j++) {
-        if (edgePos->data[j].isStart) temp[si++] = edgePos->data[j];
-        else temp[ei++] = edgePos->data[j];
+        if (edgePos->data[j].isStart && si < nEdges) temp[si++] = edgePos->data[j];
+        else if (ei < edgePos->len) temp[ei++] = edgePos->data[j];
       }
       if (si == nEdges) {
         qsort(temp, nEdges, sizeof(EdgePos), edgepos_cmp);
@@ -1348,8 +1387,10 @@ static ManifoldError boolean3_result(const ManifoldBoolean3 *b3,
     outHe.endVert = vP2R.data[outHe.endVert];
 
     int faceLeftP = (int)(idx / 3);
+    if ((size_t)faceLeftP >= facePQ2R.len) continue;
     int newFace = facePQ2R.data[faceLeftP];
-    int faceRightP = he.pairedHalfedge / 3;
+    int faceRightP = (he.pairedHalfedge >= 0) ? he.pairedHalfedge / 3 : faceLeftP;
+    if ((size_t)faceRightP >= facePQ2R.len) faceRightP = faceLeftP;
     int faceRight = facePQ2R.data[faceRightP];
     ManifoldTriRef forwardRef = {0, -1, faceLeftP, -1};
     ManifoldTriRef backwardRef = {0, -1, faceRightP, -1};
@@ -1392,9 +1433,13 @@ static ManifoldError boolean3_result(const ManifoldBoolean3 *b3,
     outHe.endVert = vQ2R.data[outHe.endVert];
 
     int faceLeftQ = (int)(idx / 3);
-    int newFace = facePQ2R.data[manifold_impl_num_tri(inP) + faceLeftQ];
-    int faceRightQ = he.pairedHalfedge / 3;
-    int faceRight = facePQ2R.data[manifold_impl_num_tri(inP) + faceRightQ];
+    size_t fLQIdx = manifold_impl_num_tri(inP) + faceLeftQ;
+    if (fLQIdx >= facePQ2R.len) continue;
+    int newFace = facePQ2R.data[fLQIdx];
+    int faceRightQ = (he.pairedHalfedge >= 0) ? he.pairedHalfedge / 3 : faceLeftQ;
+    size_t fRQIdx = manifold_impl_num_tri(inP) + faceRightQ;
+    if (fRQIdx >= facePQ2R.len) { faceRightQ = faceLeftQ; fRQIdx = fLQIdx; }
+    int faceRight = facePQ2R.data[fRQIdx];
     ManifoldTriRef forwardRef = {1, -1, faceLeftQ, -1};
     ManifoldTriRef backwardRef = {1, -1, faceRightQ, -1};
 

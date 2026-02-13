@@ -804,6 +804,30 @@ static void test_boolean_corner_union(void) {
 // with coplanar faces. This requires more robust halfedge handling in boolean
 // result when the input mesh comes from a previous boolean operation.
 
+static void test_boolean_multi_coplanar(void) {
+  // Sequential subtracts with coplanar faces (previously crashed)
+  Manifold c1 = manifold_cube(manifold_vec3(1.0, 1.0, 1.0), false);
+  Manifold c2_base = manifold_cube(manifold_vec3(1.0, 1.0, 1.0), false);
+  Manifold c2 = manifold_translate(&c2_base, manifold_vec3(0.3, 0.3, 0.0));
+  Manifold first = manifold_boolean(&c1, &c2, MANIFOLD_OP_SUBTRACT);
+  ASSERT_TRUE(manifold_num_vert(&first) > 0);
+
+  Manifold c3_base = manifold_cube(manifold_vec3(1.0, 1.0, 1.0), false);
+  Manifold c3 = manifold_translate(&c3_base, manifold_vec3(-0.3, -0.3, 0.0));
+  Manifold result = manifold_boolean(&first, &c3, MANIFOLD_OP_SUBTRACT);
+  ASSERT_TRUE(manifold_num_vert(&result) > 0);
+  ASSERT_TRUE(manifold_volume(&result) > 0.0);
+  ASSERT_TRUE(manifold_volume(&result) < 1.0);
+
+  manifold_destroy(&c1);
+  manifold_destroy(&c2_base);
+  manifold_destroy(&c2);
+  manifold_destroy(&first);
+  manifold_destroy(&c3_base);
+  manifold_destroy(&c3);
+  manifold_destroy(&result);
+}
+
 // ============== Main ==============
 
 int main(void) {
@@ -867,6 +891,7 @@ int main(void) {
   RUN_TEST(boolean_sphere);
   RUN_TEST(boolean_face_union);
   RUN_TEST(boolean_corner_union);
+  RUN_TEST(boolean_multi_coplanar);
 
   printf("\nConvex Hull:\n");
   RUN_TEST(hull_cube);
@@ -881,6 +906,6 @@ int main(void) {
   RUN_TEST(hull_tetrahedron);
   RUN_TEST(sdf_volume_accuracy);
 
-  printf("\n=== All %d tests passed! ===\n", 43);
+  printf("\n=== All %d tests passed! ===\n", 44);
   return 0;
 }

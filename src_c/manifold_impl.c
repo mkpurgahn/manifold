@@ -215,6 +215,8 @@ void manifold_impl_reindex_verts(ManifoldImpl *impl,
   for (size_t i = 0; i < impl->halfedge.len; i++) {
     ManifoldHalfedge *edge = &impl->halfedge.data[i];
     if (edge->startVert < 0) continue;
+    if ((size_t)edge->startVert >= oldNumVert ||
+        (size_t)edge->endVert >= oldNumVert) continue;
     edge->startVert = vertOld2New.data[edge->startVert];
     edge->endVert = vertOld2New.data[edge->endVert];
     if (!hasProp) {
@@ -233,7 +235,8 @@ void manifold_impl_compact_props(ManifoldImpl *impl) {
   ManifoldVecInt keep = vec_int_create_fill(numVerts, 0);
 
   for (size_t i = 0; i < impl->halfedge.len; i++) {
-    keep.data[impl->halfedge.data[i].propVert] = 1;
+    int pv = impl->halfedge.data[i].propVert;
+    if (pv >= 0 && (size_t)pv < numVerts) keep.data[pv] = 1;
   }
 
   ManifoldVecInt propOld2New = vec_int_create_fill(numVerts + 1, 0);
@@ -254,8 +257,9 @@ void manifold_impl_compact_props(ManifoldImpl *impl) {
   }
 
   for (size_t i = 0; i < impl->halfedge.len; i++) {
-    impl->halfedge.data[i].propVert =
-        propOld2New.data[impl->halfedge.data[i].propVert];
+    int pv = impl->halfedge.data[i].propVert;
+    if (pv >= 0 && (size_t)pv < numVerts)
+      impl->halfedge.data[i].propVert = propOld2New.data[pv];
   }
 
   vec_int_free(&keep);
@@ -432,7 +436,8 @@ void manifold_impl_calculate_vert_normals(ManifoldImpl *impl) {
     ManifoldVec3 normal = impl->faceNormal.data[tri];
     for (int i = 0; i < 3; i++) {
       int v = impl->halfedge.data[3 * tri + i].startVert;
-      impl->vertNormal.data[v] = vec3_add(impl->vertNormal.data[v], normal);
+      if (v >= 0 && (size_t)v < numVert)
+        impl->vertNormal.data[v] = vec3_add(impl->vertNormal.data[v], normal);
     }
   }
 
@@ -447,9 +452,15 @@ void manifold_impl_set_normals_and_coplanar(ManifoldImpl *impl) {
   impl->faceNormal = vec_vec3_create_fill(numTri, zero);
 
   for (size_t tri = 0; tri < numTri; tri++) {
-    ManifoldVec3 v0 = impl->vertPos.data[impl->halfedge.data[3 * tri].startVert];
-    ManifoldVec3 v1 = impl->vertPos.data[impl->halfedge.data[3 * tri + 1].startVert];
-    ManifoldVec3 v2 = impl->vertPos.data[impl->halfedge.data[3 * tri + 2].startVert];
+    int sv0 = impl->halfedge.data[3 * tri].startVert;
+    int sv1 = impl->halfedge.data[3 * tri + 1].startVert;
+    int sv2 = impl->halfedge.data[3 * tri + 2].startVert;
+    if (sv0 < 0 || (size_t)sv0 >= impl->vertPos.len ||
+        sv1 < 0 || (size_t)sv1 >= impl->vertPos.len ||
+        sv2 < 0 || (size_t)sv2 >= impl->vertPos.len) continue;
+    ManifoldVec3 v0 = impl->vertPos.data[sv0];
+    ManifoldVec3 v1 = impl->vertPos.data[sv1];
+    ManifoldVec3 v2 = impl->vertPos.data[sv2];
     impl->faceNormal.data[tri] = manifold_safe_normalize(
         vec3_cross(vec3_sub(v1, v0), vec3_sub(v2, v0)));
   }
@@ -1102,7 +1113,7 @@ void manifold_impl_split_pinched_verts(ManifoldImpl *impl) {
   for (size_t i = 0; i < nbEdges; i++) {
     if (halfedgeProcessed[i]) continue;
     int vert = impl->halfedge.data[i].startVert;
-    if (vert == -1) continue;
+    if (vert < 0 || (size_t)vert >= numVert) continue;
     if (vertProcessed[vert]) {
       vec_vec3_push(&impl->vertPos, impl->vertPos.data[vert]);
       int newV = (int)manifold_impl_num_vert(impl) - 1;
