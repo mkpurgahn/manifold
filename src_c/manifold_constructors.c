@@ -226,16 +226,81 @@ void manifold_impl_revolve(ManifoldImpl *impl,
   manifold_impl_init(impl);
   if (nPolys <= 0) return;
 
-  double radius = 0;
-  int offset = 0;
+  // Clip polygons to x >= 0 (matching C++ behavior)
+  // First pass: count total output vertices
+  ManifoldVec2 *clippedVerts = NULL;
+  int *clippedSizes = NULL;
+  int nClippedPolys = 0;
+  size_t totalClipped = 0;
+  size_t clippedCap = 0;
+
+  int polyOffset = 0;
   for (int p = 0; p < nPolys; p++) {
-    for (int v = 0; v < polySizes[p]; v++) {
-      if (polyVerts[offset + v].x > radius)
-        radius = polyVerts[offset + v].x;
+    int nPoly = polySizes[p];
+    const ManifoldVec2 *poly = polyVerts + polyOffset;
+
+    // Find first vertex with x >= 0
+    int startIdx = -1;
+    for (int i = 0; i < nPoly; i++) {
+      if (poly[i].x >= 0) { startIdx = i; break; }
     }
-    offset += polySizes[p];
+    if (startIdx < 0) { polyOffset += nPoly; continue; }
+
+    // Clip this polygon
+    size_t clipStart = totalClipped;
+    int i = startIdx;
+    do {
+      if (poly[i].x >= 0) {
+        // Ensure capacity
+        if (totalClipped >= clippedCap) {
+          clippedCap = clippedCap == 0 ? 64 : clippedCap * 2;
+          clippedVerts = (ManifoldVec2*)realloc(clippedVerts,
+              clippedCap * sizeof(ManifoldVec2));
+        }
+        clippedVerts[totalClipped++] = poly[i];
+      }
+      int next = (i + 1) % nPoly;
+      // If crossing the x=0 boundary, add intersection point
+      if ((poly[next].x < 0) != (poly[i].x < 0)) {
+        double y = poly[next].y - poly[next].x *
+                   (poly[i].y - poly[next].y) /
+                   (poly[i].x - poly[next].x);
+        if (totalClipped >= clippedCap) {
+          clippedCap = clippedCap == 0 ? 64 : clippedCap * 2;
+          clippedVerts = (ManifoldVec2*)realloc(clippedVerts,
+              clippedCap * sizeof(ManifoldVec2));
+        }
+        clippedVerts[totalClipped++] = (ManifoldVec2){0.0, y};
+      }
+      i = next;
+    } while (i != startIdx);
+
+    int clipLen = (int)(totalClipped - clipStart);
+    if (clipLen >= 3) {
+      nClippedPolys++;
+      clippedSizes = (int*)realloc(clippedSizes, nClippedPolys * sizeof(int));
+      clippedSizes[nClippedPolys - 1] = clipLen;
+    } else {
+      totalClipped = clipStart; // revert
+    }
+    polyOffset += nPoly;
   }
-  if (radius <= 0.0) return;
+
+  if (nClippedPolys == 0) {
+    free(clippedVerts);
+    free(clippedSizes);
+    return;
+  }
+
+  double radius = 0;
+  for (size_t i = 0; i < totalClipped; i++) {
+    if (clippedVerts[i].x > radius) radius = clippedVerts[i].x;
+  }
+  if (radius <= 0.0) {
+    free(clippedVerts);
+    free(clippedSizes);
+    return;
+  }
 
   if (revolveDegrees > 360.0) revolveDegrees = 360.0;
   bool isFullRevolution = (revolveDegrees == 360.0);
@@ -250,21 +315,38 @@ void manifold_impl_revolve(ManifoldImpl *impl,
   ManifoldVecVec3 vertPos = {0};
   ManifoldVecIVec3 triVerts = {0};
 
-  offset = 0;
-  for (int p = 0; p < nPolys; p++) {
-    int nPoly = polySizes[p];
+  // For partial revolution: track start/end positions
+  int *startPoses = NULL;
+  int *endPoses = NULL;
+  int poseCount = 0;
+  if (!isFullRevolution) {
+    int totalPolyVerts = 0;
+    for (int p = 0; p < nClippedPolys; p++) totalPolyVerts += clippedSizes[p];
+    startPoses = (int*)malloc(totalPolyVerts * sizeof(int));
+    endPoses = (int*)malloc(totalPolyVerts * sizeof(int));
+  }
+
+  int clipOffset = 0;
+  for (int p = 0; p < nClippedPolys; p++) {
+    int nPoly = clippedSizes[p];
+    const ManifoldVec2 *poly = clippedVerts + clipOffset;
+
     int nPosVerts = 0, nAxisVerts = 0;
     for (int v = 0; v < nPoly; v++) {
-      if (polyVerts[offset + v].x > 0) nPosVerts++;
+      if (poly[v].x > 0) nPosVerts++;
       else nAxisVerts++;
     }
 
     for (int polyVert = 0; polyVert < nPoly; polyVert++) {
       int startPosIndex = (int)vertPos.len;
-      ManifoldVec2 curr = polyVerts[offset + polyVert];
-      ManifoldVec2 prev = polyVerts[offset + (polyVert == 0 ? nPoly - 1 : polyVert - 1)];
 
-      int prevStartPosIndex = startPosIndex +
+      if (!isFullRevolution) startPoses[poseCount] = startPosIndex;
+
+      ManifoldVec2 curr = poly[polyVert];
+      ManifoldVec2 prev = poly[polyVert == 0 ? nPoly - 1 : polyVert - 1];
+
+      int prevStartPosIndex =
+          startPosIndex +
           (polyVert == 0 ? nAxisVerts + (nSlices * nPosVerts) : 0) +
           (prev.x == 0.0 ? -1 : -nSlices);
 
@@ -278,20 +360,48 @@ void manifold_impl_revolve(ManifoldImpl *impl,
         if (isFullRevolution || slice > 0) {
           int lastSlice = (slice == 0 ? nDivisions : slice) - 1;
           if (curr.x > 0.0) {
-            int psi = (prev.x == 0.0) ? prevStartPosIndex : prevStartPosIndex + lastSlice;
+            int psi = (prev.x == 0.0) ? prevStartPosIndex
+                                       : prevStartPosIndex + lastSlice;
             vec_ivec3_push(&triVerts, manifold_ivec3(
                 startPosIndex + slice, startPosIndex + lastSlice, psi));
           }
           if (prev.x > 0.0) {
-            int csi = (curr.x == 0.0) ? startPosIndex : startPosIndex + slice;
+            int csi = (curr.x == 0.0) ? startPosIndex
+                                       : startPosIndex + slice;
             vec_ivec3_push(&triVerts, manifold_ivec3(
                 prevStartPosIndex + lastSlice, prevStartPosIndex + slice, csi));
           }
         }
       }
+
+      if (!isFullRevolution) endPoses[poseCount] = (int)vertPos.len - 1;
+      poseCount++;
     }
-    offset += nPoly;
+    clipOffset += nPoly;
   }
+
+  // Add front and back cap triangles if not a full revolution
+  if (!isFullRevolution) {
+    // Triangulate the clipped cross-section
+    ManifoldVecIVec3 capTris = manifold_triangulate_with_holes(
+        clippedVerts, clippedSizes, nClippedPolys, 0);
+    for (size_t t = 0; t < capTris.len; t++) {
+      // Front cap
+      vec_ivec3_push(&triVerts, manifold_ivec3(
+          startPoses[capTris.data[t].x],
+          startPoses[capTris.data[t].y],
+          startPoses[capTris.data[t].z]));
+      // Back cap (reversed winding)
+      vec_ivec3_push(&triVerts, manifold_ivec3(
+          endPoses[capTris.data[t].z],
+          endPoses[capTris.data[t].y],
+          endPoses[capTris.data[t].x]));
+    }
+    vec_ivec3_free(&capTris);
+  }
+
+  free(startPoses);
+  free(endPoses);
 
   impl->vertPos = vec_vec3_create_n(vertPos.len);
   for (size_t i = 0; i < vertPos.len; i++) {
@@ -309,4 +419,6 @@ void manifold_impl_revolve(ManifoldImpl *impl,
   vec_vec3_free(&vertPos);
   vec_ivec3_free(&triVerts);
   vec_ivec3_free(&emptyTriVert);
+  free(clippedVerts);
+  free(clippedSizes);
 }

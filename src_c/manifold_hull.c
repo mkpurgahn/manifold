@@ -337,9 +337,13 @@ static bool qhs_reorder_horizon(QHState *s) {
 static void qhs_setup_initial_tet(QHState *s) {
   size_t vc = s->vertCount;
 
-  // Handle <= 4 points
+  // Handle <= 4 points: create degenerate tetrahedron (matching C++)
   if (vc <= 4) {
-    if (vc < 4) { s->planar = true; return; }
+    if (vc < 4) {
+      // Pad to 4 by duplicating the last point
+      s->planar = true;
+      return;
+    }
     size_t v[4] = {0, 1, 2, 3};
     ManifoldVec3 N = qh_tri_normal(s->verts[v[0]], s->verts[v[1]], s->verts[v[2]]);
     QHPlane tp = qh_plane(N, s->verts[v[0]]);
@@ -627,9 +631,21 @@ void manifold_convex_hull(ManifoldImpl *impl, const ManifoldVec3 *points,
                            size_t numPoints) {
   manifold_impl_init(impl);
 
-  if (numPoints < 4) {
+  if (numPoints == 0) {
     manifold_impl_make_empty(impl, MANIFOLD_ERROR_INVALID_CONSTRUCTION);
     return;
+  }
+
+  // Pad to at least 4 points (matching C++ behavior for degenerate cases)
+  ManifoldVec3 *paddedPoints = NULL;
+  size_t paddedCount = numPoints;
+  if (numPoints < 4) {
+    paddedCount = 4;
+    paddedPoints = (ManifoldVec3*)malloc(4 * sizeof(ManifoldVec3));
+    for (size_t i = 0; i < numPoints; i++) paddedPoints[i] = points[i];
+    for (size_t i = numPoints; i < 4; i++) paddedPoints[i] = points[numPoints - 1];
+    points = paddedPoints;
+    numPoints = 4;
   }
 
   QHState state;
@@ -646,8 +662,141 @@ void manifold_convex_hull(ManifoldImpl *impl, const ManifoldVec3 *points,
   qhs_build(&state);
 
   if (state.planar) {
+    // Create a degenerate tetrahedron for planar/collinear/few-point cases
+    // Pad points to at least 4 by duplicating
+    size_t padCount = numPoints < 4 ? 4 : numPoints;
+    ManifoldVec3 *padPoints = (ManifoldVec3*)malloc(padCount * sizeof(ManifoldVec3));
+    for (size_t i = 0; i < numPoints; i++) padPoints[i] = points[i];
+    for (size_t i = numPoints; i < 4; i++) padPoints[i] = points[numPoints - 1];
+
+    // Try adding a point offset by the triangle normal for planar case
+    if (numPoints >= 3) {
+      ManifoldVec3 N = qh_tri_normal(padPoints[0], padPoints[1], padPoints[2]);
+      double nlen = sqrt(N.x*N.x + N.y*N.y + N.z*N.z);
+      if (nlen > 1e-30) {
+        // Add extra point offset by normal
+        padPoints = (ManifoldVec3*)realloc(padPoints, (padCount + 1) * sizeof(ManifoldVec3));
+        padPoints[padCount] = (ManifoldVec3){
+          padPoints[0].x + N.x, padPoints[0].y + N.y, padPoints[0].z + N.z};
+        
+        // Build hull with extra point
+        qhs_free(&state);
+        memset(&state, 0, sizeof(state));
+        state.verts = padPoints;
+        state.vertCount = padCount + 1;
+        state.extremes[0] = 0;
+        qhs_get_extremes(&state);
+        state.scale = qhs_get_scale(&state);
+        state.epsilon = eps * state.scale;
+        state.epsilonSq = state.epsilon * state.epsilon;
+        qhs_build(&state);
+
+        if (!state.planar) {
+          // Collect faces, excluding any that reference the extra point
+          size_t extraIdx = padCount;
+          int *vertUsed = (int*)calloc(padCount + 1, sizeof(int));
+          size_t triCount = 0;
+          ManifoldVecIVec3 triVerts = {0};
+          
+          for (size_t fi = 0; fi < state.mesh.faceLen; fi++) {
+            if (qhface_is_disabled(&state.mesh.faces[fi])) continue;
+            int hes[3]; qhm_get_face_he(&state.mesh, &state.mesh.faces[fi], hes);
+            if (state.mesh.he[hes[0]].pairedHalfedge < 0) continue;
+            int sv0 = state.mesh.he[state.mesh.heNext[state.mesh.heNext[hes[0]]]].endVert;
+            int sv1 = state.mesh.he[hes[0]].endVert;
+            int sv2 = state.mesh.he[state.mesh.heNext[hes[0]]].endVert;
+            // Skip faces that reference the extra point
+            if ((size_t)sv0 == extraIdx || (size_t)sv1 == extraIdx || (size_t)sv2 == extraIdx)
+              continue;
+            // Also skip if vertex out of original range
+            if ((size_t)sv0 >= numPoints || (size_t)sv1 >= numPoints || (size_t)sv2 >= numPoints)
+              continue;
+            vertUsed[sv0] = vertUsed[sv1] = vertUsed[sv2] = 1;
+            triCount++;
+            vec_ivec3_push(&triVerts, manifold_ivec3(sv0, sv1, sv2));
+          }
+          
+          if (triCount > 0) {
+            // Build vertex map
+            int vertCount = 0;
+            int *vertMap = (int*)malloc((padCount + 1) * sizeof(int));
+            for (size_t i = 0; i < padCount + 1; i++) {
+              vertMap[i] = vertUsed[i] ? vertCount++ : -1;
+            }
+            
+            // Remap triangle indices
+            for (size_t t = 0; t < triVerts.len; t++) {
+              triVerts.data[t].x = vertMap[triVerts.data[t].x];
+              triVerts.data[t].y = vertMap[triVerts.data[t].y];
+              triVerts.data[t].z = vertMap[triVerts.data[t].z];
+            }
+            
+            impl->vertPos = vec_vec3_create_n((size_t)vertCount);
+            for (size_t i = 0; i < numPoints; i++) {
+              if (vertMap[i] >= 0) impl->vertPos.data[vertMap[i]] = points[i];
+            }
+            
+            ManifoldVecIVec3 emptyTriVert = {0};
+            manifold_impl_create_halfedges(impl, &triVerts, &emptyTriVert);
+            manifold_impl_initialize_original(impl);
+            manifold_impl_calculate_bbox(impl);
+            manifold_impl_set_epsilon(impl, -1.0, false);
+            manifold_impl_sort_geometry(impl);
+            manifold_impl_set_normals_and_coplanar(impl);
+            
+            vec_ivec3_free(&triVerts);
+            vec_ivec3_free(&emptyTriVert);
+            free(vertMap);
+          } else {
+            vec_ivec3_free(&triVerts);
+          }
+          
+          free(vertUsed);
+          free(padPoints);
+          qhs_free(&state);
+          free(paddedPoints);
+          return;
+        }
+      }
+    }
+    
+    // Truly degenerate (collinear or single point) - create degenerate mesh
+    // with just 2 triangles forming a flat surface
+    if (numPoints >= 2) {
+      // Find most distant pair
+      double maxDist = 0;
+      size_t p0 = 0, p1 = 1;
+      for (size_t i = 0; i < numPoints; i++) {
+        for (size_t j = i + 1; j < numPoints; j++) {
+          double dx = points[i].x - points[j].x;
+          double dy = points[i].y - points[j].y;
+          double dz = points[i].z - points[j].z;
+          double d = dx*dx + dy*dy + dz*dz;
+          if (d > maxDist) { maxDist = d; p0 = i; p1 = j; }
+        }
+      }
+      
+      impl->vertPos = vec_vec3_create_n(2);
+      impl->vertPos.data[0] = points[p0];
+      impl->vertPos.data[1] = points[p1];
+      
+      // Create degenerate triangles (two degenerate tris)
+      ManifoldVecIVec3 triVerts = {0};
+      vec_ivec3_push(&triVerts, manifold_ivec3(0, 1, 0));
+      vec_ivec3_push(&triVerts, manifold_ivec3(1, 0, 1));
+      ManifoldVecIVec3 emptyTriVert = {0};
+      manifold_impl_create_halfedges(impl, &triVerts, &emptyTriVert);
+      manifold_impl_initialize_original(impl);
+      manifold_impl_calculate_bbox(impl);
+      manifold_impl_set_epsilon(impl, -1.0, false);
+      
+      vec_ivec3_free(&triVerts);
+      vec_ivec3_free(&emptyTriVert);
+    }
+    
+    free(padPoints);
     qhs_free(&state);
-    manifold_impl_make_empty(impl, MANIFOLD_ERROR_INVALID_CONSTRUCTION);
+    free(paddedPoints);
     return;
   }
 
@@ -670,6 +819,7 @@ void manifold_convex_hull(ManifoldImpl *impl, const ManifoldVec3 *points,
   if (triCount < 4) {
     free(vertUsed);
     qhs_free(&state);
+    free(paddedPoints);
     manifold_impl_make_empty(impl, MANIFOLD_ERROR_INVALID_CONSTRUCTION);
     return;
   }
@@ -717,4 +867,5 @@ void manifold_convex_hull(ManifoldImpl *impl, const ManifoldVec3 *points,
   free(vertMap);
   free(vertUsed);
   qhs_free(&state);
+  free(paddedPoints);
 }

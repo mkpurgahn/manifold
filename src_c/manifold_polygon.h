@@ -73,7 +73,12 @@ static inline bool point_in_triangle_2d(ManifoldVec2 p, ManifoldVec2 a,
   return !(has_neg && has_pos);
 }
 
-// Ear-clipping triangulation of a simple polygon
+// Check if two 2D points are coincident
+static inline bool vec2_coincident(ManifoldVec2 a, ManifoldVec2 b) {
+  return a.x == b.x && a.y == b.y;
+}
+
+// Ear-clipping triangulation of a simple polygon (supports bridged holes)
 // Returns triangles as ManifoldVecIVec3
 static inline ManifoldVecIVec3 manifold_triangulate_polygon(
     const ManifoldVec2 *verts, const int *indices, size_t n) {
@@ -89,7 +94,8 @@ static inline ManifoldVecIVec3 manifold_triangulate_polygon(
   }
 
   size_t remaining = n;
-  while (remaining > 2) {
+  int maxIter = (int)(n * n);  // safety limit
+  while (remaining > 2 && maxIter-- > 0) {
     bool found = false;
     for (size_t i = 0; i < remaining; i++) {
       size_t prev = (i + remaining - 1) % remaining;
@@ -98,13 +104,17 @@ static inline ManifoldVecIVec3 manifold_triangulate_polygon(
       ManifoldVec2 a = pts[prev], b = pts[i], c = pts[next];
       double cross = vec2_cross(vec2_sub(b, a), vec2_sub(c, a));
 
-      // Only consider CCW ears
-      if (cross <= 0) continue;
+      // Only consider CCW ears (positive cross product)
+      if (cross < 1e-10) continue;
 
       // Check no other vertex is inside this ear
+      // Skip vertices that coincide with ear vertices (bridge duplicates)
       bool ear = true;
       for (size_t j = 0; j < remaining; j++) {
         if (j == prev || j == i || j == next) continue;
+        if (vec2_coincident(pts[j], a) || vec2_coincident(pts[j], b) ||
+            vec2_coincident(pts[j], c))
+          continue;
         if (point_in_triangle_2d(pts[j], a, b, c)) {
           ear = false;
           break;
@@ -112,7 +122,10 @@ static inline ManifoldVecIVec3 manifold_triangulate_polygon(
       }
 
       if (ear) {
-        vec_ivec3_push(&tris, manifold_ivec3(idx[prev], idx[i], idx[next]));
+        // Skip degenerate (zero-area) triangles but still remove the vertex
+        if (cross > 1e-10) {
+          vec_ivec3_push(&tris, manifold_ivec3(idx[prev], idx[i], idx[next]));
+        }
         // Remove vertex i
         for (size_t k = i; k < remaining - 1; k++) {
           idx[k] = idx[k + 1];
@@ -124,16 +137,38 @@ static inline ManifoldVecIVec3 manifold_triangulate_polygon(
       }
     }
     if (!found) {
-      // Degenerate polygon - force triangulation
-      if (remaining >= 3) {
-        vec_ivec3_push(&tris, manifold_ivec3(idx[0], idx[1], idx[2]));
-        for (size_t k = 1; k < remaining - 1; k++) {
-          idx[k] = idx[k + 1];
-          pts[k] = pts[k + 1];
+      // Try with relaxed tolerance for near-degenerate polygons
+      bool forced = false;
+      for (size_t i = 0; i < remaining; i++) {
+        size_t prev = (i + remaining - 1) % remaining;
+        size_t next = (i + 1) % remaining;
+        ManifoldVec2 a = pts[prev], b = pts[i], c = pts[next];
+        double cross = vec2_cross(vec2_sub(b, a), vec2_sub(c, a));
+        if (cross > -1e-10) {
+          // Accept near-zero or slightly negative ears
+          if (cross > 1e-10) {
+            vec_ivec3_push(&tris, manifold_ivec3(idx[prev], idx[i], idx[next]));
+          }
+          for (size_t k = i; k < remaining - 1; k++) {
+            idx[k] = idx[k + 1];
+            pts[k] = pts[k + 1];
+          }
+          remaining--;
+          forced = true;
+          break;
         }
-        remaining--;
-      } else {
-        break;
+      }
+      if (!forced) {
+        // Last resort: remove first vertex
+        if (remaining >= 3) {
+          for (size_t k = 0; k < remaining - 1; k++) {
+            idx[k] = idx[k + 1];
+            pts[k] = pts[k + 1];
+          }
+          remaining--;
+        } else {
+          break;
+        }
       }
     }
   }

@@ -1626,25 +1626,163 @@ void manifold_impl_set_normals_smooth(ManifoldImpl *impl, int normalIdx,
         if (++iterations > numEdge) break;
       } while (current != startEdge);
     } else {
-      // multi-normal vertex: use vertex normal as fallback
-      ManifoldVec3 normal = impl->vertNormal.data[vert];
-      int lastProp = -1;
+      // multi-normal vertex: compute per-group pseudo-normals
+      ManifoldVec3 centerPos = impl->vertPos.data[vert];
+
+      // Find a sharp edge to start on
       int current = startEdge;
-      int iterations = 0;
+      int prevFace = current / 3;
+      int iterations2 = 0;
+      do {
+        int next = manifold_next_halfedge(impl->halfedge.data[current].pairedHalfedge);
+        int face = next / 3;
+        double d = vec3_dot(impl->faceNormal.data[face], impl->faceNormal.data[prevFace]);
+        double dihedral = manifold_degrees(acos(fmax(-1.0, fmin(1.0, d))));
+        bool isSharp = dihedral > minSharpAngle ||
+            triIsFlatFace.data[face] != triIsFlatFace.data[prevFace] ||
+            (triIsFlatFace.data[face] && triIsFlatFace.data[prevFace] &&
+             !manifold_triref_same_face(&impl->meshRelation.triRef.data[face],
+                                         &impl->meshRelation.triRef.data[prevFace]));
+        if (isSharp) break;
+        current = next;
+        prevFace = face;
+        if (++iterations2 > numEdge) break;
+      } while (current != startEdge);
+      int endEdge = current;
+
+      // Phase 1: ForVert binary op to compute groups and pseudo-normals
+      // Dynamic arrays for groups and normals
+      int *group = (int *)malloc(numEdge * sizeof(int));
+      ManifoldVec3 *normals = (ManifoldVec3 *)malloc(numEdge * sizeof(ManifoldVec3));
+      int groupCount = 0;
+      int numNormals = 0;
+
+      // ForVert<FaceEdge> binary op
+      // Transform: compute FaceEdge for each halfedge
+      // First, compute the initial "here" value
+      int curHE = endEdge;
+      int hereFace;
+      ManifoldVec3 hereEdgeVec;
+      if (manifold_impl_is_inside_quad(impl, curHE)) {
+        hereFace = curHE / 3;
+        hereEdgeVec = manifold_vec3(NAN, NAN, NAN);
+      } else {
+        hereFace = curHE / 3;
+        int endV = impl->halfedge.data[curHE].endVert;
+        ManifoldVec3 pos = impl->vertPos.data[endV];
+        if (vertNumSharp[endV] < 2) {
+          ManifoldVec3 n2 = vertFlatFace_data.data[endV] >= 0
+              ? impl->faceNormal.data[vertFlatFace_data.data[endV]]
+              : impl->vertNormal.data[endV];
+          ManifoldVec4 tFromN = manifold_impl_tangent_from_normal(impl, n2,
+              impl->halfedge.data[curHE].pairedHalfedge);
+          pos = vec3_add(pos, vec4_to_vec3(tFromN));
+        }
+        hereEdgeVec = manifold_safe_normalize(vec3_sub(pos, centerPos));
+      }
+
+      iterations2 = 0;
+      current = endEdge;
+      do {
+        int nextHE = manifold_next_halfedge(impl->halfedge.data[current].pairedHalfedge);
+        // Transform for next
+        int nextFace;
+        ManifoldVec3 nextEdgeVec;
+        if (manifold_impl_is_inside_quad(impl, nextHE)) {
+          nextFace = nextHE / 3;
+          nextEdgeVec = manifold_vec3(NAN, NAN, NAN);
+        } else {
+          nextFace = nextHE / 3;
+          int endV = impl->halfedge.data[nextHE].endVert;
+          ManifoldVec3 pos = impl->vertPos.data[endV];
+          if (vertNumSharp[endV] < 2) {
+            ManifoldVec3 n2 = vertFlatFace_data.data[endV] >= 0
+                ? impl->faceNormal.data[vertFlatFace_data.data[endV]]
+                : impl->vertNormal.data[endV];
+            ManifoldVec4 tFromN = manifold_impl_tangent_from_normal(impl, n2,
+                impl->halfedge.data[nextHE].pairedHalfedge);
+            pos = vec3_add(pos, vec4_to_vec3(tFromN));
+          }
+          nextEdgeVec = manifold_safe_normalize(vec3_sub(pos, centerPos));
+        }
+
+        // Binary op: check if edge is sharp between here and next
+        double d2 = vec3_dot(impl->faceNormal.data[hereFace], impl->faceNormal.data[nextFace]);
+        double dihedral2 = manifold_degrees(acos(fmax(-1.0, fmin(1.0, d2))));
+        bool isSharp2 = dihedral2 > minSharpAngle ||
+            triIsFlatFace.data[hereFace] != triIsFlatFace.data[nextFace] ||
+            (triIsFlatFace.data[hereFace] && triIsFlatFace.data[nextFace] &&
+             !manifold_triref_same_face(&impl->meshRelation.triRef.data[hereFace],
+                                         &impl->meshRelation.triRef.data[nextFace]));
+        if (isSharp2) {
+          normals[numNormals] = manifold_vec3(0, 0, 0);
+          numNormals++;
+        }
+        group[groupCount++] = numNormals - 1;
+        if (isfinite(nextEdgeVec.x)) {
+          ManifoldVec3 cr = manifold_safe_normalize(vec3_cross(nextEdgeVec, hereEdgeVec));
+          double ang = angle_between(hereEdgeVec, nextEdgeVec);
+          normals[numNormals - 1] = vec3_add(normals[numNormals - 1], vec3_scale(cr, ang));
+        } else {
+          nextEdgeVec = hereEdgeVec;
+        }
+
+        hereFace = nextFace;
+        hereEdgeVec = nextEdgeVec;
+        current = nextHE;
+        if (++iterations2 > numEdge) break;
+      } while (current != endEdge);
+
+      // Normalize pseudo-normals
+      for (int i = 0; i < numNormals; i++) {
+        normals[i] = manifold_safe_normalize(normals[i]);
+      }
+
+      // Phase 2: assign normals to halfedges, splitting properties as needed
+      int lastGroup2 = 0;
+      int lastProp = -1;
+      int newProp = -1;
+      int idx = 0;
+      current = endEdge;
+      iterations2 = 0;
       do {
         int prop = oldHalfedgeProp[current];
-        impl->halfedge.data[current].propVert = prop;
-        if (prop != lastProp) {
+
+        if (idx < groupCount && group[idx] != lastGroup2 && group[idx] != 0 && prop == lastProp) {
+          // Split property vertex
+          lastGroup2 = group[idx];
+          newProp = (int)(impl->properties.len / numProp);
+          vec_double_resize(&impl->properties, impl->properties.len + numProp);
+          // Copy old property data
+          for (int p = 0; p < oldNumProp && p < numProp; p++)
+            impl->properties.data[newProp * numProp + p] = oldProperties.data[prop * numProp + p];
+          for (int p = oldNumProp; p < numProp; p++)
+            impl->properties.data[newProp * numProp + p] = 0;
+          // Set normal
+          ManifoldVec3 n = idx < groupCount ? normals[group[idx]] : manifold_vec3(0,0,0);
+          impl->properties.data[newProp * numProp + normalIdx + 0] = n.x;
+          impl->properties.data[newProp * numProp + normalIdx + 1] = n.y;
+          impl->properties.data[newProp * numProp + normalIdx + 2] = n.z;
+        } else if (prop != lastProp) {
           lastProp = prop;
+          newProp = prop;
           for (int p = 0; p < oldNumProp && p < numProp; p++)
             impl->properties.data[prop * numProp + p] = oldProperties.data[prop * numProp + p];
-          for (int i = 0; i < 3; i++)
-            impl->properties.data[prop * numProp + normalIdx + i] =
-                (i == 0 ? normal.x : (i == 1 ? normal.y : normal.z));
+          ManifoldVec3 n = idx < groupCount ? normals[group[idx]] : manifold_vec3(0,0,0);
+          impl->properties.data[prop * numProp + normalIdx + 0] = n.x;
+          impl->properties.data[prop * numProp + normalIdx + 1] = n.y;
+          impl->properties.data[prop * numProp + normalIdx + 2] = n.z;
         }
+
+        impl->halfedge.data[current].propVert = newProp;
+        idx++;
+
         current = manifold_next_halfedge(impl->halfedge.data[current].pairedHalfedge);
-        if (++iterations > numEdge) break;
-      } while (current != startEdge);
+        if (++iterations2 > numEdge) break;
+      } while (current != endEdge);
+
+      free(group);
+      free(normals);
     }
   }
 

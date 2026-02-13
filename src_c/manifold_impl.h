@@ -192,6 +192,9 @@ void manifold_impl_revolve(ManifoldImpl *impl,
                            int circularSegments, double revolveDegrees);
 
 // sdf.c equivalents
+void manifold_impl_shape(ManifoldImpl *impl, int shape, ManifoldMat3x4 m);
+
+// sdf.c equivalents
 void manifold_impl_level_set(ManifoldImpl *impl,
                               double (*sdf)(double x, double y, double z, void *ctx),
                               void *ctx,

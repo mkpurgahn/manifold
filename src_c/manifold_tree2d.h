@@ -18,7 +18,12 @@ typedef struct {
 
 // ManifoldRect and manifold_rect_overlaps are already defined in
 // manifold_types.h and manifold_vec_math.h respectively.
-// manifold_rect_contains_point is also in manifold_vec_math.h.
+
+// Check if a 2D point is inside a rectangle.
+static inline bool manifold_rect_contains_point(ManifoldRect r, ManifoldVec2 p) {
+  return p.x >= r.min.x && p.x <= r.max.x &&
+         p.y >= r.min.y && p.y <= r.max.y;
+}
 
 // Compare functions for sorting
 static inline int polyvert_cmp_x(const void *a, const void *b) {

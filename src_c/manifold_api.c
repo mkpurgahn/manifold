@@ -327,6 +327,13 @@ static void sphere_warp(ManifoldImpl *impl, double radius) {
 }
 #endif
 
+// Edge divisions function for sphere: constant n-1
+static int sphere_edge_divisions(ManifoldVec3 edgeVec, ManifoldVec4 t0,
+                                 ManifoldVec4 t1, void *ctx) {
+  (void)edgeVec; (void)t0; (void)t1;
+  return *(int*)ctx;
+}
+
 Manifold manifold_sphere(double radius, int circularSegments) {
   Manifold m;
   if (radius <= 0.0) {
@@ -339,104 +346,34 @@ Manifold manifold_sphere(double radius, int circularSegments) {
                                : manifold_get_circular_segments(radius) / 4;
   if (n < 1) n = 1;
 
-  // Start with octahedron vertices
-  ManifoldVec3 baseVerts[6] = {
-    {1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}
-  };
-  ManifoldIVec3 baseTris[8] = {
-    {4, 0, 2}, {4, 2, 1}, {4, 1, 3}, {4, 3, 0},
-    {5, 2, 0}, {5, 1, 2}, {5, 3, 1}, {5, 0, 3}
-  };
+  // Start with octahedron, matching C++: Impl::Shape::Octahedron
+  manifold_impl_shape(&m.impl, 2, mat3x4_identity());  // 2 = Octahedron
 
-  // Build vertex and triangle arrays
-  ManifoldVecVec3 verts = {0};
-  for (int i = 0; i < 6; i++) vec_vec3_push(&verts, baseVerts[i]);
-
-  ManifoldVecIVec3 tris = {0};
-  for (int i = 0; i < 8; i++) vec_ivec3_push(&tris, baseTris[i]);
-
-  // Subdivide using recursive midpoint splitting
-  // The C++ code splits each edge into n segments. We approximate this
-  // by performing ceil(log2(n)) midpoint subdivisions (each doubles resolution).
-  int numSubdiv = 0;
-  { int target = n; while (target > 1) { numSubdiv++; target = (target + 1) / 2; } }
-  
-  for (int subdiv = 0; subdiv < numSubdiv; subdiv++) {
-    ManifoldVecIVec3 newTris = {0};
-
-    typedef struct { int v0, v1, mid; } EdgeMid;
-    size_t numEdgeMids = 0;
-    size_t capEdgeMids = tris.len * 3;
-    EdgeMid *edgeMids = (EdgeMid *)malloc(capEdgeMids * sizeof(EdgeMid));
-
-    for (size_t t = 0; t < tris.len; t++) {
-      int v[3] = {tris.data[t].x, tris.data[t].y, tris.data[t].z};
-      int mid[3];
-
-      for (int e = 0; e < 3; e++) {
-        int a = v[e], b = v[(e + 1) % 3];
-        int lo = a < b ? a : b;
-        int hi = a < b ? b : a;
-
-        int found = -1;
-        for (size_t k = 0; k < numEdgeMids; k++) {
-          if (edgeMids[k].v0 == lo && edgeMids[k].v1 == hi) {
-            found = (int)k;
-            break;
-          }
-        }
-
-        if (found >= 0) {
-          mid[e] = edgeMids[found].mid;
-        } else {
-          ManifoldVec3 p = vec3_scale(vec3_add(verts.data[a], verts.data[b]), 0.5);
-          p = vec3_normalize(p); // project to unit sphere
-          mid[e] = (int)verts.len;
-          vec_vec3_push(&verts, p);
-          if (numEdgeMids >= capEdgeMids) {
-            capEdgeMids *= 2;
-            edgeMids = (EdgeMid *)realloc(edgeMids, capEdgeMids * sizeof(EdgeMid));
-          }
-          edgeMids[numEdgeMids++] = (EdgeMid){lo, hi, mid[e]};
-        }
-      }
-
-      vec_ivec3_push(&newTris, manifold_ivec3(v[0], mid[0], mid[2]));
-      vec_ivec3_push(&newTris, manifold_ivec3(mid[0], v[1], mid[1]));
-      vec_ivec3_push(&newTris, manifold_ivec3(mid[2], mid[1], v[2]));
-      vec_ivec3_push(&newTris, manifold_ivec3(mid[0], mid[1], mid[2]));
-    }
-
-    free(edgeMids);
-    vec_ivec3_free(&tris);
-    tris = newTris;
+  // Use proper Subdivide to split each edge into n segments (matching C++)
+  if (n > 1) {
+    int nMinusOne = n - 1;
+    ManifoldVecBarycentric bary = manifold_impl_subdivide(
+        &m.impl, sphere_edge_divisions, &nMinusOne, true);
+    vec_bary_free(&bary);
   }
 
   // Apply cosine mapping (matching C++ code) then normalize
-  for (size_t i = 0; i < verts.len; i++) {
-    ManifoldVec3 v = verts.data[i];
+  for (size_t i = 0; i < m.impl.vertPos.len; i++) {
+    ManifoldVec3 v = m.impl.vertPos.data[i];
     v.x = cos(MANIFOLD_HALF_PI * (1.0 - v.x));
     v.y = cos(MANIFOLD_HALF_PI * (1.0 - v.y));
     v.z = cos(MANIFOLD_HALF_PI * (1.0 - v.z));
     v = vec3_normalize(v);
     if (isnan(v.x)) v = manifold_vec3(0, 0, 0);
-    verts.data[i] = vec3_scale(v, radius);
+    m.impl.vertPos.data[i] = vec3_scale(v, radius);
   }
 
-  // Build the manifold
-  manifold_impl_init(&m.impl);
-  m.impl.vertPos = verts;
-
-  ManifoldVecIVec3 emptyTriProp = {0};
-  manifold_impl_create_halfedges(&m.impl, &tris, &emptyTriProp);
+  // Re-initialize after vertex modification
   manifold_impl_initialize_original(&m.impl);
   manifold_impl_calculate_bbox(&m.impl);
   manifold_impl_set_epsilon(&m.impl, -1.0, false);
   manifold_impl_sort_geometry(&m.impl);
   manifold_impl_set_normals_and_coplanar(&m.impl);
-
-  vec_ivec3_free(&tris);
-  vec_ivec3_free(&emptyTriProp);
   return m;
 }
 
