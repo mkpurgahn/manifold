@@ -197,6 +197,7 @@ void manifold_impl_level_set(ManifoldImpl *impl,
                               void *ctx,
                               ManifoldBox bounds,
                               double edgeLength,
-                              double level);
+                              double level,
+                              double tolerance);
 
 #endif // MANIFOLD_IMPL_H

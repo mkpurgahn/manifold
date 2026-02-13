@@ -569,8 +569,7 @@ Manifold manifold_level_set(double (*sdf)(double x, double y, double z, void *ct
                             void *ctx, ManifoldBox bounds, double edgeLength,
                             double level, double tolerance) {
   Manifold m;
-  manifold_impl_level_set(&m.impl, sdf, ctx, bounds, edgeLength, level);
-  (void)tolerance;
+  manifold_impl_level_set(&m.impl, sdf, ctx, bounds, edgeLength, level, tolerance);
   return m;
 }
 

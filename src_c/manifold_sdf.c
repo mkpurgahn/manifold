@@ -261,10 +261,11 @@ void manifold_impl_level_set(ManifoldImpl *impl,
                               double (*sdf)(double x, double y, double z,
                                             void *ctx),
                               void *ctx, ManifoldBox bounds,
-                              double edgeLength, double level) {
+                              double edgeLength, double level,
+                              double tolerance_in) {
   manifold_impl_init(impl);
 
-  double tolerance = DBL_MAX; // default: interpolated crossing points
+  double tolerance = tolerance_in > 0 ? tolerance_in : DBL_MAX;
 
   ManifoldVec3 dim = manifold_box_size(bounds);
   ManifoldIVec3 gridSize = {
