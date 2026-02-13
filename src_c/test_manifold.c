@@ -999,6 +999,47 @@ static void test_boolean_extrude_subtract(void) {
   manifold_destroy(&result);
 }
 
+static void test_boolean_non_intersecting(void) {
+  // Non-intersecting cubes: union volume = sum, difference = original, intersection = empty
+  Manifold cube1 = manifold_cube(manifold_vec3(1.0, 1.0, 1.0), false);
+  double vol1 = manifold_volume(&cube1);
+  Manifold cube2_base = manifold_cube(manifold_vec3(2.0, 2.0, 2.0), false);
+  Manifold cube2 = manifold_translate(&cube2_base, manifold_vec3(3.0, 0.0, 0.0));
+  double vol2 = manifold_volume(&cube2);
+  
+  Manifold u = manifold_boolean(&cube1, &cube2, MANIFOLD_OP_ADD);
+  ASSERT_NEAR(manifold_volume(&u), vol1 + vol2, 0.01);
+  
+  Manifold d = manifold_boolean(&cube1, &cube2, MANIFOLD_OP_SUBTRACT);
+  ASSERT_NEAR(manifold_volume(&d), vol1, 0.01);
+  
+  Manifold i = manifold_boolean(&cube1, &cube2, MANIFOLD_OP_INTERSECT);
+  ASSERT_TRUE(manifold_is_empty(&i) || manifold_volume(&i) < 0.01);
+  
+  manifold_destroy(&cube1);
+  manifold_destroy(&cube2_base);
+  manifold_destroy(&cube2);
+  manifold_destroy(&u);
+  manifold_destroy(&d);
+  manifold_destroy(&i);
+}
+
+static void test_boolean_rotated(void) {
+  // Boolean on a rotated cube (not axis-aligned)
+  Manifold cube = manifold_cube(manifold_vec3(1.0, 1.0, 1.0), true);
+  Manifold rotated = manifold_rotate(&cube, 45.0, 0.0, 0.0);
+  Manifold cube2 = manifold_cube(manifold_vec3(1.0, 1.0, 1.0), true);
+  
+  Manifold result = manifold_boolean(&rotated, &cube2, MANIFOLD_OP_INTERSECT);
+  ASSERT_TRUE(manifold_volume(&result) > 0.0);
+  ASSERT_TRUE(manifold_volume(&result) < 1.0);
+  
+  manifold_destroy(&cube);
+  manifold_destroy(&rotated);
+  manifold_destroy(&cube2);
+  manifold_destroy(&result);
+}
+
 // ============== Main ==============
 
 int main(void) {
@@ -1077,6 +1118,8 @@ int main(void) {
   RUN_TEST(boolean_split);
   RUN_TEST(boolean_cylinder_subtract);
   RUN_TEST(boolean_extrude_subtract);
+  RUN_TEST(boolean_non_intersecting);
+  RUN_TEST(boolean_rotated);
 
   printf("\nConvex Hull:\n");
   RUN_TEST(hull_cube);
@@ -1091,6 +1134,6 @@ int main(void) {
   RUN_TEST(hull_tetrahedron);
   RUN_TEST(sdf_volume_accuracy);
 
-  printf("\n=== All %d tests passed! ===\n", 54);
+  printf("\n=== All %d tests passed! ===\n", 56);
   return 0;
 }
