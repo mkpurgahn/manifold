@@ -776,12 +776,13 @@ static int assemble_halfedge_loops(const ManifoldHalfedge *edges, int numEdge,
     int loopLen = 0;
     int thisEdge = startEdge;
 
-    do {
-      loop[loopLen++] = thisEdge;
-      // Remove this entry from the hash
-      entryKey[thisEdge] = -1;
-      // Find next edge: lookup endVert in hash
-      int endV = edges[thisEdge].endVert;
+    // Follow the C++ approach: don't erase startEdge until we circle back
+    // Add startEdge to the loop and mark it used
+    loop[loopLen++] = startEdge;
+    entryKey[startEdge] = -1;
+
+    int endV = edges[startEdge].endVert;
+    while (endV != edges[startEdge].startVert) {
       int bucket = ((unsigned)endV) % (unsigned)hashSize;
       int prev = -1;
       int cur = hashHead[bucket];
@@ -797,9 +798,12 @@ static int assemble_halfedge_loops(const ManifoldHalfedge *edges, int numEdge,
         prev = cur;
         cur = nextEntry[cur];
       }
-      if (found < 0) break;
-      thisEdge = found;
-    } while (thisEdge != startEdge);
+      if (found < 0) break;  // broken loop
+      loop[loopLen++] = found;
+      entryKey[found] = -1;
+      endV = edges[found].endVert;
+      if (loopLen > numEdge) break;  // safety
+    }
 
     if (numLoops >= loopCap) {
       loopCap *= 2;
@@ -1156,6 +1160,7 @@ static ManifoldError boolean3_result(const ManifoldBoolean3 *b3,
     i03.data[i] = c1 + c3 * b3->w03.data[i];
   for (size_t i = 0; i < b3->w30.len; i++)
     i30.data[i] = c2 + c3 * b3->w30.data[i];
+
 
   // Calculate vertex mappings (exclusive scan with abs sum)
   ManifoldVecInt vP2R = vec_int_create_n(inP->vertPos.len);
@@ -1639,12 +1644,102 @@ static ManifoldError boolean3_result(const ManifoldBoolean3 *b3,
     }
   }
 
+
+  // Merge coincident vertices before face2tri to avoid degenerate polygons.
+  // The boolean creates many duplicate vertices at the same position (multiple
+  // intersection verts, duplicated P/Q verts). Merging them first simplifies
+  // the polygon faces so the ear-clipper can triangulate correctly.
+  {
+    int nv = (int)outR->vertPos.len;
+    int *vertMap = (int *)malloc((size_t)nv * sizeof(int));
+    for (int i = 0; i < nv; i++) vertMap[i] = i;
+    double eps = fmax(outR->epsilon, 1e-12);
+    for (int i = 0; i < nv; i++) {
+      if (vertMap[i] != i) continue;
+      for (int j = i + 1; j < nv; j++) {
+        if (vertMap[j] != j) continue;
+        ManifoldVec3 d = vec3_sub(outR->vertPos.data[i], outR->vertPos.data[j]);
+        if (fabs(d.x) <= eps && fabs(d.y) <= eps && fabs(d.z) <= eps) {
+          vertMap[j] = i;
+        }
+      }
+    }
+    // Update halfedge vertex references
+    for (size_t i = 0; i < outR->halfedge.len; i++) {
+      int sv = outR->halfedge.data[i].startVert;
+      int ev = outR->halfedge.data[i].endVert;
+      if (sv >= 0 && sv < nv) outR->halfedge.data[i].startVert = vertMap[sv];
+      if (ev >= 0 && ev < nv) outR->halfedge.data[i].endVert = vertMap[ev];
+    }
+    free(vertMap);
+
+    // Remove degenerate edges (start == end) and rebuild faceEdge
+    int writeIdx = 0;
+    ManifoldVecInt newFaceEdge = vec_int_create_n((size_t)(numFaceR + 1));
+    ManifoldVecTriRef newHalfedgeRef = {0};
+    for (int f = 0; f < numFaceR; f++) {
+      newFaceEdge.data[f] = writeIdx;
+      int start = faceEdge.data[f];
+      int end = faceEdge.data[f + 1];
+      for (int e = start; e < end; e++) {
+        if (outR->halfedge.data[e].startVert != outR->halfedge.data[e].endVert) {
+          if (writeIdx != e) {
+            outR->halfedge.data[writeIdx] = outR->halfedge.data[e];
+            // halfedgeRef is indexed the same way
+          }
+          vec_triref_push(&newHalfedgeRef, halfedgeRef.data[e]);
+          writeIdx++;
+        }
+      }
+    }
+    newFaceEdge.data[numFaceR] = writeIdx;
+    outR->halfedge.len = (size_t)writeIdx;
+    vec_int_free(&faceEdge);
+    faceEdge = newFaceEdge;
+    vec_triref_free(&halfedgeRef);
+    halfedgeRef = newHalfedgeRef;
+
+    // Remove empty faces
+    int newNumFaceR = 0;
+    ManifoldVecInt cleanFaceEdge = vec_int_create_n((size_t)(numFaceR + 1));
+    ManifoldVecVec3 cleanNormals = {0};
+    cleanFaceEdge.data[0] = 0;
+    for (int f = 0; f < numFaceR; f++) {
+      int nEdges = faceEdge.data[f + 1] - faceEdge.data[f];
+      if (nEdges >= 3) {
+        // Compact halfedges
+        int src = faceEdge.data[f];
+        int dst = cleanFaceEdge.data[newNumFaceR];
+        if (src != dst) {
+          for (int e = 0; e < nEdges; e++) {
+            outR->halfedge.data[dst + e] = outR->halfedge.data[src + e];
+          }
+          // Also shift halfedgeRef
+          for (int e = 0; e < nEdges; e++) {
+            halfedgeRef.data[dst + e] = halfedgeRef.data[src + e];
+          }
+        }
+        vec_vec3_push(&cleanNormals, outR->faceNormal.data[f]);
+        cleanFaceEdge.data[newNumFaceR + 1] = dst + nEdges;
+        newNumFaceR++;
+      }
+    }
+    outR->halfedge.len = (size_t)cleanFaceEdge.data[newNumFaceR];
+    vec_int_free(&faceEdge);
+    faceEdge = cleanFaceEdge;
+    numFaceR = newNumFaceR;
+    vec_vec3_free(&outR->faceNormal);
+    outR->faceNormal = cleanNormals;
+  }
+
   // Triangulate the faces
   faceEdge.len = (size_t)(numFaceR + 1);
   face2tri(outR, &faceEdge, &halfedgeRef, true);
 
+
   // Reorder halfedges for determinism
   manifold_impl_reorder_halfedges(outR);
+
 
   // Update references
   size_t offsetQ = manifold_mesh_id_counter;
@@ -1674,7 +1769,10 @@ static ManifoldError boolean3_result(const ManifoldBoolean3 *b3,
 
   // Simplify topology
   manifold_impl_simplify_topology(outR, nPv + nQv);
+
+
   manifold_impl_remove_unreferenced_verts(outR);
+
 
   // Finalize
   manifold_impl_calculate_bbox(outR);
