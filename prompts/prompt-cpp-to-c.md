@@ -54,13 +54,17 @@ Convert every `.cpp` and `.h` file in `src/` and `include/` to pure C11. No modu
 
 ## Approach
 
-Work file by file:
+Work file by file, **in order**:
 
 1. Read the C++ source completely
 2. Create the equivalent `.c` and `.h` in `src_c/`
 3. Translate all logic to C11
 4. Ensure it compiles: `cc -std=c11 -c src_c/filename.c -I src_c/`
-5. Commit: `port: convert filename.cpp → filename.c`
+5. **Port all tests for that file.** Find the corresponding test cases in `test/` and convert them to C. Run them. All must pass.
+6. Commit: `port: convert filename.cpp → filename.c`
+7. **Only then move to the next file.**
+
+**Do NOT skip to an easier file.** If a file is hard, that's where you stay until it's done. Do not move on leaving broken or incomplete work behind. One file at a time, fully ported, fully tested, then next.
 
 Use the existing C binding API (`bindings/c/`) as reference for naming conventions.
 
