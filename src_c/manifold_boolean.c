@@ -734,6 +734,89 @@ static void add_new_edge_verts(EdgeMap *edgesP,
 
 // ============== Face2Tri: triangulate general faces ==============
 
+// Assemble halfedges into polygon loops (matching C++ AssembleHalfedges).
+// Returns number of loops. loops[i] contains edge local indices for loop i,
+// loopLens[i] is the length. Caller must free loops[i] and loops/loopLens.
+static int assemble_halfedge_loops(const ManifoldHalfedge *edges, int numEdge,
+                                    int ***loops_out, int **loopLens_out) {
+  // Build multimap: startVert → local edge index
+  // Use a simple array of {key, value, next} linked list per vertex
+  int *nextEntry = (int *)malloc((size_t)numEdge * sizeof(int));
+  int *entryEdge = (int *)malloc((size_t)numEdge * sizeof(int));
+  int *entryKey = (int *)malloc((size_t)numEdge * sizeof(int));
+  // Hash table: vert → first entry index (-1 = empty)
+  int hashSize = numEdge * 2 + 1;
+  int *hashHead = (int *)malloc((size_t)hashSize * sizeof(int));
+  for (int i = 0; i < hashSize; i++) hashHead[i] = -1;
+
+  for (int i = 0; i < numEdge; i++) {
+    int sv = edges[i].startVert;
+    int bucket = ((unsigned)sv) % (unsigned)hashSize;
+    entryKey[i] = sv;
+    entryEdge[i] = i;
+    nextEntry[i] = hashHead[bucket];
+    hashHead[bucket] = i;
+  }
+
+  int numLoops = 0;
+  int loopCap = 4;
+  int **loops = (int **)malloc((size_t)loopCap * sizeof(int *));
+  int *loopLens = (int *)malloc((size_t)loopCap * sizeof(int));
+
+  while (1) {
+    // Find first remaining edge
+    int startEdge = -1;
+    for (int i = 0; i < numEdge; i++) {
+      if (entryKey[i] >= 0) { startEdge = i; break; }
+    }
+    if (startEdge < 0) break;
+
+    // Start a new loop
+    int *loop = (int *)malloc((size_t)numEdge * sizeof(int));
+    int loopLen = 0;
+    int thisEdge = startEdge;
+
+    do {
+      loop[loopLen++] = thisEdge;
+      // Remove this entry from the hash
+      entryKey[thisEdge] = -1;
+      // Find next edge: lookup endVert in hash
+      int endV = edges[thisEdge].endVert;
+      int bucket = ((unsigned)endV) % (unsigned)hashSize;
+      int prev = -1;
+      int cur = hashHead[bucket];
+      int found = -1;
+      while (cur >= 0) {
+        if (entryKey[cur] == endV) {
+          found = entryEdge[cur];
+          // Remove from hash chain
+          if (prev < 0) hashHead[bucket] = nextEntry[cur];
+          else nextEntry[prev] = nextEntry[cur];
+          break;
+        }
+        prev = cur;
+        cur = nextEntry[cur];
+      }
+      if (found < 0) break;
+      thisEdge = found;
+    } while (thisEdge != startEdge);
+
+    if (numLoops >= loopCap) {
+      loopCap *= 2;
+      loops = (int **)realloc(loops, (size_t)loopCap * sizeof(int *));
+      loopLens = (int *)realloc(loopLens, (size_t)loopCap * sizeof(int));
+    }
+    loops[numLoops] = loop;
+    loopLens[numLoops] = loopLen;
+    numLoops++;
+  }
+
+  free(nextEntry); free(entryEdge); free(entryKey); free(hashHead);
+  *loops_out = loops;
+  *loopLens_out = loopLens;
+  return numLoops;
+}
+
 static void face2tri(ManifoldImpl *impl, const ManifoldVecInt *faceEdge,
                       const ManifoldVecTriRef *halfedgeRef, bool allowConvex) {
   (void)allowConvex;
@@ -772,61 +855,136 @@ static void face2tri(ManifoldImpl *impl, const ManifoldVecInt *faceEdge,
       vec_vec3_push(&triNormal, normal);
       vec_triref_push(&triRef, ref);
     } else {
-      // General case: project and triangulate
+      // General case: assemble into loops, project, and triangulate
       ManifoldMat2x3 projection = manifold_get_axis_aligned_projection(normal);
 
-      // Build polygon from halfedges using multimap-like assembly
-      // Simple chain following for the general case
-      int *heIdx = (int *)malloc((size_t)numEdge * sizeof(int));
-      for (int i = 0; i < numEdge; i++) heIdx[i] = firstEdge + i;
+      // Assemble halfedges into polygon loops
+      int **loops = NULL;
+      int *loopLens = NULL;
+      int numLoops = assemble_halfedge_loops(
+          impl->halfedge.data + firstEdge, numEdge, &loops, &loopLens);
 
-      // Assemble into a polygon chain
-      // Build adjacency: startVert → edge index
-      ManifoldVec2 *pts2d = (ManifoldVec2 *)malloc((size_t)numEdge * sizeof(ManifoldVec2));
-      int *vertIdx = (int *)malloc((size_t)numEdge * sizeof(int));
+      if (numLoops == 0) {
+        free(loops); free(loopLens);
+        continue;
+      }
 
-      // Try to chain the edges
-      int *order = (int *)malloc((size_t)numEdge * sizeof(int));
-      bool *used = (bool *)calloc((size_t)numEdge, sizeof(bool));
-      order[0] = 0;
-      used[0] = true;
-      int chainLen = 1;
+      // Project all loops into 2D and build per-loop point arrays
+      // Also build a global index array mapping flat position → halfedge index
+      int totalPts = 0;
+      for (int li = 0; li < numLoops; li++) totalPts += loopLens[li];
 
-      for (int step = 1; step < numEdge; step++) {
-        int lastEnd = impl->halfedge.data[heIdx[order[chainLen - 1]]].endVert;
-        bool found = false;
-        for (int j = 0; j < numEdge; j++) {
-          if (!used[j] && impl->halfedge.data[heIdx[j]].startVert == lastEnd) {
-            order[chainLen++] = j;
-            used[j] = true;
-            found = true;
-            break;
+      ManifoldVec2 *allPts = (ManifoldVec2 *)malloc((size_t)totalPts * sizeof(ManifoldVec2));
+      int *heMap = (int *)malloc((size_t)totalPts * sizeof(int));  // flat idx → local edge idx
+      int *polySizes = (int *)malloc((size_t)numLoops * sizeof(int));
+
+      int flatIdx = 0;
+      for (int li = 0; li < numLoops; li++) {
+        polySizes[li] = loopLens[li];
+        for (int pi = 0; pi < loopLens[li]; pi++) {
+          int localEdge = loops[li][pi];
+          int sv = impl->halfedge.data[firstEdge + localEdge].startVert;
+          allPts[flatIdx] = mat2x3_mul_vec3(projection, impl->vertPos.data[sv]);
+          heMap[flatIdx] = localEdge;
+          flatIdx++;
+        }
+      }
+
+      // Triangulate (handles multiple loops = polygon with holes)
+      ManifoldVecIVec3 tris;
+      if (numLoops == 1) {
+        tris = manifold_triangulate_polygon(allPts, NULL, (size_t)polySizes[0]);
+      } else {
+        // Find the outer polygon (largest absolute signed area) and put it first
+        double *areas = (double *)malloc((size_t)numLoops * sizeof(double));
+        int offset = 0;
+        int maxIdx = 0;
+        double maxArea = 0;
+        for (int li = 0; li < numLoops; li++) {
+          double area = 0;
+          for (int pi = 0; pi < polySizes[li]; pi++) {
+            int ni = (pi + 1) % polySizes[li];
+            area += allPts[offset + pi].x * allPts[offset + ni].y
+                  - allPts[offset + ni].x * allPts[offset + pi].y;
+          }
+          areas[li] = area * 0.5;
+          if (fabs(areas[li]) > maxArea) {
+            maxArea = fabs(areas[li]);
+            maxIdx = li;
+          }
+          offset += polySizes[li];
+        }
+        // If largest area loop is not first, swap it to position 0
+        if (maxIdx != 0) {
+          // Swap polySizes
+          int tmpS = polySizes[0]; polySizes[0] = polySizes[maxIdx]; polySizes[maxIdx] = tmpS;
+          // Swap areas
+          double tmpA = areas[0]; areas[0] = areas[maxIdx]; areas[maxIdx] = tmpA;
+          // Swap in allPts and heMap
+          int sz0 = polySizes[0], szM = polySizes[maxIdx]; // after swap
+          // Wait, we already swapped polySizes, so polySizes[0] is now the max.
+          // But allPts data is in the original order. We need to rebuild.
+          // Actually, let's just rebuild allPts/heMap from scratch with the right order.
+          int **newLoops = (int **)malloc((size_t)numLoops * sizeof(int *));
+          int *newLoopLens = (int *)malloc((size_t)numLoops * sizeof(int));
+          // Put maxIdx first, then others
+          newLoops[0] = loops[maxIdx]; newLoopLens[0] = loopLens[maxIdx];
+          int ni = 1;
+          for (int li = 0; li < numLoops; li++) {
+            if (li != maxIdx) {
+              newLoops[ni] = loops[li]; newLoopLens[ni] = loopLens[li];
+              ni++;
+            }
+          }
+          // Rebuild allPts and heMap
+          flatIdx = 0;
+          for (int li = 0; li < numLoops; li++) {
+            polySizes[li] = newLoopLens[li];
+            for (int pi = 0; pi < newLoopLens[li]; pi++) {
+              int localEdge = newLoops[li][pi];
+              int sv = impl->halfedge.data[firstEdge + localEdge].startVert;
+              allPts[flatIdx] = mat2x3_mul_vec3(projection, impl->vertPos.data[sv]);
+              heMap[flatIdx] = localEdge;
+              flatIdx++;
+            }
+          }
+          // Use newLoops for cleanup later
+          for (int li = 0; li < numLoops; li++) loops[li] = newLoops[li];
+          free(newLoops); free(newLoopLens);
+        }
+        // Ensure outer polygon is CCW (positive area) — flip if needed
+        {
+          double outerArea = 0;
+          for (int pi = 0; pi < polySizes[0]; pi++) {
+            int ni2 = (pi + 1) % polySizes[0];
+            outerArea += allPts[pi].x * allPts[ni2].y - allPts[ni2].x * allPts[pi].y;
+          }
+          if (outerArea < 0) {
+            // Reverse the outer loop
+            for (int i = 0; i < polySizes[0] / 2; i++) {
+              int j = polySizes[0] - 1 - i;
+              ManifoldVec2 tmpP = allPts[i]; allPts[i] = allPts[j]; allPts[j] = tmpP;
+              int tmpH = heMap[i]; heMap[i] = heMap[j]; heMap[j] = tmpH;
+            }
           }
         }
-        if (!found) break;
+        free(areas);
+        tris = manifold_triangulate_with_holes(allPts, polySizes, numLoops, 0);
       }
-
-      // Project vertices
-      for (int i = 0; i < chainLen; i++) {
-        int sv = impl->halfedge.data[heIdx[order[i]]].startVert;
-        ManifoldVec3 pos = impl->vertPos.data[sv];
-        pts2d[i] = mat2x3_mul_vec3(projection, pos);
-        vertIdx[i] = order[i];
-      }
-
-      // Triangulate
-      ManifoldVecIVec3 tris = manifold_triangulate_polygon(pts2d, NULL, (size_t)chainLen);
 
       for (size_t ti = 0; ti < tris.len; ti++) {
         ManifoldIVec3 t = tris.data[ti];
+        int he0 = firstEdge + heMap[t.x];
+        int he1 = firstEdge + heMap[t.y];
+        int he2 = firstEdge + heMap[t.z];
         ManifoldIVec3 triV = manifold_ivec3(
-            impl->halfedge.data[heIdx[order[t.x]]].startVert,
-            impl->halfedge.data[heIdx[order[t.y]]].startVert,
-            impl->halfedge.data[heIdx[order[t.z]]].startVert);
+            impl->halfedge.data[he0].startVert,
+            impl->halfedge.data[he1].startVert,
+            impl->halfedge.data[he2].startVert);
         ManifoldIVec3 triP = manifold_ivec3(
-            impl->halfedge.data[heIdx[order[t.x]]].propVert,
-            impl->halfedge.data[heIdx[order[t.y]]].propVert,
-            impl->halfedge.data[heIdx[order[t.z]]].propVert);
+            impl->halfedge.data[he0].propVert,
+            impl->halfedge.data[he1].propVert,
+            impl->halfedge.data[he2].propVert);
         vec_ivec3_push(&triVerts, triV);
         vec_ivec3_push(&triProp, triP);
         vec_vec3_push(&triNormal, normal);
@@ -834,11 +992,54 @@ static void face2tri(ManifoldImpl *impl, const ManifoldVecInt *faceEdge,
       }
 
       vec_ivec3_free(&tris);
-      free(heIdx);
-      free(pts2d);
-      free(vertIdx);
-      free(order);
-      free(used);
+      for (int li = 0; li < numLoops; li++) free(loops[li]);
+      free(loops); free(loopLens);
+      free(allPts); free(heMap); free(polySizes);
+    }
+  }
+
+  // Remove degenerate face pairs: two triangles with same 3 verts in reversed
+  // winding order AND same face normal (opposite sign). These create
+  // zero-volume flaps that corrupt topology.
+  {
+    size_t nTri = triVerts.len;
+    bool *remove = (bool *)calloc(nTri, sizeof(bool));
+    if (remove) {
+      for (size_t i = 0; i < nTri; i++) {
+        if (remove[i]) continue;
+        int a0 = triVerts.data[i].x, a1 = triVerts.data[i].y, a2 = triVerts.data[i].z;
+        for (size_t j = i + 1; j < nTri; j++) {
+          if (remove[j]) continue;
+          int b0 = triVerts.data[j].x, b1 = triVerts.data[j].y, b2 = triVerts.data[j].z;
+          // Check if same 3 verts in reversed winding
+          if ((a0 == b0 && a1 == b2 && a2 == b1) ||
+              (a0 == b1 && a1 == b0 && a2 == b2) ||
+              (a0 == b2 && a1 == b1 && a2 == b0)) {
+            // Verify they come from the same original face (coplanar)
+            // Same normal → degenerate pair from split face
+            ManifoldVec3 ni = triNormal.data[i];
+            ManifoldVec3 nj = triNormal.data[j];
+            double dot = ni.x * nj.x + ni.y * nj.y + ni.z * nj.z;
+            if (dot > 0.9) {
+              remove[i] = remove[j] = true;
+              break;
+            }
+          }
+        }
+      }
+      // Compact arrays
+      size_t dst = 0;
+      for (size_t src = 0; src < nTri; src++) {
+        if (!remove[src]) {
+          triVerts.data[dst] = triVerts.data[src];
+          triProp.data[dst] = triProp.data[src];
+          triNormal.data[dst] = triNormal.data[src];
+          triRef.data[dst] = triRef.data[src];
+          dst++;
+        }
+      }
+      triVerts.len = triProp.len = triNormal.len = triRef.len = dst;
+      free(remove);
     }
   }
 
@@ -1633,23 +1834,6 @@ ManifoldError manifold_boolean_op(ManifoldImpl *result,
     b3.xv12 = intersect12(p, q, b3.expandP, true);
     b3.xv21 = intersect12(p, q, b3.expandP, false);
 
-#ifdef MANIFOLD_BOOL_DEBUG
-    fprintf(stderr, "xv12: %zu intersections, xv21: %zu intersections\n",
-      b3.xv12.p1q2.len, b3.xv21.p1q2.len);
-    for (size_t i = 0; i < b3.xv12.p1q2.len; i++) {
-      fprintf(stderr, "  xv12[%zu]: edge %d × face %d = x=%d pos=(%.3f,%.3f,%.3f)\n",
-        i, b3.xv12.p1q2.data[i].v[0], b3.xv12.p1q2.data[i].v[1],
-        b3.xv12.x12.data[i], b3.xv12.v12.data[i].x, b3.xv12.v12.data[i].y,
-        b3.xv12.v12.data[i].z);
-    }
-    for (size_t i = 0; i < b3.xv21.p1q2.len; i++) {
-      fprintf(stderr, "  xv21[%zu]: face %d × edge %d = x=%d pos=(%.3f,%.3f,%.3f)\n",
-        i, b3.xv21.p1q2.data[i].v[0], b3.xv21.p1q2.data[i].v[1],
-        b3.xv21.x12.data[i], b3.xv21.v12.data[i].x, b3.xv21.v12.data[i].y,
-        b3.xv21.v12.data[i].z);
-    }
-#endif
-
     if (b3.xv12.x12.len > (size_t)INT_MAX || b3.xv21.x12.len > (size_t)INT_MAX) {
       b3.valid = false;
     }
@@ -1657,21 +1841,6 @@ ManifoldError manifold_boolean_op(ManifoldImpl *result,
     // Compute winding numbers
     b3.w03 = winding03(p, q, &b3.xv12, b3.expandP, true);
     b3.w30 = winding03(p, q, &b3.xv21, b3.expandP, false);
-
-#ifdef MANIFOLD_BOOL_DEBUG
-    fprintf(stderr, "w03 (P verts in Q):\n");
-    for (size_t i = 0; i < b3.w03.len; i++) {
-      fprintf(stderr, "  v%zu pos=(%.1f,%.1f,%.1f) w=%d\n",
-        i, p->vertPos.data[i].x, p->vertPos.data[i].y, p->vertPos.data[i].z,
-        b3.w03.data[i]);
-    }
-    fprintf(stderr, "w30 (Q verts in P):\n");
-    for (size_t i = 0; i < b3.w30.len; i++) {
-      fprintf(stderr, "  v%zu pos=(%.1f,%.1f,%.1f) w=%d\n",
-        i, q->vertPos.data[i].x, q->vertPos.data[i].y, q->vertPos.data[i].z,
-        b3.w30.data[i]);
-    }
-#endif
   }
 
   ManifoldError err = boolean3_result(&b3, result, op);

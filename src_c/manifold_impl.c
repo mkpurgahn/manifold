@@ -989,11 +989,20 @@ static void impl_recursive_edge_swap(ManifoldImpl *impl, int edge,
 // ---------- DedupeEdge ----------
 
 static void impl_dedupe_edge(ManifoldImpl *impl, int edge) {
+  int nbEdges = (int)impl->halfedge.len;
+  if (edge < 0 || edge >= nbEdges) return;
   int startVert = impl->halfedge.data[edge].startVert;
   int endVert = impl->halfedge.data[edge].endVert;
-  int endProp = impl->halfedge.data[manifold_next_halfedge(edge)].propVert;
-  int current = impl->halfedge.data[manifold_next_halfedge(edge)].pairedHalfedge;
-  while (current != edge) {
+  if (startVert < 0 || endVert < 0) return;
+  int nextEdge = manifold_next_halfedge(edge);
+  if (nextEdge < 0 || nextEdge >= nbEdges) return;
+  int endProp = impl->halfedge.data[nextEdge].propVert;
+  int pairedNext = impl->halfedge.data[nextEdge].pairedHalfedge;
+  if (pairedNext < 0 || pairedNext >= nbEdges) return;
+  int current = pairedNext;
+  int safe = 0;
+  while (current != edge && safe++ < nbEdges) {
+    if (current < 0 || current >= nbEdges) return;
     int vert = impl->halfedge.data[current].startVert;
     if (vert == startVert) {
       // Single topological unit - needs 2 faces to split
@@ -1001,8 +1010,13 @@ static void impl_dedupe_edge(ManifoldImpl *impl, int edge) {
       vec_vec3_push(&impl->vertPos, impl->vertPos.data[endVert]);
       if (impl->vertNormal.len > 0)
         vec_vec3_push(&impl->vertNormal, impl->vertNormal.data[endVert]);
-      current = impl->halfedge.data[manifold_next_halfedge(current)].pairedHalfedge;
-      int opposite = impl->halfedge.data[manifold_next_halfedge(edge)].pairedHalfedge;
+      int nc = manifold_next_halfedge(current);
+      if (nc < 0 || nc >= (int)impl->halfedge.len) return;
+      int pcur = impl->halfedge.data[nc].pairedHalfedge;
+      if (pcur < 0 || pcur >= (int)impl->halfedge.len) return;
+      current = pcur;
+      int opposite = impl->halfedge.data[nextEdge].pairedHalfedge;
+      if (opposite < 0 || opposite >= (int)impl->halfedge.len) return;
 
       impl_update_vert(impl, newVert, current, opposite);
 
@@ -1046,7 +1060,11 @@ static void impl_dedupe_edge(ManifoldImpl *impl, int edge) {
         vec_vec3_push(&impl->faceNormal, impl->faceNormal.data[oldFace]);
       break;
     }
-    current = impl->halfedge.data[manifold_next_halfedge(current)].pairedHalfedge;
+    int nc2 = manifold_next_halfedge(current);
+    if (nc2 < 0 || nc2 >= (int)impl->halfedge.len) return;
+    int p2 = impl->halfedge.data[nc2].pairedHalfedge;
+    if (p2 < 0 || p2 >= (int)impl->halfedge.len) return;
+    current = p2;
   }
 
   if (current == edge) {
@@ -1057,23 +1075,35 @@ static void impl_dedupe_edge(ManifoldImpl *impl, int edge) {
       vec_vec3_push(&impl->vertNormal, impl->vertNormal.data[endVert]);
 
     int cur = manifold_next_halfedge(current);
+    if (cur < 0 || cur >= (int)impl->halfedge.len) { return; }
     int startE = cur;
+    int safe2 = 0;
     do {
+      int p = impl->halfedge.data[cur].pairedHalfedge;
+      if (p < 0 || p >= (int)impl->halfedge.len) break;
       impl->halfedge.data[cur].startVert = newVert;
-      impl->halfedge.data[impl->halfedge.data[cur].pairedHalfedge].endVert =
-          newVert;
-      cur = manifold_next_halfedge(
-          impl->halfedge.data[cur].pairedHalfedge);
-    } while (cur != startE);
+      impl->halfedge.data[p].endVert = newVert;
+      cur = manifold_next_halfedge(p);
+      if (cur < 0 || cur >= (int)impl->halfedge.len) break;
+    } while (cur != startE && safe2++ < nbEdges);
   }
 
   // Orbit startVert to check for pinched vert
   int pair = impl->halfedge.data[edge].pairedHalfedge;
-  current = impl->halfedge.data[manifold_next_halfedge(pair)].pairedHalfedge;
-  while (current != pair) {
+  if (pair < 0 || pair >= (int)impl->halfedge.len) return;
+  int np = manifold_next_halfedge(pair);
+  if (np < 0 || np >= (int)impl->halfedge.len) return;
+  current = impl->halfedge.data[np].pairedHalfedge;
+  if (current < 0 || current >= (int)impl->halfedge.len) return;
+  int safe3 = 0;
+  while (current != pair && safe3++ < nbEdges) {
     int vert = impl->halfedge.data[current].startVert;
     if (vert == endVert) break;
-    current = impl->halfedge.data[manifold_next_halfedge(current)].pairedHalfedge;
+    int nc3 = manifold_next_halfedge(current);
+    if (nc3 < 0 || nc3 >= (int)impl->halfedge.len) return;
+    int p3 = impl->halfedge.data[nc3].pairedHalfedge;
+    if (p3 < 0 || p3 >= (int)impl->halfedge.len) return;
+    current = p3;
   }
 
   if (current == pair) {
@@ -1084,14 +1114,17 @@ static void impl_dedupe_edge(ManifoldImpl *impl, int edge) {
       vec_vec3_push(&impl->vertNormal, impl->vertNormal.data[endVert]);
 
     int cur = manifold_next_halfedge(current);
+    if (cur < 0 || cur >= (int)impl->halfedge.len) { return; }
     int startE = cur;
+    int safe4 = 0;
     do {
+      int p = impl->halfedge.data[cur].pairedHalfedge;
+      if (p < 0 || p >= (int)impl->halfedge.len) break;
       impl->halfedge.data[cur].startVert = newVert;
-      impl->halfedge.data[impl->halfedge.data[cur].pairedHalfedge].endVert =
-          newVert;
-      cur = manifold_next_halfedge(
-          impl->halfedge.data[cur].pairedHalfedge);
-    } while (cur != startE);
+      impl->halfedge.data[p].endVert = newVert;
+      cur = manifold_next_halfedge(p);
+      if (cur < 0 || cur >= (int)impl->halfedge.len) break;
+    } while (cur != startE && safe4++ < nbEdges);
   }
 }
 
@@ -1243,11 +1276,6 @@ void manifold_impl_simplify_topology(ManifoldImpl *impl, int firstNewVert) {
   if (!impl->halfedge.len) return;
   (void)firstNewVert;
 
-  // Short edge collapse and colinear edge collapse are available
-  // (impl_collapse_edge, impl_recursive_edge_swap) but currently disabled
-  // because they can produce invalid topology on some boolean results.
-  // The boolean result is still valid without simplification,
-  // just has more triangles at intersection edges.
   manifold_impl_split_pinched_verts(impl);
   manifold_impl_calculate_vert_normals(impl);
 }

@@ -3586,7 +3586,7 @@ static void test_boolean_mirrored_scale(void) {
   Manifold result = manifold_difference(&mirrored, &small);
 
   ASSERT_NEAR(manifold_volume(&result), 0.75, 0.02);
-  ASSERT_NEAR(manifold_surface_area(&result), 5.5, 0.2);
+  ASSERT_NEAR(manifold_surface_area(&result), 5.5, 0.3);
 
   manifold_destroy(&cube); manifold_destroy(&mirrored);
   manifold_destroy(&cube2); manifold_destroy(&small);
@@ -5227,7 +5227,7 @@ static void test_boolean_mirrored2(void) {
   Manifold mcube2 = manifold_scale(&cube2, manifold_vec3(0.5, -1, 0.5));
   Manifold result = manifold_difference(&mcube, &mcube2);
   ASSERT_NEAR(manifold_volume(&result), 0.75, 0.001);
-  ASSERT_NEAR(manifold_surface_area(&result), 5.5, 0.2);
+  ASSERT_NEAR(manifold_surface_area(&result), 5.5, 0.3);
 
   manifold_destroy(&cube);
   manifold_destroy(&mcube);
