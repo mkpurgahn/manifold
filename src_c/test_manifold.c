@@ -330,10 +330,8 @@ static void test_sdf_sphere(void) {
   ASSERT_TRUE(manifold_num_tri(&m) > 0);
 
   // Volume of sphere = 4/3 * pi * r^3 ≈ 4.189
-  // Marching cubes gives approximate result
   double vol = manifold_volume(&m);
-  ASSERT_TRUE(vol > 3.0);   // should be close to 4.189
-  ASSERT_TRUE(vol < 5.5);
+  ASSERT_NEAR(vol, 4.0 / 3.0 * MANIFOLD_PI, 0.5);
 
   manifold_destroy(&m);
 }
@@ -756,10 +754,15 @@ static void test_boolean_sphere(void) {
   ASSERT_EQ(manifold_status(&u), MANIFOLD_ERROR_NO_ERROR);
   ASSERT_TRUE(!manifold_is_empty(&u));
 
-  // Union of two low-poly spheres: should be non-empty and non-zero volume
+  // Union of two overlapping spheres offset by 1.0 along X
+  // C++ BooleanComplex::Sphere checks mesh topology, not volume
+  // With 16 segments, each sphere vol is ~3.21, not 4.19
   double vol = manifold_volume(&u);
-  ASSERT_TRUE(vol > 2.0);  // should be noticeably larger than zero
-  ASSERT_TRUE(vol < 10.0); // but bounded
+  double vol_a = manifold_volume(&a);
+  double vol_b = manifold_volume(&b);
+  // Union volume must be less than sum and greater than each individual
+  ASSERT_TRUE(vol > vol_a);
+  ASSERT_TRUE(vol < vol_a + vol_b);
 
   manifold_destroy(&a);
   manifold_destroy(&b_base);
@@ -972,7 +975,7 @@ static void test_boolean_cylinder_subtract(void) {
   
   // Volume should be pi*(R^2 - r^2)*h ≈ pi*(1-0.25)*2 ≈ 4.71
   double vol = manifold_volume(&result);
-  ASSERT_TRUE(vol > 3.0 && vol < 6.0);
+  ASSERT_NEAR(vol, MANIFOLD_PI * 0.75 * 2.0, 0.5);
   
   manifold_destroy(&outer);
   manifold_destroy(&inner_base);
@@ -1444,8 +1447,9 @@ static void test_boolean_chain(void) {
   ASSERT_EQ(manifold_status(&step2), MANIFOLD_ERROR_NO_ERROR);
 
   double vol = manifold_volume(&step2);
-  // Volume should be less than original 27.0
-  ASSERT_TRUE(vol > 0 && vol < 27.0);
+  // 27 - 4*0.5*0.5 - 4*0.5*0.5 + overlap = 27 - 2 - 2 + 0.5*0.5*0.5 = 23.125
+  // Two thin boxes: 4*0.5*0.5=1.0 each, overlap is 0.5*0.5*0.5=0.125
+  ASSERT_NEAR(vol, 27.0 - 2 * (4.0 * 0.5 * 0.5) + 0.5 * 0.5 * 0.5, 0.5);
 
   manifold_destroy(&base);
   manifold_destroy(&hole1);
@@ -1712,8 +1716,11 @@ static void test_hull_of_boolean(void) {
 
   ASSERT_TRUE(!manifold_is_empty(&h));
   double vol = manifold_volume(&h);
-  // Hull of union of two overlapping cubes - must be >= union volume
-  ASSERT_TRUE(vol >= manifold_volume(&u) - 0.01);
+  double uvol = manifold_volume(&u);
+  // Hull of union of two overlapping cubes offset by (0.5,0.5,0.5)
+  // Hull must be >= union volume
+  ASSERT_TRUE(vol >= uvol - 0.01);
+  ASSERT_NEAR(vol, 2.5, 0.1);
 
   manifold_destroy(&c1);
   manifold_destroy(&c2_base);
@@ -1846,14 +1853,15 @@ static void test_boolean_stress(void) {
   // 2^3 - 1^3 = 7
   ASSERT_NEAR(manifold_volume(&r1), 7.0, 0.1);
 
-  // Add a small cube back
+  // Add a small cube back (it's inside the subtracted region, so it adds back)
   Manifold c3_base = manifold_cube(manifold_vec3(0.5, 0.5, 0.5), false);
   Manifold c3 = manifold_translate(&c3_base, manifold_vec3(0.25, 0.25, 0.25));
   Manifold r2 = manifold_union(&r1, &c3);
   ASSERT_TRUE(!manifold_is_empty(&r2));
-  // Volume should be 7 (small cube is inside the original)
+  // Small cube [0.25,0.75]^3 is inside original [0,2]^3 and inside hole [0.5,1.5]^3
+  // so union adds it back: 7.0 + 0.125 = 7.125
   double vol = manifold_volume(&r2);
-  ASSERT_TRUE(vol >= 6.5 && vol <= 8.5);
+  ASSERT_NEAR(vol, 7.125, 0.2);
 
   manifold_destroy(&c1);
   manifold_destroy(&c2_base);
@@ -1947,9 +1955,9 @@ static void test_hull_sphere(void) {
   Manifold s = manifold_sphere(1.0, 8);
   Manifold h = manifold_hull(&s);
 
-  // Hull of a sphere should have same or slightly more volume
+  // Hull of a convex sphere should have identical volume (C++ uses EXPECT_FLOAT_EQ)
   ASSERT_TRUE(!manifold_is_empty(&h));
-  ASSERT_TRUE(manifold_volume(&h) >= manifold_volume(&s) - 0.1);
+  ASSERT_NEAR(manifold_volume(&h), manifold_volume(&s), 0.01);
 
   manifold_quality_reset();
   manifold_destroy(&s);
@@ -2036,7 +2044,8 @@ static void test_hull_random_points(void) {
   Manifold h = manifold_hull_points(pts, 20);
   ASSERT_TRUE(!manifold_is_empty(&h));
   double vol = manifold_volume(&h);
-  ASSERT_TRUE(vol > 0.1 && vol < 1.5);
+  // Convex hull of these 20 points
+  ASSERT_NEAR(vol, 0.665, 0.1);
   ASSERT_EQ(manifold_genus(&h), 0);
   manifold_destroy(&h);
 }
@@ -2047,8 +2056,8 @@ static void test_cylinder_properties(void) {
   manifold_set_circular_segments(8);
   Manifold c = manifold_cylinder(2.0, 1.0, 1.0, 8, false);
   ASSERT_TRUE(!manifold_is_empty(&c));
-  // Volume of cylinder: pi*r^2*h = pi*1*2 ≈ 6.28
-  ASSERT_NEAR(manifold_volume(&c), MANIFOLD_PI * 2.0, 1.0);
+  // Volume of 8-sided cylinder: 8 * 0.5 * sin(2*pi/8) * h = 2*sqrt(2)*h ≈ 5.657
+  ASSERT_NEAR(manifold_volume(&c), 8.0 * 0.5 * sin(2.0 * MANIFOLD_PI / 8.0) * 2.0, 0.1);
   // Cylinder should have genus 0
   ASSERT_EQ(manifold_genus(&c), 0);
 
@@ -2113,7 +2122,8 @@ static void test_boolean_cubes_offset(void) {
   Manifold u = manifold_union(&t1, &t2);
   ASSERT_TRUE(!manifold_is_empty(&u));
   double vol = manifold_volume(&u);
-  ASSERT_TRUE(vol > 0.8 && vol < 2.0);
+  // c1 centered: [-0.6,0.6]x[-1,0]x[0,1.5] vol=1.2, c2: [-0.5,0.5]x[0,0.8]x[0.5,1.0] vol=0.4
+  ASSERT_NEAR(vol, 1.2 + 0.4, 0.2);
 
   manifold_destroy(&c1);
   manifold_destroy(&t1);
@@ -5148,7 +5158,7 @@ static void test_mirror_union2_batch(void) {
 
 // RevolveClip — disabled, C++ clips polygons crossing Y-axis
 #if 1
-static void test_revolve_clip(void) {
+static void test_revolve_clip2(void) {
   ManifoldVec2 poly1[] = {{-5, -10}, {5, 0}, {-5, 10}};
   int sizes1[] = {3};
   Manifold first = manifold_revolve(poly1, sizes1, 1, 48, 360);
@@ -5973,7 +5983,7 @@ static void test_smooth_precision(void) {
   }
   ASSERT_NEAR(sqrt(minR2), radius - tolerance, 1e-4);
   ASSERT_NEAR(sqrt(maxR2), radius, 1e-8);
-  ASSERT_EQ(smoothed.impl.numTri, 7984);
+  ASSERT_EQ(manifold_num_tri(&smoothed), (size_t)7984);
   manifold_destroy(&smoothed);
   manifold_destroy(&refined);
 }
@@ -5991,9 +6001,8 @@ static void test_smooth_sdf_sphere(void) {
   ASSERT_TRUE(manifold_is_manifold(&refined));
   ASSERT_EQ(manifold_genus(&refined), 0);
   double vol = manifold_volume(&refined);
-  // Volume should be close to but may inflate due to smoothing
-  ASSERT_TRUE(vol > 4.0);
-  ASSERT_TRUE(vol < 6.0);
+  // Smoothed sphere volume should approach 4/3*pi*r^3 ≈ 4.189
+  ASSERT_NEAR(vol, 4.0 / 3.0 * MANIFOLD_PI, 0.5);
   manifold_destroy(&refined);
 }
 
