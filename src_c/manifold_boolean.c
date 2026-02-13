@@ -1817,11 +1817,22 @@ ManifoldError manifold_boolean_op(ManifoldImpl *result,
   }
 
   // Full boolean algorithm for overlapping meshes
-  // Ensure colliders are built
-  ManifoldImpl *pp = (ManifoldImpl *)p;
-  ManifoldImpl *qq = (ManifoldImpl *)q;
-  if (!pp->colliderBuilt) manifold_impl_sort_geometry(pp);
-  if (!qq->colliderBuilt) manifold_impl_sort_geometry(qq);
+  // Ensure colliders are built - make local copies if needed to avoid
+  // modifying const inputs (sort_geometry reorders vertices/faces in place)
+  ManifoldImpl pLocal, qLocal;
+  bool pCopied = false, qCopied = false;
+  if (!p->colliderBuilt) {
+    copy_impl_full(&pLocal, p);
+    manifold_impl_sort_geometry(&pLocal);
+    p = &pLocal;
+    pCopied = true;
+  }
+  if (!q->colliderBuilt) {
+    copy_impl_full(&qLocal, q);
+    manifold_impl_sort_geometry(&qLocal);
+    q = &qLocal;
+    qCopied = true;
+  }
 
   // Build Boolean3 state
   ManifoldBoolean3 b3;
@@ -1857,6 +1868,10 @@ ManifoldError manifold_boolean_op(ManifoldImpl *result,
   intersections_free(&b3.xv21);
   vec_int_free(&b3.w03);
   vec_int_free(&b3.w30);
+
+  // Free local copies if we made them
+  if (pCopied) manifold_impl_free(&pLocal);
+  if (qCopied) manifold_impl_free(&qLocal);
 
   return err;
 }
