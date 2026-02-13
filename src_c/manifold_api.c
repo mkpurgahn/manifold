@@ -5,6 +5,7 @@
 
 #include "manifold_api.h"
 #include "manifold_boolean.h"
+#include "manifold_hull.h"
 #include <string.h>
 
 // Quality settings (global)
@@ -275,6 +276,18 @@ Manifold manifold_cylinder(double height, double radiusLow, double radiusHigh,
   vec_ivec3_free(&triVerts);
   vec_ivec3_free(&emptyTriVert);
   return m;
+}
+
+Manifold manifold_hull(const Manifold *m) {
+  Manifold result;
+  manifold_convex_hull(&result.impl, m->impl.vertPos.data, m->impl.vertPos.len);
+  return result;
+}
+
+Manifold manifold_hull_points(const ManifoldVec3 *points, size_t numPoints) {
+  Manifold result;
+  manifold_convex_hull(&result.impl, points, numPoints);
+  return result;
 }
 
 Manifold manifold_level_set(double (*sdf)(double x, double y, double z, void *ctx),

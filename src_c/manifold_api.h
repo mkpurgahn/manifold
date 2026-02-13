@@ -51,6 +51,10 @@ Manifold manifold_union(const Manifold *a, const Manifold *b);
 Manifold manifold_difference(const Manifold *a, const Manifold *b);
 Manifold manifold_intersection(const Manifold *a, const Manifold *b);
 
+// ---------- Hull ----------
+Manifold manifold_hull(const Manifold *m);
+Manifold manifold_hull_points(const ManifoldVec3 *points, size_t numPoints);
+
 // ---------- SDF Level Set ----------
 Manifold manifold_level_set(double (*sdf)(double x, double y, double z, void *ctx),
                             void *ctx, ManifoldBox bounds, double edgeLength,

@@ -469,6 +469,43 @@ static void test_boolean_intersect_non_overlapping(void) {
   manifold_destroy(&inter);
 }
 
+// ============== Hull Tests ==============
+
+static void test_hull_cube(void) {
+  // Hull of a cube's vertices should give back the same cube
+  Manifold cube = manifold_cube(manifold_vec3(1, 1, 1), false);
+  Manifold hull = manifold_hull(&cube);
+
+  ASSERT_EQ(manifold_status(&hull), MANIFOLD_ERROR_NO_ERROR);
+  ASSERT_TRUE(!manifold_is_empty(&hull));
+  ASSERT_EQ(manifold_num_vert(&hull), (size_t)8);
+  // Hull of cube has 12 triangles (6 faces * 2 tris)
+  ASSERT_EQ(manifold_num_tri(&hull), (size_t)12);
+  ASSERT_NEAR(manifold_volume(&hull), 1.0, 0.01);
+
+  manifold_destroy(&cube);
+  manifold_destroy(&hull);
+}
+
+static void test_hull_points(void) {
+  // Create a set of random points including some interior ones
+  ManifoldVec3 pts[] = {
+    {0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1},
+    {1, 1, 0}, {1, 0, 1}, {0, 1, 1}, {1, 1, 1},
+    {0.5, 0.5, 0.5},  // interior point
+    {0.3, 0.3, 0.3},  // interior point
+  };
+  Manifold hull = manifold_hull_points(pts, 10);
+
+  ASSERT_EQ(manifold_status(&hull), MANIFOLD_ERROR_NO_ERROR);
+  ASSERT_TRUE(!manifold_is_empty(&hull));
+  // Should have 8 vertices (the cube corners), not the interior points
+  ASSERT_EQ(manifold_num_vert(&hull), (size_t)8);
+  ASSERT_NEAR(manifold_volume(&hull), 1.0, 0.01);
+
+  manifold_destroy(&hull);
+}
+
 // ============== Main ==============
 
 int main(void) {
@@ -524,6 +561,10 @@ int main(void) {
   RUN_TEST(boolean_subtract_non_overlapping);
   RUN_TEST(boolean_intersect_non_overlapping);
 
-  printf("\n=== All %d tests passed! ===\n", 27);
+  printf("\nConvex Hull:\n");
+  RUN_TEST(hull_cube);
+  RUN_TEST(hull_points);
+
+  printf("\n=== All %d tests passed! ===\n", 29);
   return 0;
 }
