@@ -242,76 +242,64 @@ static Manifold make_square_hole_revolve(double xOffset, int circularSegments,
   return manifold_revolve(allVerts, polySizes, 2, circularSegments, revolveDegrees);
 }
 
-// MengerSponge recursive helper
+// MengerSponge - matching C++ algorithm from samples/src/menger_sponge.cpp
+// Fractal helper: collects scaled/translated copies of a hole shape
+static void menger_fractal(Manifold *holesArr, int *numHoles, int maxHoles,
+                           const Manifold *hole, double w, double px, double py,
+                           int depth, int maxDepth) {
+  w /= 3.0;
+  if (*numHoles < maxHoles) {
+    Manifold scaled = manifold_scale(hole, (ManifoldVec3){w, w, 1.0});
+    holesArr[*numHoles] = manifold_translate(&scaled, (ManifoldVec3){px, py, 0});
+    manifold_destroy(&scaled);
+    (*numHoles)++;
+  }
+  if (depth == maxDepth) return;
+
+  double offsets[8][2] = {
+    {-w, -w}, {-w, 0.0}, {-w, w}, {0.0, w},
+    {w, w}, {w, 0.0}, {w, -w}, {0.0, -w}
+  };
+  for (int i = 0; i < 8; i++) {
+    menger_fractal(holesArr, numHoles, maxHoles, hole,
+                   w, px + offsets[i][0], py + offsets[i][1],
+                   depth + 1, maxDepth);
+  }
+}
+
 static Manifold menger_sponge_impl(int n) {
-  Manifold cube = manifold_cube((ManifoldVec3){1, 1, 1}, true);
-  if (n == 0) return cube;
+  Manifold result = manifold_cube((ManifoldVec3){1, 1, 1}, true);
+  if (n == 0) return result;
 
-  Manifold holes = manifold_empty();
+  // Collect all holes
+  int maxHoles = 1;
+  for (int i = 0; i < n; i++) maxHoles = maxHoles * 8 + 1;
+  Manifold *holesArr = (Manifold *)malloc(maxHoles * sizeof(Manifold));
+  int numHoles = 0;
 
-  ManifoldVec3 offsets[3] = {{-1, 0, 0}, {0, 0, 0}, {1, 0, 0}};
-  for (int i = 0; i < 3; i++) {
-    ManifoldVec3 offset = offsets[i];
-    Manifold bar1 = manifold_cube((ManifoldVec3){1.0/3.0, 1.0/3.0, 1.1}, true);
-    Manifold b1 = manifold_translate(&bar1, (ManifoldVec3){offset.x / 3.0, offset.y / 3.0, 0});
-    manifold_destroy(&bar1);
+  menger_fractal(holesArr, &numHoles, maxHoles, &result, 1.0, 0.0, 0.0, 1, n);
 
-    Manifold tmp1 = manifold_union(&holes, &b1);
-    manifold_destroy(&holes);
-    manifold_destroy(&b1);
-    holes = tmp1;
+  // BatchBoolean all holes
+  Manifold hole = manifold_batch_boolean(holesArr, numHoles, MANIFOLD_OP_ADD);
+  for (int i = 0; i < numHoles; i++) manifold_destroy(&holesArr[i]);
+  free(holesArr);
 
-    Manifold bar2 = manifold_cube((ManifoldVec3){1.1, 1.0/3.0, 1.0/3.0}, true);
-    Manifold b2 = manifold_translate(&bar2, (ManifoldVec3){0, offset.x / 3.0, offset.y / 3.0});
-    manifold_destroy(&bar2);
-
-    Manifold tmp2 = manifold_union(&holes, &b2);
-    manifold_destroy(&holes);
-    manifold_destroy(&b2);
-    holes = tmp2;
-
-    Manifold bar3 = manifold_cube((ManifoldVec3){1.0/3.0, 1.1, 1.0/3.0}, true);
-    Manifold b3 = manifold_translate(&bar3, (ManifoldVec3){offset.x / 3.0, 0, offset.y / 3.0});
-    manifold_destroy(&bar3);
-
-    Manifold tmp3 = manifold_union(&holes, &b3);
-    manifold_destroy(&holes);
-    manifold_destroy(&b3);
-    holes = tmp3;
-  }
-
-  Manifold result = manifold_difference(&cube, &holes);
-  manifold_destroy(&cube);
-  manifold_destroy(&holes);
-
-  if (n == 1) return result;
-
-  // Recursive: subdivide each remaining sub-cube
-  Manifold sponge = manifold_empty();
-  int coords[3] = {-1, 0, 1};
-  for (int i = 0; i < 3; i++) {
-    for (int j = 0; j < 3; j++) {
-      for (int k = 0; k < 3; k++) {
-        int numZero = (coords[i] == 0) + (coords[j] == 0) + (coords[k] == 0);
-        if (numZero >= 2) continue; // removed by holes
-
-        Manifold sub = menger_sponge_impl(n - 1);
-        Manifold scaled = manifold_scale(&sub, (ManifoldVec3){1.0/3.0, 1.0/3.0, 1.0/3.0});
-        manifold_destroy(&sub);
-        Manifold moved = manifold_translate(&scaled, (ManifoldVec3){
-          coords[i] / 3.0, coords[j] / 3.0, coords[k] / 3.0});
-        manifold_destroy(&scaled);
-
-        Manifold tmp = manifold_union(&sponge, &moved);
-        manifold_destroy(&sponge);
-        manifold_destroy(&moved);
-        sponge = tmp;
-      }
-    }
-  }
-
+  // Subtract along all 3 axes
+  Manifold r1 = manifold_difference(&result, &hole);
   manifold_destroy(&result);
-  return sponge;
+
+  Manifold holeR1 = manifold_rotate(&hole, 90, 0, 0);
+  Manifold r2 = manifold_difference(&r1, &holeR1);
+  manifold_destroy(&r1);
+  manifold_destroy(&holeR1);
+
+  Manifold holeR2 = manifold_rotate(&hole, 0, 0, 90);
+  Manifold r3 = manifold_difference(&r2, &holeR2);
+  manifold_destroy(&r2);
+  manifold_destroy(&holeR2);
+  manifold_destroy(&hole);
+
+  return r3;
 }
 
 // ==================== Properties Tests ====================
