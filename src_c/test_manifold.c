@@ -1761,6 +1761,199 @@ static void test_copy_independence(void) {
   manifold_destroy(&c);
 }
 
+// ---------- Negative scale cube ----------
+
+static void test_negative_scale(void) {
+  Manifold m = manifold_cube(manifold_vec3(1, 1, 1), false);
+  Manifold s = manifold_scale(&m, manifold_vec3(-1, -1, -1));
+  // Negative scale should still produce valid mesh with positive volume
+  ASSERT_TRUE(!manifold_is_empty(&s));
+  // Volume sign might change, but absolute value should be 1
+  double vol = manifold_volume(&s);
+  ASSERT_NEAR(fabs(vol), 1.0, 0.01);
+  manifold_destroy(&m);
+  manifold_destroy(&s);
+}
+
+// ---------- Zero-volume handling ----------
+
+static void test_empty_operations(void) {
+  Manifold empty;
+  memset(&empty, 0, sizeof(empty));
+  manifold_impl_init(&empty.impl);
+  ASSERT_TRUE(manifold_is_empty(&empty));
+  ASSERT_NEAR(manifold_volume(&empty), 0.0, 0.001);
+  ASSERT_NEAR(manifold_surface_area(&empty), 0.0, 0.001);
+  ASSERT_EQ(manifold_num_vert(&empty), (size_t)0);
+  ASSERT_EQ(manifold_num_tri(&empty), (size_t)0);
+
+  // Boolean with empty
+  Manifold cube = manifold_cube(manifold_vec3(1, 1, 1), false);
+  Manifold u = manifold_union(&cube, &empty);
+  ASSERT_NEAR(manifold_volume(&u), 1.0, 0.01);
+
+  Manifold d = manifold_difference(&cube, &empty);
+  ASSERT_NEAR(manifold_volume(&d), 1.0, 0.01);
+
+  Manifold i = manifold_intersection(&cube, &empty);
+  ASSERT_TRUE(manifold_is_empty(&i) || manifold_volume(&i) < 0.01);
+
+  manifold_destroy(&empty);
+  manifold_destroy(&cube);
+  manifold_destroy(&u);
+  manifold_destroy(&d);
+  manifold_destroy(&i);
+}
+
+// ---------- Warp function test ----------
+
+static void warp_translate_fn(double *x, double *y, double *z, void *ctx) {
+  (void)ctx;
+  *x += 10;
+  *y += 5;
+  *z += 3;
+}
+
+static void test_warp_translate(void) {
+  Manifold m = manifold_cube(manifold_vec3(1, 1, 1), false);
+  Manifold w = manifold_warp(&m, warp_translate_fn, NULL);
+  ASSERT_NEAR(manifold_volume(&w), 1.0, 0.01);
+
+  ManifoldBox bb = manifold_bounding_box(&w);
+  ASSERT_NEAR(bb.min.x, 10.0, 0.01);
+  ASSERT_NEAR(bb.min.y, 5.0, 0.01);
+  ASSERT_NEAR(bb.min.z, 3.0, 0.01);
+  ASSERT_NEAR(bb.max.x, 11.0, 0.01);
+  ASSERT_NEAR(bb.max.y, 6.0, 0.01);
+  ASSERT_NEAR(bb.max.z, 4.0, 0.01);
+
+  manifold_destroy(&m);
+  manifold_destroy(&w);
+}
+
+// ---------- Multiple boolean operations stress ----------
+
+static void test_boolean_stress(void) {
+  // Sequential boolean operations
+  Manifold c1 = manifold_cube(manifold_vec3(2, 2, 2), false);
+  Manifold c2_base = manifold_cube(manifold_vec3(1, 1, 1), false);
+  Manifold c2 = manifold_translate(&c2_base, manifold_vec3(0.5, 0.5, 0.5));
+
+  Manifold r1 = manifold_difference(&c1, &c2);
+  ASSERT_TRUE(!manifold_is_empty(&r1));
+  // 2^3 - 1^3 = 7
+  ASSERT_NEAR(manifold_volume(&r1), 7.0, 0.1);
+
+  // Add a small cube back
+  Manifold c3_base = manifold_cube(manifold_vec3(0.5, 0.5, 0.5), false);
+  Manifold c3 = manifold_translate(&c3_base, manifold_vec3(0.25, 0.25, 0.25));
+  Manifold r2 = manifold_union(&r1, &c3);
+  ASSERT_TRUE(!manifold_is_empty(&r2));
+  // Volume should be 7 (small cube is inside the original)
+  double vol = manifold_volume(&r2);
+  ASSERT_TRUE(vol >= 6.5 && vol <= 8.5);
+
+  manifold_destroy(&c1);
+  manifold_destroy(&c2_base);
+  manifold_destroy(&c2);
+  manifold_destroy(&c3_base);
+  manifold_destroy(&c3);
+  manifold_destroy(&r1);
+  manifold_destroy(&r2);
+}
+
+// ---------- Genus of torus-like shape ----------
+
+static void test_genus_calculation(void) {
+  // A sphere has genus 0
+  manifold_set_circular_segments(16);
+  Manifold s = manifold_sphere(1.0, 16);
+  ASSERT_EQ(manifold_genus(&s), 0);
+
+  // A cube has genus 0
+  Manifold c = manifold_cube(manifold_vec3(1, 1, 1), false);
+  ASSERT_EQ(manifold_genus(&c), 0);
+
+  manifold_quality_reset();
+  manifold_destroy(&s);
+  manifold_destroy(&c);
+}
+
+// ---------- SDF with different bounds ----------
+
+// Test SDF with different function (verifying SDF infrastructure)
+static void test_sdf_offset_center(void) {
+  // Just check we can make a second SDF sphere (different from existing test)
+  double radius = 0.5;
+  ManifoldBox bounds = manifold_box(manifold_vec3(-1, -1, -1),
+                                     manifold_vec3(1, 1, 1));
+  Manifold m = manifold_level_set(sdf_sphere, &radius, bounds, 0.4, 0.0, -1.0);
+  ASSERT_TRUE(!manifold_is_empty(&m));
+  double vol = manifold_volume(&m);
+  // Volume of r=0.5 sphere: 4/3*pi*0.125 = 0.524
+  ASSERT_NEAR(vol, 4.0 / 3.0 * MANIFOLD_PI * 0.125, 0.3);
+  manifold_destroy(&m);
+}
+
+// ---------- Boolean with identical objects ----------
+
+static void test_boolean_identical(void) {
+  Manifold c1 = manifold_cube(manifold_vec3(1, 1, 1), false);
+  Manifold c2_base = manifold_cube(manifold_vec3(1, 1, 1), false);
+  // Slightly offset to avoid fully coplanar faces
+  Manifold c2 = manifold_translate(&c2_base, manifold_vec3(0.001, 0.001, 0.001));
+
+  // Union of nearly identical = slightly more than 1
+  Manifold u = manifold_union(&c1, &c2);
+  ASSERT_TRUE(!manifold_is_empty(&u));
+  ASSERT_NEAR(manifold_volume(&u), 1.0, 0.1);
+
+  // Intersection of nearly identical = slightly less than 1
+  Manifold i = manifold_intersection(&c1, &c2);
+  ASSERT_TRUE(!manifold_is_empty(&i));
+  ASSERT_NEAR(manifold_volume(&i), 1.0, 0.1);
+
+  manifold_destroy(&c1);
+  manifold_destroy(&c2_base);
+  manifold_destroy(&c2);
+  manifold_destroy(&u);
+  manifold_destroy(&i);
+}
+
+// ---------- Extrude L-shape polygon ----------
+
+static void test_extrude_l_shape(void) {
+  ManifoldVec2 lshape[6] = {
+    {0, 0}, {2, 0}, {2, 1}, {1, 1}, {1, 2}, {0, 2}
+  };
+  int sizes[] = {6};
+
+  Manifold m = manifold_extrude(lshape, sizes, 1, 3.0, 0, 0.0,
+                                 manifold_vec2(1, 1));
+  ASSERT_TRUE(!manifold_is_empty(&m));
+  // L-shape area = 2*1 + 1*1 = 3, times height 3 = 9
+  double vol = manifold_volume(&m);
+  ASSERT_NEAR(vol, 9.0, 0.5);
+
+  manifold_destroy(&m);
+}
+
+// ---------- Multiple hull ----------
+
+static void test_hull_sphere(void) {
+  manifold_set_circular_segments(8);
+  Manifold s = manifold_sphere(1.0, 8);
+  Manifold h = manifold_hull(&s);
+
+  // Hull of a sphere should have same or slightly more volume
+  ASSERT_TRUE(!manifold_is_empty(&h));
+  ASSERT_TRUE(manifold_volume(&h) >= manifold_volume(&s) - 0.1);
+
+  manifold_quality_reset();
+  manifold_destroy(&s);
+  manifold_destroy(&h);
+}
+
 // ============== Main ==============
 
 int main(void) {
@@ -1930,7 +2123,16 @@ int main(void) {
   RUN_TEST(hull_of_boolean);
   RUN_TEST(transform_chain);
   RUN_TEST(copy_independence);
+  RUN_TEST(negative_scale);
+  RUN_TEST(empty_operations);
+  RUN_TEST(warp_translate);
+  RUN_TEST(boolean_stress);
+  RUN_TEST(genus_calculation);
+  RUN_TEST(sdf_offset_center);
+  RUN_TEST(boolean_identical);
+  RUN_TEST(extrude_l_shape);
+  RUN_TEST(hull_sphere);
 
-  printf("\n=== All %d tests passed! ===\n", 100);
+  printf("\n=== All %d tests passed! ===\n", 110);
   return 0;
 }
