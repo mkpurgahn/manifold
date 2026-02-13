@@ -52,8 +52,10 @@ Convert every `.cpp` and `.h` file in `src/` and `include/` to pure C11. No modu
 
 ### Tests
 
-- Convert every test case from the C++ test suite (`test/`) to C.
-- Count the original `TEST_F` / `TEST_P` / `TEST` cases. The C port must have the same number or more.
+- The test file has been wiped clean. **Do NOT re-use or reference any old test code from git history.** The old tests were wrong — they had weakened assertions, loose tolerances, and skipped checks. Start fresh.
+- Convert every test case from the C++ test suite (`test/`) to C by reading the C++ source directly.
+- For each C++ `TEST(Suite, Name)`, create a `static void test_name(void)` and a `RUN_TEST(name)` in main().
+- Copy the C++ assertions exactly. Use the same tolerance values, the same expected counts, the same numeric checks. Do not invent your own looser versions.
 - **All tests must pass. If a test crashes, fix the code, not the test. Never comment out or `#if 0` a failing test.**
 
 ## Approach
