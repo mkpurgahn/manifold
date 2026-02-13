@@ -2055,6 +2055,8 @@ static void test_BooleanComplex_Subtract(void) {
 }
 
 static void test_BooleanComplex_BooleanVolumes(void) {
+  // Define solids with volumes easy to compute with bit arithmetic
+  // m1, m2, m4 are unique, non-intersecting "bits" (volume 1, 2, 4)
   Manifold m1 = manifold_cube((ManifoldVec3){1,1,1}, false);
   Manifold m2_base = manifold_cube((ManifoldVec3){2,1,1}, false);
   Manifold m2 = manifold_translate(&m2_base, (ManifoldVec3){1,0,0});
@@ -2068,27 +2070,64 @@ static void test_BooleanComplex_BooleanVolumes(void) {
   EXPECT_FLOAT_EQ(manifold_volume(&t1), 0.0);
 
   // m1 + m2 + m4 = 7
-  Manifold t2a = manifold_union(&m1, &m2);
-  Manifold t2b = manifold_union(&t2a, &m4);
-  EXPECT_FLOAT_EQ(manifold_volume(&t2b), 7.0);
+  Manifold u12 = manifold_union(&m1, &m2);
+  Manifold t2 = manifold_union(&u12, &m4);
+  EXPECT_FLOAT_EQ(manifold_volume(&t2), 7.0);
+
+  // m1 + m2 - m4 = 3
+  Manifold u12b = manifold_union(&m1, &m2);
+  Manifold t3 = manifold_difference(&u12b, &m4);
+  EXPECT_FLOAT_EQ(manifold_volume(&t3), 3.0);
+
+  // m1 + (m2 ^ m4) = 1
+  Manifold i24 = manifold_intersection(&m2, &m4);
+  Manifold t4 = manifold_union(&m1, &i24);
+  EXPECT_FLOAT_EQ(manifold_volume(&t4), 1.0);
 
   // m7 ^ m4 = 4
-  Manifold t3 = manifold_intersection(&m7, &m4);
-  EXPECT_FLOAT_EQ(manifold_volume(&t3), 4.0);
+  Manifold t5 = manifold_intersection(&m7, &m4);
+  EXPECT_FLOAT_EQ(manifold_volume(&t5), 4.0);
+
+  // m7 ^ m3 ^ m1 = 1
+  Manifold i73 = manifold_intersection(&m7, &m3);
+  Manifold t6 = manifold_intersection(&i73, &m1);
+  EXPECT_FLOAT_EQ(manifold_volume(&t6), 1.0);
+
+  // m7 ^ (m1 + m2) = 3
+  Manifold u12c = manifold_union(&m1, &m2);
+  Manifold t7 = manifold_intersection(&m7, &u12c);
+  EXPECT_FLOAT_EQ(manifold_volume(&t7), 3.0);
 
   // m7 - m4 = 3
-  Manifold t4 = manifold_difference(&m7, &m4);
-  EXPECT_FLOAT_EQ(manifold_volume(&t4), 3.0);
+  Manifold t8 = manifold_difference(&m7, &m4);
+  EXPECT_FLOAT_EQ(manifold_volume(&t8), 3.0);
 
   // m7 - m4 - m2 = 1
-  Manifold t5 = manifold_difference(&t4, &m2);
-  EXPECT_FLOAT_EQ(manifold_volume(&t5), 1.0);
+  Manifold d74 = manifold_difference(&m7, &m4);
+  Manifold t9 = manifold_difference(&d74, &m2);
+  EXPECT_FLOAT_EQ(manifold_volume(&t9), 1.0);
+
+  // m7 - (m7 - m1) = 1
+  Manifold d71 = manifold_difference(&m7, &m1);
+  Manifold t10 = manifold_difference(&m7, &d71);
+  EXPECT_FLOAT_EQ(manifold_volume(&t10), 1.0);
+
+  // m7 - (m1 + m2) = 4
+  Manifold u12d = manifold_union(&m1, &m2);
+  Manifold t11 = manifold_difference(&m7, &u12d);
+  EXPECT_FLOAT_EQ(manifold_volume(&t11), 4.0);
 
   manifold_destroy(&m1); manifold_destroy(&m2_base); manifold_destroy(&m2);
   manifold_destroy(&m4_base); manifold_destroy(&m4);
   manifold_destroy(&m3); manifold_destroy(&m7);
-  manifold_destroy(&t1); manifold_destroy(&t2a); manifold_destroy(&t2b);
-  manifold_destroy(&t3); manifold_destroy(&t4); manifold_destroy(&t5);
+  manifold_destroy(&t1); manifold_destroy(&u12); manifold_destroy(&t2);
+  manifold_destroy(&u12b); manifold_destroy(&t3);
+  manifold_destroy(&i24); manifold_destroy(&t4);
+  manifold_destroy(&t5); manifold_destroy(&i73); manifold_destroy(&t6);
+  manifold_destroy(&u12c); manifold_destroy(&t7);
+  manifold_destroy(&t8); manifold_destroy(&d74); manifold_destroy(&t9);
+  manifold_destroy(&d71); manifold_destroy(&t10);
+  manifold_destroy(&u12d); manifold_destroy(&t11);
 }
 
 // ==================== More Smooth Tests ====================
@@ -2663,6 +2702,164 @@ static void test_BooleanComplex_Cylinders(void) {
   manifold_destroy(&result);
 }
 
+// ==================== Boolean_PropsMismatch ====================
+static void prop_fn_const1(double *newProp, ManifoldVec3 pos,
+                           const double *oldProp, void *ctx) {
+  (void)pos; (void)oldProp; (void)ctx;
+  newProp[0] = pos.x;
+}
+
+static void test_Boolean_PropsMismatch(void) {
+  Manifold cyl = manifold_cylinder(1, 1, 1, 0, false);
+  Manifold cube_base = manifold_cube((ManifoldVec3){1,1,1}, false);
+  Manifold cube_t = manifold_translate(&cube_base, (ManifoldVec3){50,0,0});
+  Manifold cube_p = manifold_set_properties(&cube_t, 1, prop_fn_const1, NULL);
+  Manifold result = manifold_union(&cyl, &cube_p);
+  EXPECT_EQ((int)manifold_status(&result), (int)MANIFOLD_ERROR_NO_ERROR);
+  manifold_destroy(&cyl);
+  manifold_destroy(&cube_base);
+  manifold_destroy(&cube_t);
+  manifold_destroy(&cube_p);
+  manifold_destroy(&result);
+}
+
+// ==================== Boolean_CreatePropertiesSlow ====================
+static void zero_prop_fn(double *newProp, ManifoldVec3 pos,
+                         const double *oldProp, void *ctx) {
+  (void)pos; (void)oldProp; (void)ctx;
+  newProp[0] = 0; newProp[1] = 0; newProp[2] = 0;
+}
+
+static void test_Boolean_CreatePropertiesSlow(void) {
+  Manifold sphere = manifold_sphere(10, 256);
+  Manifold a = manifold_set_properties(&sphere, 3, zero_prop_fn, NULL);
+  Manifold sphere2 = manifold_sphere(10, 256);
+  Manifold b = manifold_translate(&sphere2, (ManifoldVec3){5,0,0});
+  Manifold result = manifold_union(&a, &b);
+  EXPECT_EQ(manifold_num_prop(&result), (size_t)3);
+  manifold_destroy(&sphere); manifold_destroy(&a);
+  manifold_destroy(&sphere2); manifold_destroy(&b);
+  manifold_destroy(&result);
+}
+
+// ==================== Samples_TetPuzzle ====================
+static void test_Samples_TetPuzzle(void) {
+  double edgeLength = 50;
+  double gap = 0.2;
+  int nDivisions = 50;
+  ManifoldVec3 scale = {edgeLength / (2 * sqrt(2)),
+                        edgeLength / (2 * sqrt(2)),
+                        edgeLength / (2 * sqrt(2))};
+  Manifold tet_raw = manifold_tetrahedron();
+  Manifold tet = manifold_scale(&tet_raw, scale);
+
+  // Create extrusion polygon: a box with a step pattern
+  int nPts = 3 + nDivisions + 1;
+  ManifoldVec2 *boxPts = (ManifoldVec2 *)malloc(nPts * sizeof(ManifoldVec2));
+  boxPts[0] = (ManifoldVec2){2, -2};
+  boxPts[1] = (ManifoldVec2){2, 2};
+  for (int i = 0; i <= nDivisions; i++) {
+    boxPts[2 + i] = (ManifoldVec2){gap / 2, 2 - i * 4.0 / nDivisions};
+  }
+  boxPts[nPts - 1] = boxPts[0]; // close the loop is implicit
+
+  int polySizes[1] = {nPts};
+  Manifold screw_raw = manifold_extrude(boxPts, polySizes, 1, 2, nDivisions,
+                                         270, (ManifoldVec2){1,1});
+  Manifold screw_rot = manifold_rotate(&screw_raw, 0, 0, -45);
+  Manifold screw_t = manifold_translate(&screw_rot, (ManifoldVec3){0, 0, -1});
+  Manifold screw = manifold_scale(&screw_t, scale);
+
+  Manifold puzzle = manifold_intersection(&tet, &screw);
+  EXPECT_LE(manifold_num_degenerate_tris(&puzzle), 2);
+
+  free(boxPts);
+  manifold_destroy(&tet_raw); manifold_destroy(&tet);
+  manifold_destroy(&screw_raw); manifold_destroy(&screw_rot);
+  manifold_destroy(&screw_t); manifold_destroy(&screw);
+  manifold_destroy(&puzzle);
+}
+
+// ==================== Manifold_MeshRelationRefine ====================
+static void test_Manifold_MeshRelationRefine(void) {
+  // Csaszar polyhedron refined
+  ManifoldVec3 csaszarVerts[7] = {
+    {-0.721, -0.076, 0.53}, {-0.612, 0.83, -0.02}, {0.572, 0.854, -0.254},
+    {1.298, -0.191, 0.184}, {0.257, -0.78, 0.898}, {0.257, -0.78, -0.767},
+    {-0.612, 0.034, -0.571}
+  };
+  ManifoldIVec3 csaszarTris[14] = {
+    {0, 1, 4}, {0, 4, 5}, {0, 5, 6}, {0, 6, 1},
+    {1, 2, 4}, {1, 6, 2}, {2, 3, 4}, {2, 6, 5},
+    {2, 5, 3}, {3, 5, 4}, {0, 1, 2}, {0, 2, 3},
+    {0, 3, 4}, {1, 3, 6}
+  };
+  Manifold csaszar = manifold_from_mesh(csaszarVerts, 7, csaszarTris, 14);
+  Manifold refined = manifold_refine_to_length(&csaszar, 1);
+  // Check topology is preserved
+  EXPECT_EQ(manifold_genus(&refined), manifold_genus(&csaszar));
+  EXPECT_GT((int)manifold_num_tri(&refined), 14);
+  manifold_destroy(&csaszar);
+  manifold_destroy(&refined);
+}
+
+// ==================== More Boolean tests from C++ ====================
+static void test_Boolean_MixedNumProp(void) {
+  // Union of manifold with 2 props and manifold with 1 prop
+  Manifold cube1 = manifold_cube((ManifoldVec3){1,1,1}, false);
+  Manifold cube2_raw = manifold_cube((ManifoldVec3){1,1,1}, false);
+  Manifold cube2 = manifold_translate(&cube2_raw, (ManifoldVec3){0.5,0.5,0.5});
+  Manifold cube2p = manifold_set_properties(&cube2, 1, prop_fn_const1, NULL);
+  Manifold result = manifold_union(&cube1, &cube2p);
+  EXPECT_EQ((int)manifold_status(&result), (int)MANIFOLD_ERROR_NO_ERROR);
+  manifold_destroy(&cube1); manifold_destroy(&cube2_raw);
+  manifold_destroy(&cube2); manifold_destroy(&cube2p);
+  manifold_destroy(&result);
+}
+
+// ==================== Samples_Sponge4 ====================
+static void test_Samples_Sponge4(void) {
+  Manifold sponge = menger_sponge_impl(2);
+  EXPECT_EQ(manifold_genus(&sponge), 5);
+  EXPECT_FLOAT_EQ(manifold_volume(&sponge), (double)(20 * 20 - 1) / (27 * 27));
+  manifold_destroy(&sponge);
+}
+
+// ==================== Samples_FrameReduced helper ====================
+static void test_Samples_RoundedFrame(void) {
+  double edgeLength = 1;
+  double radius = 0.1;
+  int circularSegments = 16;
+
+  Manifold edge = manifold_cylinder(edgeLength, radius, radius, circularSegments, false);
+  Manifold corner = manifold_sphere(radius, circularSegments);
+
+  Manifold edge1a = manifold_union(&corner, &edge);
+  Manifold edge1 = manifold_rotate(&edge1a, -90, 0, 0);
+  Manifold edge1t = manifold_translate(&edge1, (ManifoldVec3){-edgeLength/2, -edgeLength/2, 0});
+
+  Manifold edge2a = manifold_rotate(&edge1t, 0, 0, 180);
+  Manifold edge2 = manifold_union(&edge2a, &edge1t);
+  Manifold edget = manifold_translate(&edge, (ManifoldVec3){-edgeLength/2, -edgeLength/2, 0});
+  Manifold edge2b = manifold_union(&edge2, &edget);
+
+  Manifold edge4a = manifold_rotate(&edge2b, 0, 0, 90);
+  Manifold edge4 = manifold_union(&edge4a, &edge2b);
+
+  Manifold frame1 = manifold_translate(&edge4, (ManifoldVec3){0, 0, -edgeLength/2});
+  Manifold frame2 = manifold_rotate(&frame1, 180, 0, 0);
+  Manifold frame = manifold_union(&frame1, &frame2);
+
+  EXPECT_TRUE(manifold_matches_tri_normals(&frame));
+  EXPECT_EQ(manifold_genus(&frame), 5);
+
+  manifold_destroy(&edge); manifold_destroy(&corner);
+  manifold_destroy(&edge1a); manifold_destroy(&edge1); manifold_destroy(&edge1t);
+  manifold_destroy(&edge2a); manifold_destroy(&edge2); manifold_destroy(&edget);
+  manifold_destroy(&edge2b); manifold_destroy(&edge4a); manifold_destroy(&edge4);
+  manifold_destroy(&frame1); manifold_destroy(&frame2); manifold_destroy(&frame);
+}
+
 // ==================== Main ====================
 
 int main(void) {
@@ -2722,6 +2919,7 @@ int main(void) {
   RUN_TEST(Manifold_MeshGLRoundTrip);
   RUN_TEST(Manifold_MeshDeterminism);
   RUN_TEST(Manifold_MergeDegenerates);
+  RUN_TEST(Manifold_MeshRelationRefine);
 
   // Boolean tests
   printf("--- Boolean ---\n");
@@ -2744,9 +2942,8 @@ int main(void) {
   RUN_TEST(Boolean_NonIntersecting);
   RUN_TEST(Boolean_Precision);
   RUN_TEST(Boolean_BatchBoolean);
-  RUN_TEST(Boolean_ConvexConvexMinkowski);
-  RUN_TEST(Boolean_ConvexConvexMinkowskiDifference);
-  RUN_TEST(Boolean_SimplifyCracks);
+  RUN_TEST(Boolean_PropsMismatch);
+  RUN_TEST(Boolean_MixedNumProp);
   RUN_TEST(Boolean_SelfIntersect);
   RUN_TEST(Boolean_SelfUnion);
   RUN_TEST(Boolean_Perturb1);
@@ -2783,7 +2980,6 @@ int main(void) {
   RUN_TEST(SDF_Bounds3);
   RUN_TEST(SDF_Void);
   RUN_TEST(SDF_Resize);
-  RUN_TEST(SDF_SineSurface);
 
   // Smooth tests
   printf("--- Smooth ---\n");
@@ -2794,12 +2990,11 @@ int main(void) {
   RUN_TEST(Smooth_Mirrored);
   RUN_TEST(Smooth_RefineQuads);
   RUN_TEST(Smooth_ToLength);
-  RUN_TEST(Smooth_Csaszar);
-  RUN_TEST(Smooth_SineSurface);
 
   // Samples tests
   printf("--- Samples ---\n");
   RUN_TEST(Samples_Sponge1);
+  RUN_TEST(Samples_RoundedFrame);
 
   RUN_TEST(Properties_Tolerance);
 
@@ -2820,7 +3015,6 @@ int main(void) {
   RUN_TEST(BooleanComplex_SelfIntersect);
   RUN_TEST(BooleanComplex_Subtract);
   RUN_TEST(BooleanComplex_BooleanVolumes);
-  RUN_TEST(BooleanComplex_Cylinders);
 
   // Quality tests
   printf("--- Quality ---\n");
@@ -2830,11 +3024,21 @@ int main(void) {
   printf("--- Slow ---\n");
   RUN_TEST(SDF_SphereShell);
   RUN_TEST(SDF_Blobs);
+  RUN_TEST(SDF_SineSurface);
   RUN_TEST(Samples_FrameReduced);
   RUN_TEST(Smooth_Sphere);
+  RUN_TEST(Smooth_Csaszar);
+  RUN_TEST(Smooth_SineSurface);
   RUN_TEST(Hull_Sphere);
   RUN_TEST(Properties_ToleranceSphere);
+  RUN_TEST(Boolean_ConvexConvexMinkowski);
+  RUN_TEST(Boolean_ConvexConvexMinkowskiDifference);
+  RUN_TEST(Boolean_SimplifyCracks);
+  RUN_TEST(BooleanComplex_Cylinders);
   RUN_TEST(BooleanComplex_Spiral);
+  RUN_TEST(Boolean_CreatePropertiesSlow);
+  RUN_TEST(Samples_TetPuzzle);
+  RUN_TEST(Samples_Sponge4);
 
   // Crash-prone under -O2 (boolean memory corruption) - run last
   RUN_TEST(Boolean_Perturb3);
