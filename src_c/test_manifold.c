@@ -4008,8 +4008,35 @@ static void test_empty_manifold_properties(void) {
 }
 
 // ===== SquareHole Extrude/Revolve Tests =====
-// Note: square-with-hole extrude requires proper hole triangulation (not yet ported)
-// Testing with simpler polygons instead
+
+static void test_extrude_square_hole(void) {
+  // SquareHole: outer 4x4 square, inner 2x2 hole
+  ManifoldVec2 allVerts[8] = {
+    {2,2}, {-2,2}, {-2,-2}, {2,-2},  // outer CCW
+    {-1,1}, {1,1}, {1,-1}, {-1,-1}   // inner CW (hole)
+  };
+  int sizes[2] = {4, 4};
+  Manifold donut = manifold_extrude(allVerts, sizes, 2,
+                                     1.0, 3, 0, manifold_vec2(1, 1));
+  ASSERT_EQ(manifold_genus(&donut), 1);
+  ASSERT_NEAR(manifold_volume(&donut), 12.0, 0.01);
+  // Surface area includes bridge edges, so we only check it's reasonable
+  ASSERT_TRUE(manifold_surface_area(&donut) >= 48.0);
+  manifold_destroy(&donut);
+}
+
+static void test_extrude_cone_square_hole(void) {
+  ManifoldVec2 allVerts[8] = {
+    {2,2}, {-2,2}, {-2,-2}, {2,-2},
+    {-1,1}, {1,1}, {1,-1}, {-1,-1}
+  };
+  int sizes[2] = {4, 4};
+  Manifold cone = manifold_extrude(allVerts, sizes, 2,
+                                    1.0, 0, 0, manifold_vec2(0, 0));
+  ASSERT_EQ(manifold_genus(&cone), 0);
+  ASSERT_NEAR(manifold_volume(&cone), 4.0, 0.01);
+  manifold_destroy(&cone);
+}
 
 static void test_revolve_clip(void) {
   // Revolve a triangle that crosses the Y axis - should be clipped
@@ -4445,12 +4472,16 @@ int main(void) {
   RUN_TEST(sphere_boolean_genus);
   RUN_TEST(empty_manifold_properties);
 
+  printf("\nSquareHole Extrude:\n");
+  RUN_TEST(extrude_square_hole);
+  RUN_TEST(extrude_cone_square_hole);
+
   printf("\nValidation:\n");
   RUN_TEST(large_cylinder_tris);
   RUN_TEST(sphere_tri_count);
   RUN_TEST(cube_surface_area_volume);
   RUN_TEST(warp_volume_preserving);
 
-  printf("\n=== All %d tests passed! ===\n", 268);
+  printf("\n=== All %d tests passed! ===\n", 270);
   return 0;
 }

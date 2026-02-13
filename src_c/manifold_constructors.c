@@ -178,29 +178,25 @@ void manifold_impl_extrude(ManifoldImpl *impl,
     }
   }
 
-  // Triangulate bottom face (using first polygon only for simplicity)
-  // Use ear-clipping for each polygon
-  offset = 0;
-  for (int p = 0; p < nPolys; p++) {
-    ManifoldVecIVec3 bottom = manifold_triangulate_polygon(
-        polyVerts + offset, NULL, (size_t)polySizes[p]);
-    for (size_t t = 0; t < bottom.len; t++) {
-      // Bottom: reverse winding
+  // Triangulate bottom and top faces with hole support
+  // Use bridge-based hole elimination for proper hole handling
+  ManifoldVecIVec3 bottom = manifold_triangulate_with_holes(
+      polyVerts, polySizes, nPolys, 0);
+  for (size_t t = 0; t < bottom.len; t++) {
+    // Bottom: reverse winding
+    vec_ivec3_push(&triVerts, manifold_ivec3(
+        bottom.data[t].x,
+        bottom.data[t].z,
+        bottom.data[t].y));
+    // Top: normal winding
+    if (!isCone) {
       vec_ivec3_push(&triVerts, manifold_ivec3(
-          bottom.data[t].x + offset,
-          bottom.data[t].z + offset,
-          bottom.data[t].y + offset));
-      // Top: normal winding
-      if (!isCone) {
-        vec_ivec3_push(&triVerts, manifold_ivec3(
-            bottom.data[t].x + offset + nCrossSection * nDivisions,
-            bottom.data[t].y + offset + nCrossSection * nDivisions,
-            bottom.data[t].z + offset + nCrossSection * nDivisions));
-      }
+          bottom.data[t].x + nCrossSection * nDivisions,
+          bottom.data[t].y + nCrossSection * nDivisions,
+          bottom.data[t].z + nCrossSection * nDivisions));
     }
-    vec_ivec3_free(&bottom);
-    offset += polySizes[p];
   }
+  vec_ivec3_free(&bottom);
 
   impl->vertPos = vec_vec3_create_n(vertPos.len);
   for (size_t i = 0; i < vertPos.len; i++) {

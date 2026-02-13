@@ -152,4 +152,123 @@ static inline ManifoldVecIVec3 manifold_fan_triangulate(int startIdx, int n) {
   return tris;
 }
 
+// Triangulate a polygon with holes using bridge-based hole elimination.
+// polyVerts: flat array of all polygon vertices (outer first, then holes)
+// polySizes: array of vertex counts per polygon
+// nPolys: number of polygons (1 outer + n-1 holes)
+// baseIndex: starting vertex index offset for the output triangles
+// Returns triangles as ManifoldVecIVec3
+static inline ManifoldVecIVec3 manifold_triangulate_with_holes(
+    const ManifoldVec2 *polyVerts, const int *polySizes, int nPolys,
+    int baseIndex) {
+  if (nPolys <= 1) {
+    // No holes, just triangulate the single polygon
+    return manifold_triangulate_polygon(polyVerts, NULL,
+        nPolys == 1 ? (size_t)polySizes[0] : 0);
+  }
+
+  // Build combined polygon by bridging holes into the outer contour
+  // Strategy: for each hole, find its rightmost vertex, then find the closest
+  // visible vertex on the outer polygon, and insert a bridge (duplicate vertices)
+
+  int outerN = polySizes[0];
+  // Start with outer polygon vertices
+  size_t totalVerts = 0;
+  for (int i = 0; i < nPolys; i++) totalVerts += (size_t)polySizes[i];
+
+  // Working arrays for the merged polygon
+  ManifoldVec2 *merged = (ManifoldVec2 *)malloc(
+      (totalVerts + 2 * (size_t)(nPolys - 1)) * sizeof(ManifoldVec2));
+  int *mergedIdx = (int *)malloc(
+      (totalVerts + 2 * (size_t)(nPolys - 1)) * sizeof(int));
+  size_t mergedLen = (size_t)outerN;
+
+  // Copy outer polygon
+  for (int i = 0; i < outerN; i++) {
+    merged[i] = polyVerts[i];
+    mergedIdx[i] = baseIndex + i;
+  }
+
+  // Process each hole
+  int holeOffset = outerN;
+  for (int h = 1; h < nPolys; h++) {
+    int holeN = polySizes[h];
+    const ManifoldVec2 *hole = polyVerts + holeOffset;
+
+    // Find the rightmost vertex in the hole
+    int rightmost = 0;
+    for (int i = 1; i < holeN; i++) {
+      if (hole[i].x > hole[rightmost].x ||
+          (hole[i].x == hole[rightmost].x && hole[i].y > hole[rightmost].y)) {
+        rightmost = i;
+      }
+    }
+
+    // Find the closest visible vertex in the merged polygon
+    ManifoldVec2 holeVert = hole[rightmost];
+    int bestOuter = 0;
+    double bestDist = 1e308;
+    for (size_t i = 0; i < mergedLen; i++) {
+      double dx = merged[i].x - holeVert.x;
+      double dy = merged[i].y - holeVert.y;
+      double dist = dx * dx + dy * dy;
+      if (dist < bestDist) {
+        bestDist = dist;
+        bestOuter = (int)i;
+      }
+    }
+
+    // Insert bridge: outer[bestOuter] -> hole[rightmost] -> ... -> hole[rightmost] -> outer[bestOuter]
+    size_t newLen = mergedLen + (size_t)holeN + 2;
+    ManifoldVec2 *newMerged = (ManifoldVec2 *)malloc(newLen * sizeof(ManifoldVec2));
+    int *newIdx = (int *)malloc(newLen * sizeof(int));
+    size_t k = 0;
+
+    // Copy outer up to and including bestOuter
+    for (int i = 0; i <= bestOuter; i++) {
+      newMerged[k] = merged[i];
+      newIdx[k] = mergedIdx[i];
+      k++;
+    }
+
+    // Insert hole starting at rightmost, going around
+    for (int i = 0; i < holeN; i++) {
+      int hi = (rightmost + i) % holeN;
+      newMerged[k] = hole[hi];
+      newIdx[k] = baseIndex + holeOffset + hi;
+      k++;
+    }
+
+    // Close bridge back: duplicate hole[rightmost] and outer[bestOuter]
+    newMerged[k] = hole[rightmost];
+    newIdx[k] = baseIndex + holeOffset + rightmost;
+    k++;
+    newMerged[k] = merged[bestOuter];
+    newIdx[k] = mergedIdx[bestOuter];
+    k++;
+
+    // Copy rest of outer
+    for (size_t i = (size_t)(bestOuter + 1); i < mergedLen; i++) {
+      newMerged[k] = merged[i];
+      newIdx[k] = mergedIdx[i];
+      k++;
+    }
+
+    free(merged);
+    free(mergedIdx);
+    merged = newMerged;
+    mergedIdx = newIdx;
+    mergedLen = k;
+
+    holeOffset += holeN;
+  }
+
+  // Triangulate the merged polygon
+  ManifoldVecIVec3 tris = manifold_triangulate_polygon(merged, mergedIdx, mergedLen);
+
+  free(merged);
+  free(mergedIdx);
+  return tris;
+}
+
 #endif // MANIFOLD_POLYGON_H
