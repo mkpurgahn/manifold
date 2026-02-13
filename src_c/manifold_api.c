@@ -58,6 +58,36 @@ void manifold_copy(Manifold *dst, const Manifold *src) {
   dst->impl.colliderBuilt = false;
 }
 
+// Create from mesh
+Manifold manifold_from_mesh(const ManifoldVec3 *vertPos, size_t numVert,
+                            const ManifoldIVec3 *triVerts, size_t numTri) {
+  Manifold m;
+  manifold_impl_init(&m.impl);
+  if (numVert == 0 || numTri == 0) return m;
+
+  m.impl.vertPos = vec_vec3_create_n(numVert);
+  for (size_t i = 0; i < numVert; i++) {
+    m.impl.vertPos.data[i] = vertPos[i];
+  }
+
+  ManifoldVecIVec3 tris = {0};
+  for (size_t i = 0; i < numTri; i++) {
+    vec_ivec3_push(&tris, triVerts[i]);
+  }
+
+  ManifoldVecIVec3 emptyTriVert = {0};
+  manifold_impl_create_halfedges(&m.impl, &tris, &emptyTriVert);
+  manifold_impl_initialize_original(&m.impl);
+  manifold_impl_calculate_bbox(&m.impl);
+  manifold_impl_set_epsilon(&m.impl, -1.0, false);
+  manifold_impl_sort_geometry(&m.impl);
+  manifold_impl_set_normals_and_coplanar(&m.impl);
+
+  vec_ivec3_free(&tris);
+  vec_ivec3_free(&emptyTriVert);
+  return m;
+}
+
 ManifoldError manifold_status(const Manifold *m) { return m->impl.status; }
 bool manifold_is_empty(const Manifold *m) { return manifold_impl_is_empty(&m->impl); }
 size_t manifold_num_vert(const Manifold *m) { return manifold_impl_num_vert(&m->impl); }

@@ -25,6 +25,10 @@ Manifold manifold_sphere(double radius, int circularSegments);
 Manifold manifold_cylinder(double height, double radiusLow, double radiusHigh,
                            int circularSegments, bool center);
 
+// Create a manifold from raw vertex positions and triangle indices.
+Manifold manifold_from_mesh(const ManifoldVec3 *vertPos, size_t numVert,
+                            const ManifoldIVec3 *triVerts, size_t numTri);
+
 // Extrude a 2D polygon cross-section along the Z-axis.
 // crossSection: array of simple polygons (array of vec2 arrays)
 // nPolys: number of polygons

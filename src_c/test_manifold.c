@@ -1040,6 +1040,22 @@ static void test_boolean_rotated(void) {
   manifold_destroy(&result);
 }
 
+static void test_from_mesh(void) {
+  // Create a tetrahedron from raw mesh data
+  ManifoldVec3 verts[] = {
+    {0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1}
+  };
+  ManifoldIVec3 tris[] = {
+    {0, 2, 1}, {0, 1, 3}, {0, 3, 2}, {1, 2, 3}
+  };
+  Manifold m = manifold_from_mesh(verts, 4, tris, 4);
+  ASSERT_EQ(manifold_status(&m), MANIFOLD_ERROR_NO_ERROR);
+  ASSERT_EQ(manifold_num_vert(&m), (size_t)4);
+  ASSERT_EQ(manifold_num_tri(&m), (size_t)4);
+  ASSERT_NEAR(manifold_volume(&m), 1.0/6.0, 0.01);
+  manifold_destroy(&m);
+}
+
 // ============== Main ==============
 
 int main(void) {
@@ -1121,6 +1137,9 @@ int main(void) {
   RUN_TEST(boolean_non_intersecting);
   RUN_TEST(boolean_rotated);
 
+  printf("\nMesh Construction:\n");
+  RUN_TEST(from_mesh);
+
   printf("\nConvex Hull:\n");
   RUN_TEST(hull_cube);
   RUN_TEST(hull_points);
@@ -1134,6 +1153,6 @@ int main(void) {
   RUN_TEST(hull_tetrahedron);
   RUN_TEST(sdf_volume_accuracy);
 
-  printf("\n=== All %d tests passed! ===\n", 56);
+  printf("\n=== All %d tests passed! ===\n", 57);
   return 0;
 }
