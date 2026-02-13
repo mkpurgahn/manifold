@@ -561,6 +561,61 @@ static void test_mesh_access(void) {
   manifold_destroy(&m);
 }
 
+// ============== Stress Tests ==============
+
+static void test_multiple_operations(void) {
+  // Test a chain of operations: create, transform, copy, measure
+  Manifold base = manifold_cube(manifold_vec3(2, 2, 2), true);
+  Manifold moved = manifold_translate(&base, manifold_vec3(1, 0, 0));
+  Manifold scaled = manifold_scale(&moved, manifold_vec3(1, 2, 1));
+  Manifold rotated = manifold_rotate(&scaled, 0, 0, 45);
+
+  // Volume should be 2*2*2 * 1*2*1 = 16
+  ASSERT_NEAR(manifold_volume(&scaled), 16.0, 0.01);
+
+  // Rotated volume should be the same
+  ASSERT_NEAR(manifold_volume(&rotated), 16.0, 0.01);
+
+  manifold_destroy(&base);
+  manifold_destroy(&moved);
+  manifold_destroy(&scaled);
+  manifold_destroy(&rotated);
+}
+
+static void test_hull_tetrahedron(void) {
+  // Hull of 4 non-coplanar points should be a tetrahedron
+  ManifoldVec3 pts[] = {
+    {0, 0, 0}, {1, 0, 0}, {0.5, 1, 0}, {0.5, 0.5, 1}
+  };
+  Manifold hull = manifold_hull_points(pts, 4);
+
+  ASSERT_EQ(manifold_status(&hull), MANIFOLD_ERROR_NO_ERROR);
+  ASSERT_TRUE(!manifold_is_empty(&hull));
+  ASSERT_EQ(manifold_num_vert(&hull), (size_t)4);
+  ASSERT_EQ(manifold_num_tri(&hull), (size_t)4);
+
+  // Volume of tetrahedron with these vertices
+  double vol = manifold_volume(&hull);
+  ASSERT_TRUE(fabs(vol) > 0.01);
+
+  manifold_destroy(&hull);
+}
+
+static void test_sdf_volume_accuracy(void) {
+  // Test SDF sphere with finer resolution for better accuracy
+  double radius = 1.0;
+  ManifoldBox bounds = manifold_box(manifold_vec3(-1.5, -1.5, -1.5),
+                                     manifold_vec3(1.5, 1.5, 1.5));
+  Manifold m = manifold_level_set(sdf_sphere, &radius, bounds, 0.1, 0.0, -1.0);
+
+  double vol = manifold_volume(&m);
+  double expected = 4.0 / 3.0 * MANIFOLD_PI; // ~4.189
+  // With edge length 0.1, should be within 5% of exact
+  ASSERT_TRUE(fabs(vol - expected) / expected < 0.05);
+
+  manifold_destroy(&m);
+}
+
 // ============== Main ==============
 
 int main(void) {
@@ -624,6 +679,11 @@ int main(void) {
   RUN_TEST(warp);
   RUN_TEST(mesh_access);
 
-  printf("\n=== All %d tests passed! ===\n", 31);
+  printf("\nStress Tests:\n");
+  RUN_TEST(multiple_operations);
+  RUN_TEST(hull_tetrahedron);
+  RUN_TEST(sdf_volume_accuracy);
+
+  printf("\n=== All %d tests passed! ===\n", 34);
   return 0;
 }
