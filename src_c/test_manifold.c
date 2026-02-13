@@ -3726,6 +3726,160 @@ static void test_invalid_nan_vertex(void) {
   manifold_destroy(&tet);
 }
 
+// ===== More Boolean Tests (C++ parity) =====
+
+static void test_boolean_cubes_complex(void) {
+  // Two partially overlapping cubes
+  Manifold c1 = manifold_cube(manifold_vec3(1, 1, 1), false);
+  Manifold c2base = manifold_cube(manifold_vec3(1, 1, 1), false);
+  Manifold c2 = manifold_translate(&c2base, manifold_vec3(0.5, 0.5, 0));
+  Manifold result = manifold_union(&c1, &c2);
+  ASSERT_NEAR(manifold_volume(&result), 1.75, 0.02);
+  manifold_destroy(&c1); manifold_destroy(&c2base);
+  manifold_destroy(&c2); manifold_destroy(&result);
+}
+
+static void test_boolean_no_retained_verts2(void) {
+  Manifold cube = manifold_cube(manifold_vec3(1,1,1), true);
+  Manifold oct = manifold_sphere(1.0, 4);
+  ASSERT_NEAR(manifold_volume(&cube), 1.0, 0.001);
+  ASSERT_NEAR(manifold_volume(&oct), 1.333, 0.01);
+  Manifold result = manifold_intersection(&cube, &oct);
+  ASSERT_NEAR(manifold_volume(&result), 0.833, 0.01);
+  manifold_destroy(&cube);
+  manifold_destroy(&oct);
+  manifold_destroy(&result);
+}
+
+static void test_boolean_empty_ops(void) {
+  // Operations with empty manifold
+  Manifold cube = manifold_cube(manifold_vec3(1,1,1), false);
+  double cubeVol = manifold_volume(&cube);
+  Manifold empty = manifold_empty();
+
+  Manifold u = manifold_union(&cube, &empty);
+  ASSERT_NEAR(manifold_volume(&u), cubeVol, 1e-5);
+
+  Manifold d = manifold_difference(&cube, &empty);
+  ASSERT_NEAR(manifold_volume(&d), cubeVol, 1e-5);
+
+  Manifold d2 = manifold_difference(&empty, &cube);
+  ASSERT_TRUE(manifold_is_empty(&d2));
+
+  Manifold i = manifold_intersection(&cube, &empty);
+  ASSERT_TRUE(manifold_is_empty(&i));
+
+  manifold_destroy(&cube); manifold_destroy(&empty);
+  manifold_destroy(&u); manifold_destroy(&d);
+  manifold_destroy(&d2); manifold_destroy(&i);
+}
+
+static void test_boolean_non_intersecting2(void) {
+  // Two non-intersecting cubes, check volume addition
+  Manifold c1 = manifold_cube(manifold_vec3(1,1,1), false);
+  double v1 = manifold_volume(&c1);
+  Manifold c2base = manifold_cube(manifold_vec3(1,1,1), false);
+  Manifold scaled = manifold_scale(&c2base, manifold_vec3(2,2,2));
+  Manifold c2 = manifold_translate(&scaled, manifold_vec3(3,0,0));
+  double v2 = manifold_volume(&c2);
+
+  Manifold u = manifold_union(&c1, &c2);
+  ASSERT_NEAR(manifold_volume(&u), v1 + v2, 0.01);
+
+  Manifold d = manifold_difference(&c1, &c2);
+  ASSERT_NEAR(manifold_volume(&d), v1, 0.01);
+
+  Manifold i = manifold_intersection(&c1, &c2);
+  ASSERT_TRUE(manifold_is_empty(&i));
+
+  manifold_destroy(&c1); manifold_destroy(&c2base);
+  manifold_destroy(&scaled); manifold_destroy(&c2);
+  manifold_destroy(&u); manifold_destroy(&d); manifold_destroy(&i);
+}
+
+// ===== More Geometry Tests =====
+
+static void test_sphere_normals(void) {
+  // Sphere should have outward-pointing normals
+  Manifold s = manifold_sphere(1.0, 16);
+  size_t count;
+  const ManifoldVec3 *verts = manifold_get_vert_positions(&s, &count);
+  // All vertices should be at radius ~1
+  for (size_t i = 0; i < count; i++) {
+    double r = vec3_length(verts[i]);
+    ASSERT_NEAR(r, 1.0, 0.01);
+  }
+  ASSERT_TRUE(manifold_genus(&s) == 0);
+  manifold_destroy(&s);
+}
+
+static void test_cylinder_volume(void) {
+  // Cylinder volume = pi*r^2*h
+  Manifold cyl = manifold_cylinder(2.0, 1.0, 1.0, 64, false);
+  double expected = MANIFOLD_PI * 1.0 * 1.0 * 2.0;
+  ASSERT_NEAR(manifold_volume(&cyl), expected, 0.1);
+  manifold_destroy(&cyl);
+}
+
+static void test_cylinder_cone_volume(void) {
+  // Cone volume = (1/3)*pi*r^2*h
+  Manifold cone = manifold_cylinder(3.0, 2.0, 0.0, 64, false);
+  double expected = (1.0/3.0) * MANIFOLD_PI * 2.0 * 2.0 * 3.0;
+  ASSERT_NEAR(manifold_volume(&cone), expected, 0.2);
+  manifold_destroy(&cone);
+}
+
+static void test_meshgl_roundtrip(void) {
+  // Create a manifold, export to meshgl, reimport
+  Manifold cube = manifold_cube(manifold_vec3(2,3,4), false);
+  double origVol = manifold_volume(&cube);
+
+  // Get flat mesh
+  float *vp = NULL; int *tv = NULL;
+  size_t nv, np, nt;
+  manifold_get_mesh(&cube, &vp, &nv, &np, &tv, &nt);
+  ASSERT_TRUE(nv == 8);
+  ASSERT_TRUE(nt == 12);
+
+  // Reimport via positions and triangles
+  ManifoldVec3 *positions = (ManifoldVec3*)malloc(nv * sizeof(ManifoldVec3));
+  ManifoldIVec3 *tris = (ManifoldIVec3*)malloc(nt * sizeof(ManifoldIVec3));
+  for (size_t i = 0; i < nv; i++) {
+    positions[i].x = vp[i*np+0];
+    positions[i].y = vp[i*np+1];
+    positions[i].z = vp[i*np+2];
+  }
+  for (size_t i = 0; i < nt; i++) {
+    tris[i].x = tv[i*3+0];
+    tris[i].y = tv[i*3+1];
+    tris[i].z = tv[i*3+2];
+  }
+  Manifold reimported = manifold_from_mesh(positions, nv, tris, nt);
+  ASSERT_NEAR(manifold_volume(&reimported), origVol, 0.01);
+
+  free(positions); free(tris);
+  manifold_free_mesh(vp, tv);
+  manifold_destroy(&cube);
+  manifold_destroy(&reimported);
+}
+
+static void test_from_meshgl_basic(void) {
+  // Create a tetrahedron via ManifoldMeshGL
+  double vp[] = {0,0,0, 1,0,0, 0.5,1,0, 0.5,0.5,1};
+  int tv[] = {0,2,1, 0,1,3, 1,2,3, 0,3,2};
+  ManifoldMeshGL mesh;
+  mesh.numProp = 3;
+  mesh.vertProperties = vp;
+  mesh.vertLen = 4;
+  mesh.triVerts = tv;
+  mesh.triLen = 4;
+  mesh.tolerance = 0;
+  Manifold tet = manifold_from_meshgl(&mesh);
+  ASSERT_TRUE(!manifold_is_empty(&tet));
+  ASSERT_TRUE(manifold_volume(&tet) > 0);
+  manifold_destroy(&tet);
+}
+
 // ============== Main ==============
 
 int main(void) {
@@ -4078,6 +4232,19 @@ int main(void) {
   printf("\nInvalid Input:\n");
   RUN_TEST(invalid_nan_vertex);
 
-  printf("\n=== All %d tests passed! ===\n", 239);
+  printf("\nMore Boolean (C++ parity):\n");
+  RUN_TEST(boolean_cubes_complex);
+  RUN_TEST(boolean_no_retained_verts2);
+  RUN_TEST(boolean_empty_ops);
+  RUN_TEST(boolean_non_intersecting2);
+
+  printf("\nMore Geometry:\n");
+  RUN_TEST(sphere_normals);
+  RUN_TEST(cylinder_volume);
+  RUN_TEST(cylinder_cone_volume);
+  RUN_TEST(meshgl_roundtrip);
+  RUN_TEST(from_meshgl_basic);
+
+  printf("\n=== All %d tests passed! ===\n", 250);
   return 0;
 }
