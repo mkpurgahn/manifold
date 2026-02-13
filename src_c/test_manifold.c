@@ -1503,6 +1503,47 @@ static void test_boolean_volumes(void) {
   manifold_destroy(&diff);
 }
 
+// ============== Sphere Precision Tests ==============
+
+static void test_sphere_volume_accuracy(void) {
+  // With proper subdivision, sphere volume should be close to 4/3 * pi * r^3
+  Manifold s = manifold_sphere(1.0, 24);  // 24 segments
+  double vol = manifold_volume(&s);
+  double expected = 4.0 / 3.0 * MANIFOLD_PI;
+  // Should be within 5% with 24 segments
+  ASSERT_TRUE(fabs(vol - expected) / expected < 0.05);
+  manifold_destroy(&s);
+}
+
+static void test_sphere_surface_area(void) {
+  Manifold s = manifold_sphere(1.0, 24);
+  double area = manifold_surface_area(&s);
+  double expected = 4.0 * MANIFOLD_PI;
+  // Should be within 5% with 24 segments
+  ASSERT_TRUE(fabs(area - expected) / expected < 0.05);
+  manifold_destroy(&s);
+}
+
+static void test_sphere_genus(void) {
+  Manifold s = manifold_sphere(1.0, 8);
+  ASSERT_EQ(manifold_genus(&s), 0);
+  manifold_destroy(&s);
+}
+
+static void test_sphere_bounding_box(void) {
+  double r = 2.0;
+  Manifold s = manifold_sphere(r, 16);
+  ManifoldBox bb = manifold_bounding_box(&s);
+  // Bounding box should be close to [-r, r] in all dimensions
+  ASSERT_NEAR(bb.min.x, -r, 0.2);
+  ASSERT_NEAR(bb.min.y, -r, 0.2);
+  ASSERT_NEAR(bb.min.z, -r, 0.2);
+  ASSERT_NEAR(bb.max.x, r, 0.2);
+  ASSERT_NEAR(bb.max.y, r, 0.2);
+  ASSERT_NEAR(bb.max.z, r, 0.2);
+  manifold_destroy(&s);
+}
+
 // ============== Main ==============
 
 int main(void) {
@@ -1646,6 +1687,12 @@ int main(void) {
   printf("\nTransform:\n");
   RUN_TEST(transform_mat);
 
-  printf("\n=== All %d tests passed! ===\n", 82);
+  printf("\nSphere Precision:\n");
+  RUN_TEST(sphere_volume_accuracy);
+  RUN_TEST(sphere_surface_area);
+  RUN_TEST(sphere_genus);
+  RUN_TEST(sphere_bounding_box);
+
+  printf("\n=== All %d tests passed! ===\n", 86);
   return 0;
 }
