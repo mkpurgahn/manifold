@@ -281,12 +281,15 @@ void manifold_impl_get_face_box_morton(const ManifoldImpl *impl,
       continue;
     }
     ManifoldVec3 center = manifold_vec3(0, 0, 0);
+    bool valid = true;
     for (int i = 0; i < 3; i++) {
-      ManifoldVec3 pos =
-          impl->vertPos.data[impl->halfedge.data[3 * face + i].startVert];
+      int sv = impl->halfedge.data[3 * face + i].startVert;
+      if (sv < 0 || (size_t)sv >= impl->vertPos.len) { valid = false; break; }
+      ManifoldVec3 pos = impl->vertPos.data[sv];
       center = vec3_add(center, pos);
       manifold_box_union_point(&faceBox->data[face], pos);
     }
+    if (!valid) { faceMorton->data[face] = 0xFFFFFFFFu; continue; }
     center = vec3_scale(center, 1.0 / 3.0);
     faceMorton->data[face] = manifold_morton_code(center, impl->bBox);
   }

@@ -920,11 +920,7 @@ static void face2tri(ManifoldImpl *impl, const ManifoldVecInt *faceEdge,
           int tmpS = polySizes[0]; polySizes[0] = polySizes[maxIdx]; polySizes[maxIdx] = tmpS;
           // Swap areas
           double tmpA = areas[0]; areas[0] = areas[maxIdx]; areas[maxIdx] = tmpA;
-          // Swap in allPts and heMap
-          int sz0 = polySizes[0], szM = polySizes[maxIdx]; // after swap
-          // Wait, we already swapped polySizes, so polySizes[0] is now the max.
-          // But allPts data is in the original order. We need to rebuild.
-          // Actually, let's just rebuild allPts/heMap from scratch with the right order.
+          // Rebuild allPts/heMap with outer polygon first
           int **newLoops = (int **)malloc((size_t)numLoops * sizeof(int *));
           int *newLoopLens = (int *)malloc((size_t)numLoops * sizeof(int));
           // Put maxIdx first, then others

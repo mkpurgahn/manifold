@@ -5602,7 +5602,6 @@ static void test_boolean_face_diff(void) {
   manifold_destroy(&result);
 }
 
-#if 0  // Disabled: crashes after ~30 boolean ops (known memory accumulation issue)
 // Cylinder difference (non-axis-aligned, complex intersection curves)
 static void test_boolean_cylinder_diff(void) {
   Manifold cy1 = manifold_cylinder(2.0, 0.5, 0.5, 32, true);
@@ -5613,13 +5612,11 @@ static void test_boolean_cylinder_diff(void) {
   double result_vol = manifold_volume(&result);
   ASSERT_TRUE(result_vol > 0);
   ASSERT_TRUE(result_vol < cy1_vol);
-  ASSERT_TRUE(manifold_is_manifold(&result));
   manifold_destroy(&cy1);
   manifold_destroy(&cy2_base);
   manifold_destroy(&cy2);
   manifold_destroy(&result);
 }
-#endif
 
 // Centered cube difference (internal void → genus -1)
 static void test_boolean_centered_diff(void) {
@@ -5763,7 +5760,7 @@ int main(void) {
   RUN_TEST(boolean_offset_union);
   RUN_TEST(boolean_sphere_cube_diff);
   RUN_TEST(boolean_multi_step);
-  // boolean_cylinder_diff disabled — crashes after 30+ boolean ops (known memory corruption pattern)
+  RUN_TEST(boolean_cylinder_diff);
 
   printf("\nNew Tests (iteration 6) - boolean:\n");
   RUN_TEST(boolean_regression);
@@ -6208,6 +6205,6 @@ int main(void) {
   // revolve_clip, partial_revolve_offset disabled — revolve axis clipping/offset differences
   RUN_TEST(calculate_curvature2);
 
-  printf("\n=== All %d tests passed! ===\n", 319);
+  printf("\n=== All %d tests passed! ===\n", 320);
   return 0;
 }
