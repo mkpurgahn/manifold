@@ -427,6 +427,44 @@ static inline bool manifold_rect_is_empty(ManifoldRect r) {
   return r.max.y <= r.min.y || r.max.x <= r.min.x;
 }
 
+// vec3 outer product: result[col][row] = a[row] * b[col]
+static inline ManifoldMat3 vec3_outerprod(ManifoldVec3 a, ManifoldVec3 b) {
+  ManifoldMat3 m;
+  m.cols[0] = vec3_scale(a, b.x);
+  m.cols[1] = vec3_scale(a, b.y);
+  m.cols[2] = vec3_scale(a, b.z);
+  return m;
+}
+
+// mat3 subtract
+static inline ManifoldMat3 mat3_sub(ManifoldMat3 a, ManifoldMat3 b) {
+  ManifoldMat3 r;
+  r.cols[0] = vec3_sub(a.cols[0], b.cols[0]);
+  r.cols[1] = vec3_sub(a.cols[1], b.cols[1]);
+  r.cols[2] = vec3_sub(a.cols[2], b.cols[2]);
+  return r;
+}
+
+// mat3 scale (scalar * mat3)
+static inline ManifoldMat3 mat3_scale_s(ManifoldMat3 m, double s) {
+  ManifoldMat3 r;
+  r.cols[0] = vec3_scale(m.cols[0], s);
+  r.cols[1] = vec3_scale(m.cols[1], s);
+  r.cols[2] = vec3_scale(m.cols[2], s);
+  return r;
+}
+
+// mat3x4 from mat3 + translation
+static inline ManifoldMat3x4 mat3x4_from_mat3_translate(ManifoldMat3 m,
+                                                          ManifoldVec3 t) {
+  ManifoldMat3x4 r;
+  r.cols[0] = m.cols[0];
+  r.cols[1] = m.cols[1];
+  r.cols[2] = m.cols[2];
+  r.cols[3] = t;
+  return r;
+}
+
 // ============== Scalar helpers ==============
 
 static inline double manifold_radians(double a) {

@@ -421,3 +421,198 @@ void manifold_free_mesh(float *vertProps, int *triVerts) {
   free(vertProps);
   free(triVerts);
 }
+
+// ---------- Additional API functions ----------
+
+int manifold_genus(const Manifold *m) {
+  int chi = (int)manifold_num_vert(m) - (int)manifold_num_edge(m) +
+            (int)manifold_num_tri(m);
+  return 1 - chi / 2;
+}
+
+int manifold_original_id(const Manifold *m) {
+  return m->impl.meshRelation.originalID;
+}
+
+double manifold_get_epsilon(const Manifold *m) { return m->impl.epsilon; }
+double manifold_get_tolerance(const Manifold *m) { return m->impl.tolerance; }
+size_t manifold_num_prop(const Manifold *m) {
+  return manifold_impl_num_prop(&m->impl);
+}
+size_t manifold_num_prop_vert(const Manifold *m) {
+  return manifold_impl_num_prop_vert(&m->impl);
+}
+
+Manifold manifold_mirror(const Manifold *m, ManifoldVec3 normal) {
+  double len = vec3_length(normal);
+  if (len == 0.0) {
+    Manifold empty;
+    manifold_create(&empty);
+    return empty;
+  }
+  ManifoldVec3 n = vec3_scale(normal, 1.0 / len);
+  // Mirror matrix: I - 2*n*n^T
+  ManifoldMat3 mirror = mat3_sub(mat3_identity(),
+                                  mat3_scale_s(vec3_outerprod(n, n), 2.0));
+  ManifoldMat3x4 transform = mat3x4_from_mat3_translate(mirror,
+                                                          manifold_vec3(0, 0, 0));
+
+  Manifold out;
+  manifold_copy(&out, m);
+  // Apply mirror transform to all vertices
+  for (size_t i = 0; i < out.impl.vertPos.len; i++) {
+    out.impl.vertPos.data[i] = mat3_mul_vec3(mirror, out.impl.vertPos.data[i]);
+  }
+  // Mirror flips winding - reverse all triangle windings
+  size_t numTri = manifold_impl_num_tri(&out.impl);
+  for (size_t tri = 0; tri < numTri; tri++) {
+    // Swap halfedges 1 and 2 of each triangle to flip winding
+    ManifoldHalfedge tmp = out.impl.halfedge.data[3 * tri + 1];
+    out.impl.halfedge.data[3 * tri + 1] = out.impl.halfedge.data[3 * tri + 2];
+    out.impl.halfedge.data[3 * tri + 2] = tmp;
+  }
+  // Rebuild halfedges from scratch (re-pair)
+  ManifoldVecIVec3 triVerts = {0};
+  for (size_t tri = 0; tri < numTri; tri++) {
+    ManifoldIVec3 tv;
+    tv.x = out.impl.halfedge.data[3 * tri].startVert;
+    tv.y = out.impl.halfedge.data[3 * tri + 1].startVert;
+    tv.z = out.impl.halfedge.data[3 * tri + 2].startVert;
+    vec_ivec3_push(&triVerts, tv);
+  }
+  // Clear and rebuild
+  vec_halfedge_clear(&out.impl.halfedge);
+  vec_vec3_clear(&out.impl.faceNormal);
+  vec_vec3_clear(&out.impl.vertNormal);
+  ManifoldVecIVec3 emptyTriProp = {0};
+  manifold_impl_create_halfedges(&out.impl, &triVerts, &emptyTriProp);
+  manifold_impl_initialize_original(&out.impl);
+  manifold_impl_calculate_bbox(&out.impl);
+  manifold_impl_set_epsilon(&out.impl, -1.0, false);
+  manifold_impl_sort_geometry(&out.impl);
+  manifold_impl_set_normals_and_coplanar(&out.impl);
+  vec_ivec3_free(&triVerts);
+  vec_ivec3_free(&emptyTriProp);
+  (void)transform;
+  return out;
+}
+
+// Helper: create a halfspace cutter
+static Manifold manifold_halfspace(ManifoldBox bBox, ManifoldVec3 normal,
+                                    double originOffset) {
+  normal = vec3_normalize(normal);
+  Manifold cutter = manifold_cube(manifold_vec3(2.0, 2.0, 2.0), true);
+  cutter = manifold_translate(&cutter, manifold_vec3(1.0, 0.0, 0.0));
+
+  double size = vec3_length(vec3_sub(manifold_box_center(bBox),
+                                      vec3_scale(normal, originOffset))) +
+                0.5 * vec3_length(manifold_box_size(bBox));
+  ManifoldVec3 sv = manifold_vec3(size, size, size);
+  Manifold scaled = manifold_scale(&cutter, sv);
+  manifold_destroy(&cutter);
+
+  Manifold translated = manifold_translate(&scaled,
+                                            manifold_vec3(originOffset, 0, 0));
+  manifold_destroy(&scaled);
+
+  double yDeg = manifold_degrees(-asin(normal.z));
+  double zDeg = manifold_degrees(atan2(normal.y, normal.x));
+  Manifold rotated = manifold_rotate(&translated, 0.0, yDeg, zDeg);
+  manifold_destroy(&translated);
+
+  return rotated;
+}
+
+void manifold_split(const Manifold *m, const Manifold *cutter,
+                    Manifold *first, Manifold *second) {
+  *first = manifold_intersection(m, cutter);
+  *second = manifold_difference(m, cutter);
+}
+
+void manifold_split_by_plane(const Manifold *m, ManifoldVec3 normal,
+                              double originOffset, Manifold *first,
+                              Manifold *second) {
+  Manifold hs = manifold_halfspace(manifold_bounding_box(m), normal,
+                                    originOffset);
+  manifold_split(m, &hs, first, second);
+  manifold_destroy(&hs);
+}
+
+Manifold manifold_trim_by_plane(const Manifold *m, ManifoldVec3 normal,
+                                 double originOffset) {
+  Manifold hs = manifold_halfspace(manifold_bounding_box(m), normal,
+                                    originOffset);
+  Manifold result = manifold_intersection(m, &hs);
+  manifold_destroy(&hs);
+  return result;
+}
+
+int manifold_decompose(const Manifold *m, Manifold **components,
+                        int maxComponents) {
+  if (manifold_is_empty(m) || maxComponents <= 0) return 0;
+
+  // Allocate impl array
+  ManifoldImpl *implArr = (ManifoldImpl *)malloc(
+      (size_t)maxComponents * sizeof(ManifoldImpl));
+  int n = manifold_impl_decompose(&m->impl, implArr, maxComponents);
+
+  // Wrap in Manifold objects
+  *components = (Manifold *)malloc((size_t)n * sizeof(Manifold));
+  for (int i = 0; i < n; i++) {
+    (*components)[i].impl = implArr[i];
+  }
+  free(implArr);
+  return n;
+}
+
+Manifold manifold_batch_boolean(const Manifold *manifolds, int count,
+                                 ManifoldOpType op) {
+  if (count <= 0) {
+    Manifold empty;
+    manifold_create(&empty);
+    return empty;
+  }
+  if (count == 1) {
+    Manifold result;
+    manifold_copy(&result, &manifolds[0]);
+    return result;
+  }
+  // Apply operations sequentially
+  Manifold result;
+  manifold_copy(&result, &manifolds[0]);
+  for (int i = 1; i < count; i++) {
+    Manifold next = manifold_boolean(&result, &manifolds[i], op);
+    manifold_destroy(&result);
+    result = next;
+  }
+  return result;
+}
+
+Manifold manifold_set_properties(const Manifold *m, int numProp,
+    void (*propFunc)(double *newProp, ManifoldVec3 pos, const double *oldProp, void *ctx),
+    void *ctx) {
+  Manifold out;
+  manifold_copy(&out, m);
+  manifold_impl_set_properties(&out.impl, numProp, propFunc, ctx);
+  return out;
+}
+
+Manifold manifold_calculate_curvature(const Manifold *m, int gaussianIdx,
+                                       int meanIdx) {
+  Manifold out;
+  manifold_copy(&out, m);
+  manifold_impl_calculate_curvature(&out.impl, gaussianIdx, meanIdx);
+  return out;
+}
+
+Manifold manifold_as_original(const Manifold *m) {
+  Manifold out;
+  manifold_copy(&out, m);
+  manifold_impl_initialize_original(&out.impl);
+  manifold_impl_set_normals_and_coplanar(&out.impl);
+  return out;
+}
+
+uint32_t manifold_reserve_ids_api(uint32_t n) {
+  return manifold_reserve_ids(n);
+}

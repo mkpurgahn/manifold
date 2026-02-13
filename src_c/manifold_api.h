@@ -95,6 +95,50 @@ void manifold_set_min_circular_angle(double angle);
 void manifold_set_min_circular_edge_length(double length);
 void manifold_quality_reset(void);
 
+// ---------- Additional Information ----------
+int manifold_genus(const Manifold *m);
+int manifold_original_id(const Manifold *m);
+double manifold_get_epsilon(const Manifold *m);
+double manifold_get_tolerance(const Manifold *m);
+size_t manifold_num_prop(const Manifold *m);
+size_t manifold_num_prop_vert(const Manifold *m);
+
+// ---------- Mirror ----------
+Manifold manifold_mirror(const Manifold *m, ManifoldVec3 normal);
+
+// ---------- Split / Trim ----------
+// Split by another manifold - returns intersection in *first and difference in *second
+void manifold_split(const Manifold *m, const Manifold *cutter,
+                    Manifold *first, Manifold *second);
+// Split by plane - returns the portion in the direction of normal in *first
+void manifold_split_by_plane(const Manifold *m, ManifoldVec3 normal,
+                              double originOffset, Manifold *first, Manifold *second);
+// Trim to the portion in the direction of normal
+Manifold manifold_trim_by_plane(const Manifold *m, ManifoldVec3 normal,
+                                 double originOffset);
+
+// ---------- Decompose ----------
+// Decompose into topologically disconnected components.
+// Returns number of components. Caller provides array and frees each.
+int manifold_decompose(const Manifold *m, Manifold **components, int maxComponents);
+
+// ---------- Batch Boolean ----------
+Manifold manifold_batch_boolean(const Manifold *manifolds, int count,
+                                 ManifoldOpType op);
+
+// ---------- SetProperties ----------
+Manifold manifold_set_properties(const Manifold *m, int numProp,
+    void (*propFunc)(double *newProp, ManifoldVec3 pos, const double *oldProp, void *ctx),
+    void *ctx);
+
+// ---------- CalculateCurvature ----------
+Manifold manifold_calculate_curvature(const Manifold *m, int gaussianIdx,
+                                       int meanIdx);
+
+// ---------- AsOriginal ----------
+Manifold manifold_as_original(const Manifold *m);
+uint32_t manifold_reserve_ids_api(uint32_t n);
+
 // ---------- Mesh Data Access ----------
 // Get raw vertex positions (read-only)
 const ManifoldVec3 *manifold_get_vert_positions(const Manifold *m, size_t *count);

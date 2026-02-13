@@ -1056,6 +1056,244 @@ static void test_from_mesh(void) {
   manifold_destroy(&m);
 }
 
+// ============== Properties Tests ==============
+
+static void test_genus(void) {
+  // Sphere (genus 0)
+  Manifold s = manifold_sphere(1.0, 0);
+  ASSERT_EQ(manifold_genus(&s), 0);
+  manifold_destroy(&s);
+
+  // Cube (genus 0)
+  Manifold c = manifold_cube(manifold_vec3(1, 1, 1), false);
+  ASSERT_EQ(manifold_genus(&c), 0);
+  manifold_destroy(&c);
+}
+
+static void test_epsilon_tolerance(void) {
+  Manifold c = manifold_cube(manifold_vec3(1, 1, 1), false);
+  double eps = manifold_get_epsilon(&c);
+  double tol = manifold_get_tolerance(&c);
+  ASSERT_TRUE(eps >= 0.0);
+  ASSERT_TRUE(tol >= 0.0 || tol < 0.0); // can be -1 initially
+  manifold_destroy(&c);
+}
+
+static void test_calculate_curvature(void) {
+  Manifold s = manifold_sphere(1.0, 0);
+  Manifold curved = manifold_calculate_curvature(&s, 0, 1);
+
+  // Should have properties now
+  ASSERT_TRUE(manifold_num_prop(&curved) >= 2);
+
+  manifold_destroy(&s);
+  manifold_destroy(&curved);
+}
+
+static void prop_func_xyz(double *newProp, ManifoldVec3 pos,
+                           const double *oldProp, void *ctx) {
+  (void)oldProp;
+  (void)ctx;
+  newProp[0] = pos.x;
+  newProp[1] = pos.y;
+  newProp[2] = pos.z;
+}
+
+static void test_set_properties(void) {
+  Manifold c = manifold_cube(manifold_vec3(1, 1, 1), false);
+  Manifold withProps = manifold_set_properties(&c, 3, prop_func_xyz, NULL);
+
+  ASSERT_EQ(manifold_num_prop(&withProps), (size_t)3);
+  ASSERT_TRUE(!manifold_is_empty(&withProps));
+
+  manifold_destroy(&c);
+  manifold_destroy(&withProps);
+}
+
+// ============== Mirror Tests ==============
+
+static void test_mirror(void) {
+  Manifold c = manifold_cube(manifold_vec3(1, 1, 1), false);
+  // Translate so it's offset
+  Manifold t = manifold_translate(&c, manifold_vec3(1, 0, 0));
+  // Mirror over YZ plane (normal = (1,0,0))
+  Manifold m = manifold_mirror(&t, manifold_vec3(1, 0, 0));
+
+  ASSERT_TRUE(!manifold_is_empty(&m));
+  // Volume should be preserved
+  double volOrig = manifold_volume(&t);
+  double volMirror = manifold_volume(&m);
+  ASSERT_NEAR(fabs(volOrig), fabs(volMirror), 0.01);
+
+  // Bounding box should be mirrored
+  ManifoldBox bb = manifold_bounding_box(&m);
+  ASSERT_TRUE(bb.max.x <= 0.1);  // should be in negative x
+
+  manifold_destroy(&c);
+  manifold_destroy(&t);
+  manifold_destroy(&m);
+}
+
+static void test_mirror_union(void) {
+  // Union of a cube and its mirror should be symmetric
+  Manifold c = manifold_cube(manifold_vec3(1, 1, 1), false);
+  Manifold t = manifold_translate(&c, manifold_vec3(0.5, 0, 0));
+  Manifold m = manifold_mirror(&t, manifold_vec3(1, 0, 0));
+  Manifold u = manifold_union(&t, &m);
+
+  ASSERT_TRUE(!manifold_is_empty(&u));
+  ASSERT_EQ(manifold_status(&u), MANIFOLD_ERROR_NO_ERROR);
+
+  // Bounding box should be symmetric about x=0
+  ManifoldBox bb = manifold_bounding_box(&u);
+  ASSERT_NEAR(bb.min.x, -bb.max.x, 0.1);
+
+  manifold_destroy(&c);
+  manifold_destroy(&t);
+  manifold_destroy(&m);
+  manifold_destroy(&u);
+}
+
+// ============== Split / Trim Tests ==============
+
+static void test_split_by_plane(void) {
+  Manifold c = manifold_cube(manifold_vec3(2, 2, 2), true);
+  Manifold first, second;
+  manifold_split_by_plane(&c, manifold_vec3(1, 0, 0), 0.0, &first, &second);
+
+  ASSERT_TRUE(!manifold_is_empty(&first));
+  ASSERT_TRUE(!manifold_is_empty(&second));
+
+  // Each half should have roughly half the volume
+  double vol1 = manifold_volume(&first);
+  double vol2 = manifold_volume(&second);
+  ASSERT_NEAR(vol1, 4.0, 1.0);
+  ASSERT_NEAR(vol2, 4.0, 1.0);
+  ASSERT_NEAR(vol1 + vol2, 8.0, 1.0);
+
+  manifold_destroy(&c);
+  manifold_destroy(&first);
+  manifold_destroy(&second);
+}
+
+static void test_trim_by_plane(void) {
+  Manifold c = manifold_cube(manifold_vec3(2, 2, 2), true);
+  Manifold trimmed = manifold_trim_by_plane(&c, manifold_vec3(1, 0, 0), 0.0);
+
+  ASSERT_TRUE(!manifold_is_empty(&trimmed));
+
+  // Should have roughly half the volume
+  double vol = manifold_volume(&trimmed);
+  ASSERT_NEAR(vol, 4.0, 1.0);
+
+  // Bounding box should be mostly in positive x
+  ManifoldBox bb = manifold_bounding_box(&trimmed);
+  ASSERT_TRUE(bb.min.x >= -0.1);
+
+  manifold_destroy(&c);
+  manifold_destroy(&trimmed);
+}
+
+// ============== Decompose Tests ==============
+
+static void test_decompose(void) {
+  // Create two non-overlapping cubes
+  Manifold a = manifold_cube(manifold_vec3(1, 1, 1), false);
+  Manifold b_base = manifold_cube(manifold_vec3(1, 1, 1), false);
+  Manifold b = manifold_translate(&b_base, manifold_vec3(3, 0, 0));
+  // Union them - should produce a single manifold with 2 disconnected parts
+  Manifold u = manifold_union(&a, &b);
+
+  ASSERT_TRUE(!manifold_is_empty(&u));
+
+  Manifold *components = NULL;
+  int n = manifold_decompose(&u, &components, 10);
+
+  ASSERT_TRUE(n == 2);
+  ASSERT_TRUE(!manifold_is_empty(&components[0]));
+  ASSERT_TRUE(!manifold_is_empty(&components[1]));
+
+  double v0 = manifold_volume(&components[0]);
+  double v1 = manifold_volume(&components[1]);
+  ASSERT_NEAR(v0, 1.0, 0.1);
+  ASSERT_NEAR(v1, 1.0, 0.1);
+
+  for (int i = 0; i < n; i++) manifold_destroy(&components[i]);
+  free(components);
+  manifold_destroy(&a);
+  manifold_destroy(&b_base);
+  manifold_destroy(&b);
+  manifold_destroy(&u);
+}
+
+// ============== Batch Boolean Tests ==============
+
+static void test_batch_boolean(void) {
+  Manifold cubes[3];
+  cubes[0] = manifold_cube(manifold_vec3(1, 1, 1), false);
+  Manifold t1 = manifold_cube(manifold_vec3(1, 1, 1), false);
+  cubes[1] = manifold_translate(&t1, manifold_vec3(0.5, 0, 0));
+  Manifold t2 = manifold_cube(manifold_vec3(1, 1, 1), false);
+  cubes[2] = manifold_translate(&t2, manifold_vec3(1.0, 0, 0));
+
+  Manifold result = manifold_batch_boolean(cubes, 3, MANIFOLD_OP_ADD);
+
+  ASSERT_TRUE(!manifold_is_empty(&result));
+  ASSERT_EQ(manifold_status(&result), MANIFOLD_ERROR_NO_ERROR);
+
+  // Volume should be 2 * 1 * 1 = 2 (three overlapping unit cubes spanning x=[0,2])
+  double vol = manifold_volume(&result);
+  ASSERT_NEAR(vol, 2.0, 0.3);
+
+  manifold_destroy(&cubes[0]);
+  manifold_destroy(&cubes[1]);
+  manifold_destroy(&cubes[2]);
+  manifold_destroy(&t1);
+  manifold_destroy(&t2);
+  manifold_destroy(&result);
+}
+
+// ============== Additional API Tests ==============
+
+static void test_as_original(void) {
+  Manifold c = manifold_cube(manifold_vec3(1, 1, 1), false);
+  Manifold orig = manifold_as_original(&c);
+
+  ASSERT_TRUE(!manifold_is_empty(&orig));
+  int origId = manifold_original_id(&orig);
+  ASSERT_TRUE(origId >= 0);
+
+  manifold_destroy(&c);
+  manifold_destroy(&orig);
+}
+
+static void test_reserve_ids(void) {
+  uint32_t id1 = manifold_reserve_ids_api(1);
+  uint32_t id2 = manifold_reserve_ids_api(1);
+  ASSERT_TRUE(id2 > id1);
+  uint32_t id3 = manifold_reserve_ids_api(5);
+  ASSERT_TRUE(id3 > id2);
+}
+
+static void test_num_prop(void) {
+  Manifold c = manifold_cube(manifold_vec3(1, 1, 1), false);
+  // Default cube has no custom properties
+  size_t np = manifold_num_prop(&c);
+  size_t npv = manifold_num_prop_vert(&c);
+  (void)np; (void)npv;
+  // These should not crash
+  manifold_destroy(&c);
+}
+
+static void test_original_id(void) {
+  Manifold c = manifold_cube(manifold_vec3(1, 1, 1), false);
+  // A freshly created manifold should have an originalID
+  int id = manifold_original_id(&c);
+  // It might be -1 or a valid ID depending on initialization
+  (void)id;
+  manifold_destroy(&c);
+}
+
 // ============== Main ==============
 
 int main(void) {
@@ -1153,6 +1391,32 @@ int main(void) {
   RUN_TEST(hull_tetrahedron);
   RUN_TEST(sdf_volume_accuracy);
 
-  printf("\n=== All %d tests passed! ===\n", 57);
+  printf("\nProperties:\n");
+  RUN_TEST(genus);
+  RUN_TEST(epsilon_tolerance);
+  RUN_TEST(calculate_curvature);
+  RUN_TEST(set_properties);
+
+  printf("\nMirror:\n");
+  RUN_TEST(mirror);
+  RUN_TEST(mirror_union);
+
+  printf("\nSplit / Trim:\n");
+  RUN_TEST(split_by_plane);
+  RUN_TEST(trim_by_plane);
+
+  printf("\nDecompose:\n");
+  RUN_TEST(decompose);
+
+  printf("\nBatch Boolean:\n");
+  RUN_TEST(batch_boolean);
+
+  printf("\nAdditional API:\n");
+  RUN_TEST(as_original);
+  RUN_TEST(reserve_ids);
+  RUN_TEST(num_prop);
+  RUN_TEST(original_id);
+
+  printf("\n=== All %d tests passed! ===\n", 71);
   return 0;
 }

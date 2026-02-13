@@ -152,6 +152,15 @@ void manifold_impl_split_pinched_verts(ManifoldImpl *impl);
 // properties.cpp equivalents
 double manifold_impl_get_volume(const ManifoldImpl *impl);
 double manifold_impl_get_surface_area(const ManifoldImpl *impl);
+void manifold_impl_calculate_curvature(ManifoldImpl *impl, int gaussianIdx,
+                                        int meanIdx);
+void manifold_impl_set_properties(ManifoldImpl *impl, int numProp,
+    void (*propFunc)(double *newProp, ManifoldVec3 pos, const double *oldProp, void *ctx),
+    void *ctx);
+
+// Decompose helper
+int manifold_impl_decompose(const ManifoldImpl *impl, ManifoldImpl *components,
+                             int maxComponents);
 
 // constructors.cpp equivalents
 void manifold_impl_tetrahedron(ManifoldImpl *impl);
