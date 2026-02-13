@@ -1526,6 +1526,38 @@ ManifoldError manifold_boolean_op(ManifoldImpl *result,
     return MANIFOLD_ERROR_NO_ERROR;
   }
 
+  // Identical geometry shortcut: if both meshes have the same vertices and
+  // triangles, handle the boolean result directly without the full algorithm.
+  // This avoids issues with perfectly coplanar faces.
+  {
+    size_t pNv = manifold_impl_num_vert(p);
+    size_t qNv = manifold_impl_num_vert(q);
+    size_t pNt = manifold_impl_num_tri(p);
+    size_t qNt = manifold_impl_num_tri(q);
+    if (pNv == qNv && pNt == qNt && pNv > 0) {
+      bool same = true;
+      double eps = fmax(p->epsilon, q->epsilon);
+      if (eps < 1e-12) eps = 1e-12;
+      for (size_t i = 0; i < pNv && same; i++) {
+        ManifoldVec3 a = p->vertPos.data[i];
+        ManifoldVec3 b = q->vertPos.data[i];
+        double d = (a.x-b.x)*(a.x-b.x) + (a.y-b.y)*(a.y-b.y) +
+                   (a.z-b.z)*(a.z-b.z);
+        if (d > eps * eps) same = false;
+      }
+      if (same) {
+        if (op == MANIFOLD_OP_ADD || op == MANIFOLD_OP_INTERSECT) {
+          copy_impl_full(result, p);
+          return MANIFOLD_ERROR_NO_ERROR;
+        }
+        if (op == MANIFOLD_OP_SUBTRACT) {
+          manifold_impl_init(result);
+          return MANIFOLD_ERROR_NO_ERROR;
+        }
+      }
+    }
+  }
+
   // Non-overlapping shortcut
   if (!manifold_box_overlaps(p->bBox, q->bBox)) {
     if (op == MANIFOLD_OP_ADD) {

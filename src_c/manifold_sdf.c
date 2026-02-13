@@ -1,444 +1,597 @@
-// Copyright 2021 The Manifold Authors.
+// Copyright 2023 The Manifold Authors.
 // SPDX-License-Identifier: Apache-2.0
 //
 // SDF (Signed Distance Function) level set meshing for the C11 Manifold port.
-// Implements marching cubes.
+// Implements marching tetrahedra on a body-centered cubic (BCC) grid,
+// matching the C++ algorithm for correct manifold topology.
 
 #include "manifold_impl.h"
-#include "manifold_polygon.h"
+#include <float.h>
 
-// Edge table and tri table for marching cubes
-// Standard marching cubes tables (Lorensen & Cline, 1987)
-// Simplified version with 256-entry tables
+// Constants matching C++
+#define SDF_CROSSING (-2)
+#define SDF_NONE     (-1)
+#define SDF_HASH_OPEN UINT64_MAX
+// Maximum fraction of spacing that a vert can move
+#define SDF_KS 0.25
+// Corresponding approximate distance ratio bound
+#define SDF_KD (1.0 / SDF_KS - 1.0)
+// Maximum number of opposed verts (of 7) to allow collapse
+#define SDF_MAX_OPPOSED 3
 
-static const int mc_edge_table[256] = {
-  0x0, 0x109, 0x203, 0x30a, 0x406, 0x50f, 0x605, 0x70c,
-  0x80c, 0x905, 0xa0f, 0xb06, 0xc0a, 0xd03, 0xe09, 0xf00,
-  0x190, 0x99, 0x393, 0x29a, 0x596, 0x49f, 0x795, 0x69c,
-  0x99c, 0x895, 0xb9f, 0xa96, 0xd9a, 0xc93, 0xf99, 0xe90,
-  0x230, 0x339, 0x33, 0x13a, 0x636, 0x73f, 0x435, 0x53c,
-  0xa3c, 0xb35, 0x83f, 0x936, 0xe3a, 0xf33, 0xc39, 0xd30,
-  0x3a0, 0x2a9, 0x1a3, 0xaa, 0x7a6, 0x6af, 0x5a5, 0x4ac,
-  0xbac, 0xaa5, 0x9af, 0x8a6, 0xfaa, 0xea3, 0xda9, 0xca0,
-  0x460, 0x569, 0x663, 0x76a, 0x66, 0x16f, 0x265, 0x36c,
-  0xc6c, 0xd65, 0xe6f, 0xf66, 0x86a, 0x963, 0xa69, 0xb60,
-  0x5f0, 0x4f9, 0x7f3, 0x6fa, 0x1f6, 0xff, 0x3f5, 0x2fc,
-  0xdfc, 0xcf5, 0xfff, 0xef6, 0x9fa, 0x8f3, 0xbf9, 0xaf0,
-  0x650, 0x759, 0x453, 0x55a, 0x256, 0x35f, 0x55, 0x15c,
-  0xe5c, 0xf55, 0xc5f, 0xd56, 0xa5a, 0xb53, 0x859, 0x950,
-  0x7c0, 0x6c9, 0x5c3, 0x4ca, 0x3c6, 0x2cf, 0x1c5, 0xcc,
-  0xfcc, 0xec5, 0xdcf, 0xcc6, 0xbca, 0xac3, 0x9c9, 0x8c0,
-  0x8c0, 0x9c9, 0xac3, 0xbca, 0xcc6, 0xdcf, 0xec5, 0xfcc,
-  0xcc, 0x1c5, 0x2cf, 0x3c6, 0x4ca, 0x5c3, 0x6c9, 0x7c0,
-  0x950, 0x859, 0xb53, 0xa5a, 0xd56, 0xc5f, 0xf55, 0xe5c,
-  0x15c, 0x55, 0x35f, 0x256, 0x55a, 0x453, 0x759, 0x650,
-  0xaf0, 0xbf9, 0x8f3, 0x9fa, 0xef6, 0xfff, 0xcf5, 0xdfc,
-  0x2fc, 0x3f5, 0xff, 0x1f6, 0x6fa, 0x7f3, 0x4f9, 0x5f0,
-  0xb60, 0xa69, 0x963, 0x86a, 0xf66, 0xe6f, 0xd65, 0xc6c,
-  0x36c, 0x265, 0x16f, 0x66, 0x76a, 0x663, 0x569, 0x460,
-  0xca0, 0xda9, 0xea3, 0xfaa, 0x8a6, 0x9af, 0xaa5, 0xbac,
-  0x4ac, 0x5a5, 0x6af, 0x7a6, 0xaa, 0x1a3, 0x2a9, 0x3a0,
-  0xd30, 0xc39, 0xf33, 0xe3a, 0x936, 0x83f, 0xb35, 0xa3c,
-  0x53c, 0x435, 0x73f, 0x636, 0x13a, 0x33, 0x339, 0x230,
-  0xe90, 0xf99, 0xc93, 0xd9a, 0xa96, 0xb9f, 0x895, 0x99c,
-  0x69c, 0x795, 0x49f, 0x596, 0x29a, 0x393, 0x99, 0x190,
-  0xf00, 0xe09, 0xd03, 0xc0a, 0xb06, 0xa0f, 0x905, 0x80c,
-  0x70c, 0x605, 0x50f, 0x406, 0x30a, 0x203, 0x109, 0x0
+// Tet triangulation tables (from C++ TetTri0/TetTri1)
+static const int tetTri0[16][3] = {
+  {-1,-1,-1}, {0,3,4}, {0,1,5}, {1,5,3},
+  {1,4,2}, {1,0,3}, {2,5,0}, {5,3,2},
+  {2,3,5}, {0,5,2}, {3,0,1}, {2,4,1},
+  {3,5,1}, {5,1,0}, {4,3,0}, {-1,-1,-1}
+};
+static const int tetTri1[16][3] = {
+  {-1,-1,-1}, {-1,-1,-1}, {-1,-1,-1}, {3,4,1},
+  {-1,-1,-1}, {3,2,1}, {0,4,2}, {-1,-1,-1},
+  {-1,-1,-1}, {2,4,0}, {1,2,3}, {-1,-1,-1},
+  {1,4,3}, {-1,-1,-1}, {-1,-1,-1}, {-1,-1,-1}
 };
 
-// Simplified tri table - each entry is up to 5 triangles (15 vertex indices)
-// -1 terminates the list. Full 256-entry standard marching cubes table.
-static const int mc_tri_table[256][16] = {
-  {-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {0,8,3,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {0,1,9,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {1,8,3,9,8,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {1,2,10,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {0,8,3,1,2,10,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {9,2,10,0,2,9,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {2,8,3,2,10,8,10,9,8,-1,-1,-1,-1,-1,-1,-1},
-  {3,11,2,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {0,11,2,8,11,0,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {1,9,0,2,3,11,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {1,11,2,1,9,11,9,8,11,-1,-1,-1,-1,-1,-1,-1},
-  {3,10,1,11,10,3,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {0,10,1,0,8,10,8,11,10,-1,-1,-1,-1,-1,-1,-1},
-  {3,9,0,3,11,9,11,10,9,-1,-1,-1,-1,-1,-1,-1},
-  {9,8,10,10,8,11,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {4,7,8,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {4,3,0,7,3,4,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {0,1,9,8,4,7,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {4,1,9,4,7,1,7,3,1,-1,-1,-1,-1,-1,-1,-1},
-  {1,2,10,8,4,7,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {3,4,7,3,0,4,1,2,10,-1,-1,-1,-1,-1,-1,-1},
-  {9,2,10,9,0,2,8,4,7,-1,-1,-1,-1,-1,-1,-1},
-  {2,10,9,2,9,7,2,7,3,7,9,4,-1,-1,-1,-1},
-  {8,4,7,3,11,2,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {11,4,7,11,2,4,2,0,4,-1,-1,-1,-1,-1,-1,-1},
-  {9,0,1,8,4,7,2,3,11,-1,-1,-1,-1,-1,-1,-1},
-  {4,7,11,9,4,11,9,11,2,9,2,1,-1,-1,-1,-1},
-  {3,10,1,3,11,10,7,8,4,-1,-1,-1,-1,-1,-1,-1},
-  {1,11,10,1,4,11,1,0,4,7,11,4,-1,-1,-1,-1},
-  {4,7,8,9,0,11,9,11,10,11,0,3,-1,-1,-1,-1},
-  {4,7,11,4,11,9,9,11,10,-1,-1,-1,-1,-1,-1,-1},
-  {9,5,4,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {9,5,4,0,8,3,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {0,5,4,1,5,0,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {8,5,4,8,3,5,3,1,5,-1,-1,-1,-1,-1,-1,-1},
-  {1,2,10,9,5,4,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {3,0,8,1,2,10,4,9,5,-1,-1,-1,-1,-1,-1,-1},
-  {5,2,10,5,4,2,4,0,2,-1,-1,-1,-1,-1,-1,-1},
-  {2,10,5,3,2,5,3,5,4,3,4,8,-1,-1,-1,-1},
-  {9,5,4,2,3,11,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {0,11,2,0,8,11,4,9,5,-1,-1,-1,-1,-1,-1,-1},
-  {0,5,4,0,1,5,2,3,11,-1,-1,-1,-1,-1,-1,-1},
-  {2,1,5,2,5,8,2,8,11,4,8,5,-1,-1,-1,-1},
-  {10,3,11,10,1,3,9,5,4,-1,-1,-1,-1,-1,-1,-1},
-  {4,9,5,0,8,1,8,10,1,8,11,10,-1,-1,-1,-1},
-  {5,4,0,5,0,11,5,11,10,11,0,3,-1,-1,-1,-1},
-  {5,4,8,5,8,10,10,8,11,-1,-1,-1,-1,-1,-1,-1},
-  {9,7,8,5,7,9,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {9,3,0,9,5,3,5,7,3,-1,-1,-1,-1,-1,-1,-1},
-  {0,7,8,0,1,7,1,5,7,-1,-1,-1,-1,-1,-1,-1},
-  {1,5,3,3,5,7,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {9,7,8,9,5,7,10,1,2,-1,-1,-1,-1,-1,-1,-1},
-  {10,1,2,9,5,0,5,3,0,5,7,3,-1,-1,-1,-1},
-  {8,0,2,8,2,5,8,5,7,10,5,2,-1,-1,-1,-1},
-  {2,10,5,2,5,3,3,5,7,-1,-1,-1,-1,-1,-1,-1},
-  {7,9,5,7,8,9,3,11,2,-1,-1,-1,-1,-1,-1,-1},
-  {9,5,7,9,7,2,9,2,0,2,7,11,-1,-1,-1,-1},
-  {2,3,11,0,1,8,1,7,8,1,5,7,-1,-1,-1,-1},
-  {11,2,1,11,1,7,7,1,5,-1,-1,-1,-1,-1,-1,-1},
-  {9,5,8,8,5,7,10,1,3,10,3,11,-1,-1,-1,-1},
-  {5,7,0,5,0,9,7,11,0,1,0,10,11,10,0,-1},
-  {11,10,0,11,0,3,10,5,0,8,0,7,5,7,0,-1},
-  {11,10,5,7,11,5,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {10,6,5,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {0,8,3,5,10,6,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {9,0,1,5,10,6,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {1,8,3,1,9,8,5,10,6,-1,-1,-1,-1,-1,-1,-1},
-  {1,6,5,2,6,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {1,6,5,1,2,6,3,0,8,-1,-1,-1,-1,-1,-1,-1},
-  {9,6,5,9,0,6,0,2,6,-1,-1,-1,-1,-1,-1,-1},
-  {5,9,8,5,8,2,5,2,6,3,2,8,-1,-1,-1,-1},
-  {2,3,11,10,6,5,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {11,0,8,11,2,0,10,6,5,-1,-1,-1,-1,-1,-1,-1},
-  {0,1,9,2,3,11,5,10,6,-1,-1,-1,-1,-1,-1,-1},
-  {5,10,6,1,9,2,9,11,2,9,8,11,-1,-1,-1,-1},
-  {6,3,11,6,5,3,5,1,3,-1,-1,-1,-1,-1,-1,-1},
-  {0,8,11,0,11,5,0,5,1,5,11,6,-1,-1,-1,-1},
-  {3,11,6,0,3,6,0,6,5,0,5,9,-1,-1,-1,-1},
-  {6,5,9,6,9,11,11,9,8,-1,-1,-1,-1,-1,-1,-1},
-  {5,10,6,4,7,8,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {4,3,0,4,7,3,6,5,10,-1,-1,-1,-1,-1,-1,-1},
-  {1,9,0,5,10,6,8,4,7,-1,-1,-1,-1,-1,-1,-1},
-  {10,6,5,1,9,7,1,7,3,7,9,4,-1,-1,-1,-1},
-  {6,1,2,6,5,1,4,7,8,-1,-1,-1,-1,-1,-1,-1},
-  {1,2,5,5,2,6,3,0,4,3,4,7,-1,-1,-1,-1},
-  {8,4,7,9,0,5,0,6,5,0,2,6,-1,-1,-1,-1},
-  {7,3,9,7,9,4,3,2,9,5,9,6,2,6,9,-1},
-  {3,11,2,7,8,4,10,6,5,-1,-1,-1,-1,-1,-1,-1},
-  {5,10,6,4,7,2,4,2,0,2,7,11,-1,-1,-1,-1},
-  {0,1,9,4,7,8,2,3,11,5,10,6,-1,-1,-1,-1},
-  {9,2,1,9,11,2,9,4,11,7,11,4,5,10,6,-1},
-  {8,4,7,3,11,5,3,5,1,5,11,6,-1,-1,-1,-1},
-  {5,1,11,5,11,6,1,0,11,7,11,4,0,4,11,-1},
-  {0,5,9,0,6,5,0,3,6,11,6,3,8,4,7,-1},
-  {6,5,9,6,9,11,4,7,9,7,11,9,-1,-1,-1,-1},
-  {10,4,9,6,4,10,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {4,10,6,4,9,10,0,8,3,-1,-1,-1,-1,-1,-1,-1},
-  {10,0,1,10,6,0,6,4,0,-1,-1,-1,-1,-1,-1,-1},
-  {8,3,1,8,1,6,8,6,4,6,1,10,-1,-1,-1,-1},
-  {1,4,9,1,2,4,2,6,4,-1,-1,-1,-1,-1,-1,-1},
-  {3,0,8,1,2,9,2,4,9,2,6,4,-1,-1,-1,-1},
-  {0,2,4,4,2,6,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {8,3,2,8,2,4,4,2,6,-1,-1,-1,-1,-1,-1,-1},
-  {10,4,9,10,6,4,11,2,3,-1,-1,-1,-1,-1,-1,-1},
-  {0,8,2,2,8,11,4,9,10,4,10,6,-1,-1,-1,-1},
-  {3,11,2,0,1,6,0,6,4,6,1,10,-1,-1,-1,-1},
-  {6,4,1,6,1,10,4,8,1,2,1,11,8,11,1,-1},
-  {9,6,4,9,3,6,9,1,3,11,6,3,-1,-1,-1,-1},
-  {8,11,1,8,1,0,11,6,1,9,1,4,6,4,1,-1},
-  {3,11,6,3,6,0,0,6,4,-1,-1,-1,-1,-1,-1,-1},
-  {6,4,8,11,6,8,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {7,10,6,7,8,10,8,9,10,-1,-1,-1,-1,-1,-1,-1},
-  {0,7,3,0,10,7,0,9,10,6,7,10,-1,-1,-1,-1},
-  {10,6,7,1,10,7,1,7,8,1,8,0,-1,-1,-1,-1},
-  {10,6,7,10,7,1,1,7,3,-1,-1,-1,-1,-1,-1,-1},
-  {1,2,6,1,6,8,1,8,9,8,6,7,-1,-1,-1,-1},
-  {2,6,9,2,9,1,6,7,9,0,9,3,7,3,9,-1},
-  {7,8,0,7,0,6,6,0,2,-1,-1,-1,-1,-1,-1,-1},
-  {7,3,2,6,7,2,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {2,3,11,10,6,8,10,8,9,8,6,7,-1,-1,-1,-1},
-  {2,0,7,2,7,11,0,9,7,6,7,10,9,10,7,-1},
-  {1,8,0,1,7,8,1,10,7,6,7,10,2,3,11,-1},
-  {11,2,1,11,1,7,10,6,1,6,7,1,-1,-1,-1,-1},
-  {8,9,6,8,6,7,9,1,6,11,6,3,1,3,6,-1},
-  {0,9,1,11,6,7,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {7,8,0,7,0,6,3,11,0,11,6,0,-1,-1,-1,-1},
-  {7,11,6,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {7,6,11,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {3,0,8,11,7,6,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {0,1,9,11,7,6,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {8,1,9,8,3,1,11,7,6,-1,-1,-1,-1,-1,-1,-1},
-  {10,1,2,6,11,7,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {1,2,10,3,0,8,6,11,7,-1,-1,-1,-1,-1,-1,-1},
-  {2,9,0,2,10,9,6,11,7,-1,-1,-1,-1,-1,-1,-1},
-  {6,11,7,2,10,3,10,8,3,10,9,8,-1,-1,-1,-1},
-  {7,2,3,6,2,7,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {7,0,8,7,6,0,6,2,0,-1,-1,-1,-1,-1,-1,-1},
-  {2,7,6,2,3,7,0,1,9,-1,-1,-1,-1,-1,-1,-1},
-  {1,6,2,1,8,6,1,9,8,8,7,6,-1,-1,-1,-1},
-  {10,7,6,10,1,7,1,3,7,-1,-1,-1,-1,-1,-1,-1},
-  {10,7,6,1,7,10,1,8,7,1,0,8,-1,-1,-1,-1},
-  {0,3,7,0,7,10,0,10,9,6,10,7,-1,-1,-1,-1},
-  {7,6,10,7,10,8,8,10,9,-1,-1,-1,-1,-1,-1,-1},
-  {6,8,4,11,8,6,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {3,6,11,3,0,6,0,4,6,-1,-1,-1,-1,-1,-1,-1},
-  {8,6,11,8,4,6,9,0,1,-1,-1,-1,-1,-1,-1,-1},
-  {9,4,6,9,6,3,9,3,1,11,3,6,-1,-1,-1,-1},
-  {6,8,4,6,11,8,2,10,1,-1,-1,-1,-1,-1,-1,-1},
-  {1,2,10,3,0,11,0,6,11,0,4,6,-1,-1,-1,-1},
-  {4,11,8,4,6,11,0,2,9,2,10,9,-1,-1,-1,-1},
-  {10,9,3,10,3,2,9,4,3,11,3,6,4,6,3,-1},
-  {8,2,3,8,4,2,4,6,2,-1,-1,-1,-1,-1,-1,-1},
-  {0,4,2,4,6,2,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {1,9,0,2,3,4,2,4,6,4,3,8,-1,-1,-1,-1},
-  {1,9,4,1,4,2,2,4,6,-1,-1,-1,-1,-1,-1,-1},
-  {8,1,3,8,6,1,8,4,6,6,10,1,-1,-1,-1,-1},
-  {10,1,0,10,0,6,6,0,4,-1,-1,-1,-1,-1,-1,-1},
-  {4,6,3,4,3,8,6,10,3,0,3,9,10,9,3,-1},
-  {10,9,4,6,10,4,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {4,9,5,7,6,11,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {0,8,3,4,9,5,11,7,6,-1,-1,-1,-1,-1,-1,-1},
-  {5,0,1,5,4,0,7,6,11,-1,-1,-1,-1,-1,-1,-1},
-  {11,7,6,8,3,4,3,5,4,3,1,5,-1,-1,-1,-1},
-  {9,5,4,10,1,2,7,6,11,-1,-1,-1,-1,-1,-1,-1},
-  {6,11,7,1,2,10,0,8,3,4,9,5,-1,-1,-1,-1},
-  {7,6,11,5,4,10,4,2,10,4,0,2,-1,-1,-1,-1},
-  {3,4,8,3,5,4,3,2,5,10,5,2,11,7,6,-1},
-  {7,2,3,7,6,2,5,4,9,-1,-1,-1,-1,-1,-1,-1},
-  {9,5,4,0,8,6,0,6,2,6,8,7,-1,-1,-1,-1},
-  {3,6,2,3,7,6,1,5,0,5,4,0,-1,-1,-1,-1},
-  {6,2,8,6,8,7,2,1,8,4,8,5,1,5,8,-1},
-  {9,5,4,10,1,6,1,7,6,1,3,7,-1,-1,-1,-1},
-  {1,6,10,1,7,6,1,0,7,8,7,0,9,5,4,-1},
-  {4,0,10,4,10,5,0,3,10,6,10,7,3,7,10,-1},
-  {7,6,10,7,10,8,5,4,10,4,8,10,-1,-1,-1,-1},
-  {6,9,5,6,11,9,11,8,9,-1,-1,-1,-1,-1,-1,-1},
-  {3,6,11,0,6,3,0,5,6,0,9,5,-1,-1,-1,-1},
-  {0,11,8,0,5,11,0,1,5,5,6,11,-1,-1,-1,-1},
-  {6,11,3,6,3,5,5,3,1,-1,-1,-1,-1,-1,-1,-1},
-  {1,2,10,9,5,11,9,11,8,11,5,6,-1,-1,-1,-1},
-  {0,11,3,0,6,11,0,9,6,5,6,9,1,2,10,-1},
-  {11,8,5,11,5,6,8,0,5,10,5,2,0,2,5,-1},
-  {6,11,3,6,3,5,2,10,3,10,5,3,-1,-1,-1,-1},
-  {5,8,9,5,2,8,5,6,2,3,8,2,-1,-1,-1,-1},
-  {9,5,6,9,6,0,0,6,2,-1,-1,-1,-1,-1,-1,-1},
-  {1,5,8,1,8,0,5,6,8,3,8,2,6,2,8,-1},
-  {1,5,6,2,1,6,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {1,3,6,1,6,10,3,8,6,5,6,9,8,9,6,-1},
-  {10,1,0,10,0,6,9,5,0,5,6,0,-1,-1,-1,-1},
-  {0,3,8,5,6,10,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {10,5,6,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {11,5,10,7,5,11,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {11,5,10,11,7,5,8,3,0,-1,-1,-1,-1,-1,-1,-1},
-  {5,11,7,5,10,11,1,9,0,-1,-1,-1,-1,-1,-1,-1},
-  {10,7,5,10,11,7,9,8,1,8,3,1,-1,-1,-1,-1},
-  {11,1,2,11,7,1,7,5,1,-1,-1,-1,-1,-1,-1,-1},
-  {0,8,3,1,2,7,1,7,5,7,2,11,-1,-1,-1,-1},
-  {9,7,5,9,2,7,9,0,2,2,11,7,-1,-1,-1,-1},
-  {7,5,2,7,2,11,5,9,2,3,2,8,9,8,2,-1},
-  {2,5,10,2,3,5,3,7,5,-1,-1,-1,-1,-1,-1,-1},
-  {8,2,0,8,5,2,8,7,5,10,2,5,-1,-1,-1,-1},
-  {9,0,1,5,10,3,5,3,7,3,10,2,-1,-1,-1,-1},
-  {9,8,2,9,2,1,8,7,2,10,2,5,7,5,2,-1},
-  {1,3,5,3,7,5,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {0,8,7,0,7,1,1,7,5,-1,-1,-1,-1,-1,-1,-1},
-  {9,0,3,9,3,5,5,3,7,-1,-1,-1,-1,-1,-1,-1},
-  {9,8,7,5,9,7,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {5,8,4,5,10,8,10,11,8,-1,-1,-1,-1,-1,-1,-1},
-  {5,0,4,5,11,0,5,10,11,11,3,0,-1,-1,-1,-1},
-  {0,1,9,8,4,10,8,10,11,10,4,5,-1,-1,-1,-1},
-  {10,11,4,10,4,5,11,3,4,9,4,1,3,1,4,-1},
-  {2,5,1,2,8,5,2,11,8,4,5,8,-1,-1,-1,-1},
-  {0,4,11,0,11,3,4,5,11,2,11,1,5,1,11,-1},
-  {0,2,5,0,5,9,2,11,5,4,5,8,11,8,5,-1},
-  {9,4,5,2,11,3,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {2,5,10,3,5,2,3,4,5,3,8,4,-1,-1,-1,-1},
-  {5,10,2,5,2,4,4,2,0,-1,-1,-1,-1,-1,-1,-1},
-  {3,10,2,3,5,10,3,8,5,4,5,8,0,1,9,-1},
-  {5,10,2,5,2,4,1,9,2,9,4,2,-1,-1,-1,-1},
-  {8,4,5,8,5,3,3,5,1,-1,-1,-1,-1,-1,-1,-1},
-  {0,4,5,1,0,5,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {8,4,5,8,5,3,9,0,5,0,3,5,-1,-1,-1,-1},
-  {9,4,5,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {4,11,7,4,9,11,9,10,11,-1,-1,-1,-1,-1,-1},
-  {0,8,3,4,9,7,9,11,7,9,10,11,-1,-1,-1,-1},
-  {1,10,11,1,11,4,1,4,0,7,4,11,-1,-1,-1,-1},
-  {3,1,4,3,4,8,1,10,4,7,4,11,10,11,4,-1},
-  {4,11,7,9,11,4,9,2,11,9,1,2,-1,-1,-1,-1},
-  {9,7,4,9,11,7,9,1,11,2,11,1,0,8,3,-1},
-  {11,7,4,11,4,2,2,4,0,-1,-1,-1,-1,-1,-1,-1},
-  {11,7,4,11,4,2,8,3,4,3,2,4,-1,-1,-1,-1},
-  {2,9,10,2,7,9,2,3,7,7,4,9,-1,-1,-1,-1},
-  {9,10,7,9,7,4,10,2,7,8,7,0,2,0,7,-1},
-  {3,7,10,3,10,2,7,4,10,1,10,0,4,0,10,-1},
-  {1,10,2,8,7,4,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {4,9,1,4,1,7,7,1,3,-1,-1,-1,-1,-1,-1,-1},
-  {4,9,1,4,1,7,0,8,1,8,7,1,-1,-1,-1,-1},
-  {4,0,3,7,4,3,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {4,8,7,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {9,10,8,10,11,8,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {3,0,9,3,9,11,11,9,10,-1,-1,-1,-1,-1,-1,-1},
-  {0,1,10,0,10,8,8,10,11,-1,-1,-1,-1,-1,-1,-1},
-  {3,1,10,11,3,10,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {1,2,11,1,11,9,9,11,8,-1,-1,-1,-1,-1,-1,-1},
-  {3,0,9,3,9,11,1,2,9,2,11,9,-1,-1,-1,-1},
-  {0,2,11,8,0,11,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {3,2,11,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {2,3,8,2,8,10,10,8,9,-1,-1,-1,-1,-1,-1,-1},
-  {9,10,2,0,9,2,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {2,3,8,2,8,10,0,1,8,1,10,8,-1,-1,-1,-1},
-  {1,10,2,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {1,3,8,9,1,8,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {0,9,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {0,3,8,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1},
-  {-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1},
+// BCC neighbor offsets: 7 owned edges + 7 opposite edges
+static const int sdf_neighbors[14][4] = {
+  {0,0,0,1}, {1,0,0,0}, {0,1,0,0}, {0,0,1,0},
+  {-1,0,0,1}, {0,-1,0,1}, {0,0,-1,1},
+  {-1,-1,-1,1}, {-1,0,0,0}, {0,-1,0,0}, {0,0,-1,0},
+  {0,-1,-1,1}, {-1,0,-1,1}, {-1,-1,0,1}
 };
 
-// Linear interpolation between two points based on SDF values
-static inline ManifoldVec3 sdf_interp(ManifoldVec3 p1, ManifoldVec3 p2,
-                                       double v1, double v2, double level) {
-  if (fabs(v1 - v2) < 1e-15) return p1;
-  double t = (level - v1) / (v2 - v1);
-  return vec3_add(p1, vec3_scale(vec3_sub(p2, p1), t));
+static inline int sdf_next3(int i) {
+  static const int n[3] = {1, 2, 0};
+  return n[i];
 }
 
-// SDF level set meshing using marching cubes
+static inline int sdf_prev3(int i) {
+  static const int p[3] = {2, 0, 1};
+  return p[i];
+}
+
+static inline ManifoldIVec4 sdf_neighbor(ManifoldIVec4 base, int i) {
+  ManifoldIVec4 n;
+  n.x = base.x + sdf_neighbors[i][0];
+  n.y = base.y + sdf_neighbors[i][1];
+  n.z = base.z + sdf_neighbors[i][2];
+  n.w = base.w + sdf_neighbors[i][3];
+  if (n.w == 2) {
+    n.x += 1; n.y += 1; n.z += 1;
+    n.w = 0;
+  }
+  return n;
+}
+
+static inline int sdf_log2_ceil(int v) {
+  int r = 0;
+  while ((1 << r) < v) r++;
+  return r;
+}
+
+static inline uint64_t sdf_encode(ManifoldIVec4 pos, ManifoldIVec3 gpow) {
+  return (uint64_t)pos.w |
+         ((uint64_t)pos.z << 1) |
+         ((uint64_t)pos.y << (1 + gpow.z)) |
+         ((uint64_t)pos.x << (1 + gpow.z + gpow.y));
+}
+
+static inline ManifoldIVec4 sdf_decode(uint64_t idx, ManifoldIVec3 gpow) {
+  ManifoldIVec4 p;
+  p.w = idx & 1; idx >>= 1;
+  p.z = idx & ((1 << gpow.z) - 1); idx >>= gpow.z;
+  p.y = idx & ((1 << gpow.y) - 1); idx >>= gpow.y;
+  p.x = idx & ((1 << gpow.x) - 1);
+  return p;
+}
+
+static inline ManifoldVec3 sdf_position(ManifoldIVec4 gi, ManifoldVec3 origin,
+                                         ManifoldVec3 spacing) {
+  double off = (gi.w == 1) ? 0.0 : -0.5;
+  return manifold_vec3(origin.x + spacing.x * (gi.x + off),
+                       origin.y + spacing.y * (gi.y + off),
+                       origin.z + spacing.z * (gi.z + off));
+}
+
+static inline ManifoldVec3 sdf_bound_pos(ManifoldVec3 pos, ManifoldVec3 origin,
+                                          ManifoldVec3 spacing,
+                                          ManifoldIVec3 gridSize) {
+  ManifoldVec3 maxPos = manifold_vec3(
+    origin.x + spacing.x * (gridSize.x - 1),
+    origin.y + spacing.y * (gridSize.y - 1),
+    origin.z + spacing.z * (gridSize.z - 1));
+  return manifold_vec3(
+    fmin(fmax(pos.x, origin.x), maxPos.x),
+    fmin(fmax(pos.y, origin.y), maxPos.y),
+    fmin(fmax(pos.z, origin.z), maxPos.z));
+}
+
+static inline int ivec3_minelem(ManifoldIVec3 v) {
+  int m = v.x < v.y ? v.x : v.y;
+  return m < v.z ? m : v.z;
+}
+
+static double sdf_bounded_eval(ManifoldIVec4 gi, ManifoldVec3 origin,
+                                ManifoldVec3 spacing, ManifoldIVec3 gridSize,
+                                double level,
+                                double (*sdf)(double, double, double, void*),
+                                void *ctx) {
+  ManifoldIVec3 xyz = {gi.x, gi.y, gi.z};
+  int lowerBoundDist = ivec3_minelem(xyz);
+  ManifoldIVec3 upper = {gridSize.x - xyz.x, gridSize.y - xyz.y,
+                          gridSize.z - xyz.z};
+  int upperBoundDist = ivec3_minelem(upper);
+  int boundDist = lowerBoundDist < (upperBoundDist - gi.w) ?
+                  lowerBoundDist : (upperBoundDist - gi.w);
+  if (boundDist < 0) return 0.0;
+  ManifoldVec3 pos = sdf_position(gi, origin, spacing);
+  double d = sdf(pos.x, pos.y, pos.z, ctx) - level;
+  return boundDist == 0 ? fmin(d, 0.0) : d;
+}
+
+// ITP root finding for surface location
+static ManifoldVec3 sdf_find_surface(ManifoldVec3 pos0, double d0,
+                                      ManifoldVec3 pos1, double d1,
+                                      double tol, double level,
+                                      double (*sdf)(double,double,double,void*),
+                                      void *ctx) {
+  if (d0 == 0) return pos0;
+  if (d1 == 0) return pos1;
+
+  const double k = 0.1;
+  ManifoldVec3 diff = vec3_sub(pos0, pos1);
+  double len = vec3_length(diff);
+  double check = len > 0 ? 2 * tol / len : 1.0;
+  double frac = 1;
+  double biFrac = 1;
+  while (frac > check) {
+    double tInterp = d0 / (d0 - d1);
+    double t = tInterp * (1.0 - k) + 0.5 * k;
+    double r = biFrac / frac - 0.5;
+    double x;
+    if (fabs(t - 0.5) < r) x = t;
+    else x = 0.5 - r * (t < 0.5 ? 1 : -1);
+
+    ManifoldVec3 mid = vec3_add(vec3_scale(pos0, 1.0 - x),
+                                 vec3_scale(pos1, x));
+    double d = sdf(mid.x, mid.y, mid.z, ctx) - level;
+
+    if ((d > 0) == (d0 > 0)) {
+      d0 = d; pos0 = mid; frac *= 1 - x;
+    } else {
+      d1 = d; pos1 = mid; frac *= x;
+    }
+    biFrac /= 2;
+  }
+  double t = d0 / (d0 - d1);
+  return vec3_add(vec3_scale(pos0, 1.0 - t), vec3_scale(pos1, t));
+}
+
+// GridVert: each vertex on the BCC grid
+typedef struct {
+  double distance;
+  int movedVert;
+  int edgeVerts[7];
+} SdfGridVert;
+
+static inline SdfGridVert sdf_gridvert_default(void) {
+  SdfGridVert gv;
+  gv.distance = NAN;
+  gv.movedVert = SDF_NONE;
+  for (int i = 0; i < 7; i++) gv.edgeVerts[i] = SDF_NONE;
+  return gv;
+}
+
+static inline bool sdf_gv_has_moved(const SdfGridVert *gv) {
+  return gv->movedVert >= 0;
+}
+static inline bool sdf_gv_same_side(const SdfGridVert *gv, double dist) {
+  return (dist > 0) == (gv->distance > 0);
+}
+static inline int sdf_gv_inside(const SdfGridVert *gv) {
+  return gv->distance > 0 ? 1 : -1;
+}
+static inline int sdf_gv_neighbor_inside(const SdfGridVert *gv, int i) {
+  return sdf_gv_inside(gv) * (gv->edgeVerts[i] == SDF_NONE ? 1 : -1);
+}
+
+// Hash table for GridVert (open addressing)
+typedef struct {
+  uint64_t *keys;
+  SdfGridVert *values;
+  size_t size;
+  size_t used;
+} SdfGridHash;
+
+static SdfGridHash sdf_hash_create(size_t size) {
+  size_t s = 1;
+  while (s < size) s <<= 1;
+  SdfGridHash h;
+  h.size = s;
+  h.used = 0;
+  h.keys = (uint64_t*)malloc(s * sizeof(uint64_t));
+  h.values = (SdfGridVert*)malloc(s * sizeof(SdfGridVert));
+  for (size_t i = 0; i < s; i++) {
+    h.keys[i] = SDF_HASH_OPEN;
+    h.values[i] = sdf_gridvert_default();
+  }
+  return h;
+}
+
+static void sdf_hash_free(SdfGridHash *h) {
+  free(h->keys); free(h->values);
+  h->keys = NULL; h->values = NULL;
+  h->size = 0; h->used = 0;
+}
+
+static bool sdf_hash_full(const SdfGridHash *h) {
+  return h->used * 2 > h->size;
+}
+
+static void sdf_hash_insert(SdfGridHash *h, uint64_t key, SdfGridVert val) {
+  if (h->size == 0) return;
+  uint32_t idx = (uint32_t)(manifold_hash64bit(key) & (h->size - 1));
+  while (1) {
+    if (sdf_hash_full(h)) return;
+    if (h->keys[idx] == SDF_HASH_OPEN) {
+      h->keys[idx] = key;
+      h->values[idx] = val;
+      h->used++;
+      return;
+    }
+    if (h->keys[idx] == key) return;
+    idx = (idx + 1) & (uint32_t)(h->size - 1);
+  }
+}
+
+static const SdfGridVert* sdf_hash_find_const(const SdfGridHash *h,
+                                               uint64_t key) {
+  if (h->size == 0) return NULL;
+  uint32_t idx = (uint32_t)(manifold_hash64bit(key) & (h->size - 1));
+  while (1) {
+    if (h->keys[idx] == key) return &h->values[idx];
+    if (h->keys[idx] == SDF_HASH_OPEN) return &h->values[idx];
+    idx = (idx + 1) & (uint32_t)(h->size - 1);
+  }
+}
+
+// SDF level set meshing using marching tetrahedra on BCC grid
 void manifold_impl_level_set(ManifoldImpl *impl,
-                              double (*sdf)(double x, double y, double z, void *ctx),
-                              void *ctx,
-                              ManifoldBox bounds,
-                              double edgeLength,
-                              double level) {
+                              double (*sdf)(double x, double y, double z,
+                                            void *ctx),
+                              void *ctx, ManifoldBox bounds,
+                              double edgeLength, double level) {
   manifold_impl_init(impl);
 
-  ManifoldVec3 size = manifold_box_size(bounds);
-  int nx = (int)(size.x / edgeLength) + 1;
-  int ny = (int)(size.y / edgeLength) + 1;
-  int nz = (int)(size.z / edgeLength) + 1;
+  double tolerance = DBL_MAX; // default: interpolated crossing points
 
-  if (nx < 2 || ny < 2 || nz < 2) {
+  ManifoldVec3 dim = manifold_box_size(bounds);
+  ManifoldIVec3 gridSize = {
+    (int)(dim.x / edgeLength + 1.0),
+    (int)(dim.y / edgeLength + 1.0),
+    (int)(dim.z / edgeLength + 1.0)
+  };
+  if (gridSize.x < 2 || gridSize.y < 2 || gridSize.z < 2) {
     manifold_impl_make_empty(impl, MANIFOLD_ERROR_INVALID_CONSTRUCTION);
     return;
   }
+  ManifoldVec3 spacing = manifold_vec3(
+    dim.x / (gridSize.x - 1),
+    dim.y / (gridSize.y - 1),
+    dim.z / (gridSize.z - 1));
 
-  double dx = size.x / (nx - 1);
-  double dy = size.y / (ny - 1);
-  double dz = size.z / (nz - 1);
+  ManifoldIVec3 gridPow = {
+    sdf_log2_ceil(gridSize.x + 2) + 1,
+    sdf_log2_ceil(gridSize.y + 2) + 1,
+    sdf_log2_ceil(gridSize.z + 2) + 1
+  };
+  ManifoldIVec4 maxIV = {gridSize.x + 2, gridSize.y + 2, gridSize.z + 2, 1};
+  uint64_t maxIndex = sdf_encode(maxIV, gridPow);
+  ManifoldVec3 origin = bounds.min;
 
-  // Evaluate SDF on grid
-  size_t gridSize = (size_t)nx * ny * nz;
-  double *grid = (double *)malloc(gridSize * sizeof(double));
+  // Evaluate bounded SDF on the full BCC grid
+  ManifoldIVec4 voxelOffset = {1, 1, 1, 0};
+  double *voxels = (double*)malloc(maxIndex * sizeof(double));
+  for (uint64_t idx = 0; idx < maxIndex; idx++) {
+    ManifoldIVec4 di = sdf_decode(idx, gridPow);
+    ManifoldIVec4 gi = {di.x - voxelOffset.x, di.y - voxelOffset.y,
+                         di.z - voxelOffset.z, di.w - voxelOffset.w};
+    voxels[idx] = sdf_bounded_eval(gi, origin, spacing, gridSize, level,
+                                    sdf, ctx);
+  }
 
-  for (int iz = 0; iz < nz; iz++) {
-    for (int iy = 0; iy < ny; iy++) {
-      for (int ix = 0; ix < nx; ix++) {
-        double x = bounds.min.x + ix * dx;
-        double y = bounds.min.y + iy * dy;
-        double z = bounds.min.z + iz * dz;
-        grid[iz * ny * nx + iy * nx + ix] = sdf(x, y, z, ctx);
+  // Phase 1: Identify near-surface grid vertices
+  uint64_t encMax = sdf_encode(
+    (ManifoldIVec4){gridSize.x, gridSize.y, gridSize.z, 1}, gridPow);
+  double powApprox = pow((double)maxIndex, 0.667);
+  size_t tableSize = (size_t)(2 * maxIndex);
+  size_t altSize = (size_t)(10 * powApprox);
+  if (altSize < tableSize) tableSize = altSize;
+
+  SdfGridHash gridVerts = sdf_hash_create(tableSize);
+
+  // Allocate vertex positions
+  size_t maxVerts = gridVerts.size * 7;
+  ManifoldVecVec3 vertPos = {0};
+  vec_vec3_resize(&vertPos, maxVerts);
+  int vertCount = 0;
+
+  // NearSurface pass: find grid verts near the surface, optionally snap
+  for (uint64_t index = 0; index < encMax; index++) {
+    if (sdf_hash_full(&gridVerts)) break;
+    ManifoldIVec4 gridIndex = sdf_decode(index, gridPow);
+    if (gridIndex.x > gridSize.x || gridIndex.y > gridSize.y ||
+        gridIndex.z > gridSize.z) continue;
+
+    SdfGridVert gv = sdf_gridvert_default();
+    ManifoldIVec4 gi_vo = {gridIndex.x + voxelOffset.x,
+                            gridIndex.y + voxelOffset.y,
+                            gridIndex.z + voxelOffset.z,
+                            gridIndex.w + voxelOffset.w};
+    gv.distance = voxels[sdf_encode(gi_vo, gridPow)];
+
+    bool keep = false;
+    double vMax = 0;
+    int closestNeighbor = -1;
+    int opposedVerts = 0;
+    for (int i = 0; i < 7; i++) {
+      ManifoldIVec4 ni = sdf_neighbor(gridIndex, i);
+      ManifoldIVec4 ni_vo = {ni.x + voxelOffset.x, ni.y + voxelOffset.y,
+                              ni.z + voxelOffset.z, ni.w + voxelOffset.w};
+      double val = voxels[sdf_encode(ni_vo, gridPow)];
+
+      ManifoldIVec4 oi = sdf_neighbor(gridIndex, i + 7);
+      ManifoldIVec4 oi_vo = {oi.x + voxelOffset.x, oi.y + voxelOffset.y,
+                              oi.z + voxelOffset.z, oi.w + voxelOffset.w};
+      double valOp = voxels[sdf_encode(oi_vo, gridPow)];
+
+      if (!sdf_gv_same_side(&gv, val)) {
+        gv.edgeVerts[i] = SDF_CROSSING;
+        keep = true;
+        if (!sdf_gv_same_side(&gv, valOp)) ++opposedVerts;
+        if (fabs(val) > SDF_KD * fabs(gv.distance) &&
+            fabs(val) > fabs(vMax)) {
+          vMax = val;
+          closestNeighbor = i;
+        }
+      } else if (!sdf_gv_same_side(&gv, valOp) &&
+                 fabs(valOp) > SDF_KD * fabs(gv.distance) &&
+                 fabs(valOp) > fabs(vMax)) {
+        vMax = valOp;
+        closestNeighbor = i + 7;
       }
+    }
+
+    // Vertex snapping: collapse crossing edges into this grid vert
+    if (closestNeighbor >= 0 && opposedVerts <= SDF_MAX_OPPOSED) {
+      ManifoldVec3 gridPos = sdf_position(gridIndex, origin, spacing);
+      ManifoldIVec4 neighborIndex = sdf_neighbor(gridIndex, closestNeighbor);
+      ManifoldVec3 pos = sdf_find_surface(
+        gridPos, gv.distance,
+        sdf_position(neighborIndex, origin, spacing),
+        vMax, tolerance, level, sdf, ctx);
+      ManifoldVec3 delta = vec3_sub(pos, gridPos);
+      if (fabs(delta.x) < SDF_KS * spacing.x &&
+          fabs(delta.y) < SDF_KS * spacing.y &&
+          fabs(delta.z) < SDF_KS * spacing.z) {
+        int idx = vertCount++;
+        if ((size_t)idx >= vertPos.len) vec_vec3_resize(&vertPos, vertPos.len*2);
+        vertPos.data[idx] = sdf_bound_pos(pos, origin, spacing, gridSize);
+        gv.movedVert = idx;
+        for (int j = 0; j < 7; j++) {
+          if (gv.edgeVerts[j] == SDF_CROSSING) gv.edgeVerts[j] = idx;
+        }
+        keep = true;
+      }
+    } else {
+      for (int j = 0; j < 7; j++) gv.edgeVerts[j] = SDF_NONE;
+    }
+
+    if (keep) sdf_hash_insert(&gridVerts, index, gv);
+  }
+
+  // Phase 2: Compute edge vertices for crossing edges not yet assigned
+  for (size_t hidx = 0; hidx < gridVerts.size; hidx++) {
+    if (gridVerts.keys[hidx] == SDF_HASH_OPEN) continue;
+    SdfGridVert *gv = &gridVerts.values[hidx];
+    if (sdf_gv_has_moved(gv)) continue;
+
+    ManifoldIVec4 gridIndex = sdf_decode(gridVerts.keys[hidx], gridPow);
+    ManifoldVec3 position = sdf_position(gridIndex, origin, spacing);
+
+    for (int i = 0; i < 7; i++) {
+      ManifoldIVec4 neighborIndex = sdf_neighbor(gridIndex, i);
+      uint64_t nkey = sdf_encode(neighborIndex, gridPow);
+      const SdfGridVert *neighbor = sdf_hash_find_const(&gridVerts, nkey);
+
+      double val;
+      if (neighbor && isfinite(neighbor->distance)) {
+        val = neighbor->distance;
+      } else {
+        ManifoldIVec4 ni_vo = {neighborIndex.x + voxelOffset.x,
+                                neighborIndex.y + voxelOffset.y,
+                                neighborIndex.z + voxelOffset.z,
+                                neighborIndex.w + voxelOffset.w};
+        val = voxels[sdf_encode(ni_vo, gridPow)];
+      }
+      if (sdf_gv_same_side(gv, val)) continue;
+
+      if (neighbor && sdf_gv_has_moved(neighbor)) {
+        gv->edgeVerts[i] = neighbor->movedVert;
+        continue;
+      }
+
+      int idx = vertCount++;
+      if ((size_t)idx >= vertPos.len) vec_vec3_resize(&vertPos, vertPos.len*2);
+      ManifoldVec3 pos = sdf_find_surface(
+        position, gv->distance,
+        sdf_position(neighborIndex, origin, spacing),
+        val, tolerance, level, sdf, ctx);
+      vertPos.data[idx] = sdf_bound_pos(pos, origin, spacing, gridSize);
+      gv->edgeVerts[i] = idx;
     }
   }
 
-  // Marching cubes
-  ManifoldVecVec3 verts = {0};
-  ManifoldVecIVec3 tris = {0};
+  // Phase 3: Build triangles from tetrahedra
+  ManifoldVecIVec3 triVerts = {0};
+  size_t estTris = gridVerts.used * 12;
+  vec_ivec3_resize(&triVerts, estTris > 128 ? estTris : 128);
+  int triCount = 0;
 
-  for (int iz = 0; iz < nz - 1; iz++) {
-    for (int iy = 0; iy < ny - 1; iy++) {
-      for (int ix = 0; ix < nx - 1; ix++) {
-        // Get SDF values at cube corners
-        double val[8];
-        val[0] = grid[iz * ny * nx + iy * nx + ix];
-        val[1] = grid[iz * ny * nx + iy * nx + (ix + 1)];
-        val[2] = grid[iz * ny * nx + (iy + 1) * nx + (ix + 1)];
-        val[3] = grid[iz * ny * nx + (iy + 1) * nx + ix];
-        val[4] = grid[(iz + 1) * ny * nx + iy * nx + ix];
-        val[5] = grid[(iz + 1) * ny * nx + iy * nx + (ix + 1)];
-        val[6] = grid[(iz + 1) * ny * nx + (iy + 1) * nx + (ix + 1)];
-        val[7] = grid[(iz + 1) * ny * nx + (iy + 1) * nx + ix];
+  for (size_t hidx = 0; hidx < gridVerts.size; hidx++) {
+    if (gridVerts.keys[hidx] == SDF_HASH_OPEN) continue;
+    const SdfGridVert *base = &gridVerts.values[hidx];
+    ManifoldIVec4 baseIndex = sdf_decode(gridVerts.keys[hidx], gridPow);
 
-        // Cube corner positions
-        ManifoldVec3 pos[8];
-        double x0 = bounds.min.x + ix * dx;
-        double y0 = bounds.min.y + iy * dy;
-        double z0 = bounds.min.z + iz * dz;
-        pos[0] = manifold_vec3(x0, y0, z0);
-        pos[1] = manifold_vec3(x0 + dx, y0, z0);
-        pos[2] = manifold_vec3(x0 + dx, y0 + dy, z0);
-        pos[3] = manifold_vec3(x0, y0 + dy, z0);
-        pos[4] = manifold_vec3(x0, y0, z0 + dz);
-        pos[5] = manifold_vec3(x0 + dx, y0, z0 + dz);
-        pos[6] = manifold_vec3(x0 + dx, y0 + dy, z0 + dz);
-        pos[7] = manifold_vec3(x0, y0 + dy, z0 + dz);
+    ManifoldIVec4 leadIndex = baseIndex;
+    if (leadIndex.w == 0) {
+      leadIndex.w = 1;
+    } else {
+      leadIndex.x += 1; leadIndex.y += 1; leadIndex.z += 1;
+      leadIndex.w = 0;
+    }
 
-        // Compute cube index
-        int cubeIdx = 0;
-        for (int i = 0; i < 8; i++) {
-          if (val[i] < level) cubeIdx |= (1 << i);
-        }
+    // 6 tetrahedra around edge 0 in the (1,1,1) direction
+    int tet[4];
+    tet[0] = sdf_gv_neighbor_inside(base, 0);
+    tet[1] = sdf_gv_inside(base);
 
-        if (mc_edge_table[cubeIdx] == 0) continue;
+    ManifoldIVec4 thisIndex = baseIndex;
+    thisIndex.x += 1;
+    SdfGridVert thisVert = *sdf_hash_find_const(&gridVerts,
+                             sdf_encode(thisIndex, gridPow));
+    tet[2] = sdf_gv_neighbor_inside(base, 1);
 
-        // Interpolate vertices along edges
-        ManifoldVec3 edgeVerts[12];
-        int edges = mc_edge_table[cubeIdx];
-        if (edges & 1)    edgeVerts[0]  = sdf_interp(pos[0], pos[1], val[0], val[1], level);
-        if (edges & 2)    edgeVerts[1]  = sdf_interp(pos[1], pos[2], val[1], val[2], level);
-        if (edges & 4)    edgeVerts[2]  = sdf_interp(pos[2], pos[3], val[2], val[3], level);
-        if (edges & 8)    edgeVerts[3]  = sdf_interp(pos[3], pos[0], val[3], val[0], level);
-        if (edges & 16)   edgeVerts[4]  = sdf_interp(pos[4], pos[5], val[4], val[5], level);
-        if (edges & 32)   edgeVerts[5]  = sdf_interp(pos[5], pos[6], val[5], val[6], level);
-        if (edges & 64)   edgeVerts[6]  = sdf_interp(pos[6], pos[7], val[6], val[7], level);
-        if (edges & 128)  edgeVerts[7]  = sdf_interp(pos[7], pos[4], val[7], val[4], level);
-        if (edges & 256)  edgeVerts[8]  = sdf_interp(pos[0], pos[4], val[0], val[4], level);
-        if (edges & 512)  edgeVerts[9]  = sdf_interp(pos[1], pos[5], val[1], val[5], level);
-        if (edges & 1024) edgeVerts[10] = sdf_interp(pos[2], pos[6], val[2], val[6], level);
-        if (edges & 2048) edgeVerts[11] = sdf_interp(pos[3], pos[7], val[3], val[7], level);
+    for (int i = 0; i < 3; i++) {
+      ManifoldIVec4 ti = leadIndex;
+      int prev = sdf_prev3(i);
+      int next = sdf_next3(i);
+      // Decrement prev3 component
+      if (prev == 0) ti.x -= 1;
+      else if (prev == 1) ti.y -= 1;
+      else ti.z -= 1;
 
-        // Create triangles (swap winding for correct orientation)
-        for (int i = 0; mc_tri_table[cubeIdx][i] != -1; i += 3) {
-          int baseIdx = (int)verts.len;
-          vec_vec3_push(&verts, edgeVerts[mc_tri_table[cubeIdx][i]]);
-          vec_vec3_push(&verts, edgeVerts[mc_tri_table[cubeIdx][i + 2]]);
-          vec_vec3_push(&verts, edgeVerts[mc_tri_table[cubeIdx][i + 1]]);
-          vec_ivec3_push(&tris, manifold_ivec3(baseIdx, baseIdx + 1, baseIdx + 2));
+      SdfGridVert nextVert;
+      int prevCoord = (prev == 0) ? ti.x : ((prev == 1) ? ti.y : ti.z);
+      if (prevCoord < 0) {
+        nextVert = sdf_gridvert_default();
+      } else {
+        nextVert = *sdf_hash_find_const(&gridVerts,
+                     sdf_encode(ti, gridPow));
+      }
+      tet[3] = sdf_gv_neighbor_inside(base, prev + 4);
+
+      int edges1[6];
+      edges1[0] = base->edgeVerts[0];
+      edges1[1] = base->edgeVerts[i + 1];
+      edges1[2] = nextVert.edgeVerts[next + 4];
+      edges1[3] = nextVert.edgeVerts[prev + 1];
+      edges1[4] = thisVert.edgeVerts[i + 4];
+      edges1[5] = base->edgeVerts[prev + 4];
+      thisVert = nextVert;
+
+      // Create triangles from tet
+      int ci = (tet[0] > 0 ? 1 : 0) + (tet[1] > 0 ? 2 : 0) +
+               (tet[2] > 0 ? 4 : 0) + (tet[3] > 0 ? 8 : 0);
+      // TetTri0
+      if (tetTri0[ci][0] >= 0) {
+        int v0 = edges1[tetTri0[ci][0]];
+        int v1 = edges1[tetTri0[ci][1]];
+        int v2 = edges1[tetTri0[ci][2]];
+        if (v0 >= 0 && v1 >= 0 && v2 >= 0 &&
+            v0 != v1 && v1 != v2 && v2 != v0) {
+          if ((size_t)triCount >= triVerts.len)
+            vec_ivec3_resize(&triVerts, triVerts.len * 2);
+          triVerts.data[triCount++] = manifold_ivec3(v0, v1, v2);
         }
       }
+      // TetTri1
+      if (tetTri1[ci][0] >= 0) {
+        int v0 = edges1[tetTri1[ci][0]];
+        int v1 = edges1[tetTri1[ci][1]];
+        int v2 = edges1[tetTri1[ci][2]];
+        if (v0 >= 0 && v1 >= 0 && v2 >= 0 &&
+            v0 != v1 && v1 != v2 && v2 != v0) {
+          if ((size_t)triCount >= triVerts.len)
+            vec_ivec3_resize(&triVerts, triVerts.len * 2);
+          triVerts.data[triCount++] = manifold_ivec3(v0, v1, v2);
+        }
+      }
+
+      // Second tetrahedron
+      ManifoldIVec4 ti2 = baseIndex;
+      if (next == 0) ti2.x += 1;
+      else if (next == 1) ti2.y += 1;
+      else ti2.z += 1;
+      SdfGridVert nextVert2 = *sdf_hash_find_const(&gridVerts,
+                                sdf_encode(ti2, gridPow));
+      tet[2] = tet[3];
+      tet[3] = sdf_gv_neighbor_inside(base, next + 1);
+
+      int edges2[6];
+      edges2[0] = base->edgeVerts[0];
+      edges2[1] = edges1[5];
+      edges2[2] = thisVert.edgeVerts[i + 4];
+      edges2[3] = nextVert2.edgeVerts[next + 4];
+      edges2[4] = edges1[3];
+      edges2[5] = base->edgeVerts[next + 1];
+      thisVert = nextVert2;
+
+      ci = (tet[0] > 0 ? 1 : 0) + (tet[1] > 0 ? 2 : 0) +
+           (tet[2] > 0 ? 4 : 0) + (tet[3] > 0 ? 8 : 0);
+      if (tetTri0[ci][0] >= 0) {
+        int v0 = edges2[tetTri0[ci][0]];
+        int v1 = edges2[tetTri0[ci][1]];
+        int v2 = edges2[tetTri0[ci][2]];
+        if (v0 >= 0 && v1 >= 0 && v2 >= 0 &&
+            v0 != v1 && v1 != v2 && v2 != v0) {
+          if ((size_t)triCount >= triVerts.len)
+            vec_ivec3_resize(&triVerts, triVerts.len * 2);
+          triVerts.data[triCount++] = manifold_ivec3(v0, v1, v2);
+        }
+      }
+      if (tetTri1[ci][0] >= 0) {
+        int v0 = edges2[tetTri1[ci][0]];
+        int v1 = edges2[tetTri1[ci][1]];
+        int v2 = edges2[tetTri1[ci][2]];
+        if (v0 >= 0 && v1 >= 0 && v2 >= 0 &&
+            v0 != v1 && v1 != v2 && v2 != v0) {
+          if ((size_t)triCount >= triVerts.len)
+            vec_ivec3_resize(&triVerts, triVerts.len * 2);
+          triVerts.data[triCount++] = manifold_ivec3(v0, v1, v2);
+        }
+      }
+
+      tet[2] = tet[3];
     }
   }
 
-  free(grid);
+  free(voxels);
 
-  if (tris.len == 0) {
-    vec_vec3_free(&verts);
-    vec_ivec3_free(&tris);
+  if (triCount == 0) {
+    vec_vec3_free(&vertPos);
+    vec_ivec3_free(&triVerts);
+    sdf_hash_free(&gridVerts);
     manifold_impl_make_empty(impl, MANIFOLD_ERROR_NO_ERROR);
     return;
   }
 
-  impl->vertPos = verts;
+  vec_vec3_resize(&vertPos, vertCount);
+  vec_ivec3_resize(&triVerts, triCount);
+  impl->vertPos = vertPos;
+
   ManifoldVecIVec3 emptyTriVert = {0};
-  manifold_impl_create_halfedges(impl, &tris, &emptyTriVert);
+  manifold_impl_create_halfedges(impl, &triVerts, &emptyTriVert);
+  manifold_impl_cleanup_topology(impl);
+  manifold_impl_remove_unreferenced_verts(impl);
   manifold_impl_initialize_original(impl);
   manifold_impl_calculate_bbox(impl);
   manifold_impl_set_epsilon(impl, -1.0, false);
-  // Don't sort for now since SDF meshes may not be manifold from marching cubes
+  manifold_impl_sort_geometry(impl);
   manifold_impl_set_normals_and_coplanar(impl);
 
-  vec_ivec3_free(&tris);
+  vec_ivec3_free(&triVerts);
   vec_ivec3_free(&emptyTriVert);
+  sdf_hash_free(&gridVerts);
 }
