@@ -90,6 +90,8 @@ Manifold manifold_from_mesh(const ManifoldVec3 *vertPos, size_t numVert,
 
 ManifoldError manifold_status(const Manifold *m) { return m->impl.status; }
 bool manifold_is_empty(const Manifold *m) { return manifold_impl_is_empty(&m->impl); }
+bool manifold_is_manifold(const Manifold *m) { return manifold_impl_is_manifold(&m->impl); }
+bool manifold_is_2manifold(const Manifold *m) { return manifold_impl_is_2manifold(&m->impl); }
 size_t manifold_num_vert(const Manifold *m) { return manifold_impl_num_vert(&m->impl); }
 size_t manifold_num_edge(const Manifold *m) { return manifold_impl_num_edge(&m->impl); }
 size_t manifold_num_tri(const Manifold *m) { return manifold_impl_num_tri(&m->impl); }
@@ -133,7 +135,8 @@ Manifold manifold_translate(const Manifold *m, ManifoldVec3 v) {
   for (size_t i = 0; i < out.impl.vertPos.len; i++) {
     out.impl.vertPos.data[i] = vec3_add(out.impl.vertPos.data[i], v);
   }
-  out.impl.bBox = manifold_box_shift(out.impl.bBox, v);
+  manifold_impl_calculate_bbox(&out.impl);
+  manifold_impl_set_epsilon(&out.impl, -1, false);
   return out;
 }
 
@@ -144,6 +147,7 @@ Manifold manifold_scale(const Manifold *m, ManifoldVec3 v) {
     out.impl.vertPos.data[i] = vec3_mul(out.impl.vertPos.data[i], v);
   }
   manifold_impl_calculate_bbox(&out.impl);
+  manifold_impl_set_epsilon(&out.impl, -1, false);
   return out;
 }
 

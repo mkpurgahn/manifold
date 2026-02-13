@@ -2089,6 +2089,88 @@ static void test_refine_sphere(void) {
   manifold_destroy(&r);
 }
 
+// ---------- Boolean SelfSubtract ----------
+
+static void test_boolean_self_subtract(void) {
+  Manifold c = manifold_cube(manifold_vec3(1, 1, 1), false);
+  Manifold d = manifold_difference(&c, &c);
+  // Self-subtract should be empty (or near-zero volume)
+  ASSERT_TRUE(manifold_is_empty(&d) || manifold_volume(&d) < 0.01);
+  manifold_destroy(&c);
+  manifold_destroy(&d);
+}
+
+// ---------- Boolean cubes offset ----------
+
+static void test_boolean_cubes_offset(void) {
+  Manifold c1 = manifold_cube(manifold_vec3(1.2, 1, 1), true);
+  Manifold t1 = manifold_translate(&c1, manifold_vec3(0, -0.5, 0.5));
+  Manifold c2 = manifold_cube(manifold_vec3(1, 0.8, 0.5), false);
+  Manifold t2 = manifold_translate(&c2, manifold_vec3(-0.5, 0, 0.5));
+
+  Manifold u = manifold_union(&t1, &t2);
+  ASSERT_TRUE(!manifold_is_empty(&u));
+  double vol = manifold_volume(&u);
+  ASSERT_TRUE(vol > 0.8 && vol < 2.0);
+
+  manifold_destroy(&c1);
+  manifold_destroy(&t1);
+  manifold_destroy(&c2);
+  manifold_destroy(&t2);
+  manifold_destroy(&u);
+}
+
+// ---------- Hull empty input ----------
+
+static void test_hull_empty(void) {
+  Manifold e = manifold_empty();
+  Manifold h = manifold_hull(&e);
+  ASSERT_TRUE(manifold_is_empty(&h));
+  manifold_destroy(&e);
+  manifold_destroy(&h);
+}
+
+// ---------- Cube measurements ----------
+
+static void test_cube_measurements(void) {
+  Manifold c = manifold_cube(manifold_vec3(1, 1, 1), false);
+  ASSERT_NEAR(manifold_volume(&c), 1.0, 0.001);
+  ASSERT_NEAR(manifold_surface_area(&c), 6.0, 0.001);
+
+  // Scale by -1: volume should still be 1 (absolute)
+  Manifold s = manifold_scale(&c, manifold_vec3(-1, -1, -1));
+  ASSERT_NEAR(fabs(manifold_volume(&s)), 1.0, 0.001);
+  ASSERT_NEAR(manifold_surface_area(&s), 6.0, 0.001);
+
+  manifold_destroy(&c);
+  manifold_destroy(&s);
+}
+
+// ---------- Scale 0.1 / 10 epsilon ----------
+
+static void test_epsilon_scaling(void) {
+  Manifold c1 = manifold_cube(manifold_vec3(1, 1, 1), false);
+  double e1 = manifold_get_epsilon(&c1);
+
+  Manifold c2 = manifold_scale(&c1, manifold_vec3(0.1, 1, 10));
+  double e2 = manifold_get_epsilon(&c2);
+  ASSERT_TRUE(e2 > e1);  // Epsilon should scale with bounding box
+
+  manifold_destroy(&c1);
+  manifold_destroy(&c2);
+}
+
+// ---------- Refine preserves manifoldness ----------
+
+static void test_refine_manifold(void) {
+  Manifold m = manifold_cube(manifold_vec3(1, 1, 1), false);
+  Manifold r = manifold_refine(&m, 2);
+  ASSERT_TRUE(manifold_is_manifold(&r));
+  ASSERT_TRUE(manifold_is_2manifold(&r));
+  manifold_destroy(&m);
+  manifold_destroy(&r);
+}
+
 // ============== Main ==============
 
 int main(void) {
@@ -2276,7 +2358,13 @@ int main(void) {
   RUN_TEST(cylinder_properties);
   RUN_TEST(refine);
   RUN_TEST(refine_sphere);
+  RUN_TEST(boolean_self_subtract);
+  RUN_TEST(boolean_cubes_offset);
+  RUN_TEST(hull_empty);
+  RUN_TEST(cube_measurements);
+  RUN_TEST(epsilon_scaling);
+  RUN_TEST(refine_manifold);
 
-  printf("\n=== All %d tests passed! ===\n", 121);
+  printf("\n=== All %d tests passed! ===\n", 128);
   return 0;
 }

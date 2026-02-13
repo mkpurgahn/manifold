@@ -52,6 +52,8 @@ Manifold manifold_revolve(const ManifoldVec2 *polyVerts,
 // ---------- Information ----------
 ManifoldError manifold_status(const Manifold *m);
 bool manifold_is_empty(const Manifold *m);
+bool manifold_is_manifold(const Manifold *m);
+bool manifold_is_2manifold(const Manifold *m);
 size_t manifold_num_vert(const Manifold *m);
 size_t manifold_num_edge(const Manifold *m);
 size_t manifold_num_tri(const Manifold *m);
