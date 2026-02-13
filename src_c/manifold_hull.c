@@ -692,10 +692,11 @@ void manifold_convex_hull(ManifoldImpl *impl, const ManifoldVec3 *points,
         qhs_build(&state);
 
         if (!state.planar) {
-          // Collect faces, excluding any that reference the extra point
+          // Keep ALL faces including those with extra point, but remap
+          // extra point's position to vertex[0]. This creates degenerate
+          // faces that are topologically valid (all edges paired).
+          // The degenerate faces get removed later by Simplify().
           size_t extraIdx = padCount;
-          int *vertUsed = (int*)calloc(padCount + 1, sizeof(int));
-          size_t triCount = 0;
           ManifoldVecIVec3 triVerts = {0};
           
           for (size_t fi = 0; fi < state.mesh.faceLen; fi++) {
@@ -705,19 +706,23 @@ void manifold_convex_hull(ManifoldImpl *impl, const ManifoldVec3 *points,
             int sv0 = state.mesh.he[state.mesh.heNext[state.mesh.heNext[hes[0]]]].endVert;
             int sv1 = state.mesh.he[hes[0]].endVert;
             int sv2 = state.mesh.he[state.mesh.heNext[hes[0]]].endVert;
-            // Skip faces that reference the extra point
-            if ((size_t)sv0 == extraIdx || (size_t)sv1 == extraIdx || (size_t)sv2 == extraIdx)
-              continue;
-            // Also skip if vertex out of original range
-            if ((size_t)sv0 >= numPoints || (size_t)sv1 >= numPoints || (size_t)sv2 >= numPoints)
-              continue;
-            vertUsed[sv0] = vertUsed[sv1] = vertUsed[sv2] = 1;
-            triCount++;
+            // Clamp padded duplicate vertices to their originals
+            if ((size_t)sv0 >= numPoints && (size_t)sv0 != extraIdx) sv0 = (int)(numPoints - 1);
+            if ((size_t)sv1 >= numPoints && (size_t)sv1 != extraIdx) sv1 = (int)(numPoints - 1);
+            if ((size_t)sv2 >= numPoints && (size_t)sv2 != extraIdx) sv2 = (int)(numPoints - 1);
+            // Skip degenerate (two same vertices)
+            if (sv0 == sv1 || sv1 == sv2 || sv2 == sv0) continue;
             vec_ivec3_push(&triVerts, manifold_ivec3(sv0, sv1, sv2));
           }
           
-          if (triCount > 0) {
-            // Build vertex map
+          if (triVerts.len > 0) {
+            // Build vertex map for used vertices (including extra point)
+            int *vertUsed = (int*)calloc(padCount + 1, sizeof(int));
+            for (size_t t = 0; t < triVerts.len; t++) {
+              vertUsed[triVerts.data[t].x] = 1;
+              vertUsed[triVerts.data[t].y] = 1;
+              vertUsed[triVerts.data[t].z] = 1;
+            }
             int vertCount = 0;
             int *vertMap = (int*)malloc((padCount + 1) * sizeof(int));
             for (size_t i = 0; i < padCount + 1; i++) {
@@ -733,7 +738,11 @@ void manifold_convex_hull(ManifoldImpl *impl, const ManifoldVec3 *points,
             
             impl->vertPos = vec_vec3_create_n((size_t)vertCount);
             for (size_t i = 0; i < numPoints; i++) {
-              if (vertMap[i] >= 0) impl->vertPos.data[vertMap[i]] = points[i];
+              if (vertUsed[i]) impl->vertPos.data[vertMap[i]] = points[i];
+            }
+            // Set extra point position to same as vertex[0]
+            if (vertUsed[extraIdx]) {
+              impl->vertPos.data[vertMap[extraIdx]] = points[0];
             }
             
             ManifoldVecIVec3 emptyTriVert = {0};
@@ -747,11 +756,11 @@ void manifold_convex_hull(ManifoldImpl *impl, const ManifoldVec3 *points,
             vec_ivec3_free(&triVerts);
             vec_ivec3_free(&emptyTriVert);
             free(vertMap);
+            free(vertUsed);
           } else {
             vec_ivec3_free(&triVerts);
           }
           
-          free(vertUsed);
           free(padPoints);
           qhs_free(&state);
           free(paddedPoints);
@@ -760,8 +769,8 @@ void manifold_convex_hull(ManifoldImpl *impl, const ManifoldVec3 *points,
       }
     }
     
-    // Truly degenerate (collinear or single point) - create degenerate mesh
-    // with just 2 triangles forming a flat surface
+    // Truly degenerate (collinear or single point) - create a degenerate 
+    // tetrahedron with valid topology but zero volume
     if (numPoints >= 2) {
       // Find most distant pair
       double maxDist = 0;
@@ -776,19 +785,24 @@ void manifold_convex_hull(ManifoldImpl *impl, const ManifoldVec3 *points,
         }
       }
       
-      impl->vertPos = vec_vec3_create_n(2);
+      // Create a tetrahedron with 4 vertices (v2,v3 at same position as v0)
+      impl->vertPos = vec_vec3_create_n(4);
       impl->vertPos.data[0] = points[p0];
       impl->vertPos.data[1] = points[p1];
+      impl->vertPos.data[2] = points[p0];
+      impl->vertPos.data[3] = points[p0];
       
-      // Create degenerate triangles (two degenerate tris)
       ManifoldVecIVec3 triVerts = {0};
-      vec_ivec3_push(&triVerts, manifold_ivec3(0, 1, 0));
-      vec_ivec3_push(&triVerts, manifold_ivec3(1, 0, 1));
+      vec_ivec3_push(&triVerts, manifold_ivec3(0, 1, 2));
+      vec_ivec3_push(&triVerts, manifold_ivec3(0, 2, 3));
+      vec_ivec3_push(&triVerts, manifold_ivec3(0, 3, 1));
+      vec_ivec3_push(&triVerts, manifold_ivec3(1, 3, 2));
       ManifoldVecIVec3 emptyTriVert = {0};
       manifold_impl_create_halfedges(impl, &triVerts, &emptyTriVert);
       manifold_impl_initialize_original(impl);
       manifold_impl_calculate_bbox(impl);
       manifold_impl_set_epsilon(impl, -1.0, false);
+      // Don't call sort_geometry — it may collapse degenerate faces
       
       vec_ivec3_free(&triVerts);
       vec_ivec3_free(&emptyTriVert);
@@ -816,7 +830,53 @@ void manifold_convex_hull(ManifoldImpl *impl, const ManifoldVec3 *points,
     }
   }
 
-  if (triCount < 4) {
+  // Count unique vertices used
+  int usedVertCount = 0;
+  for (size_t i = 0; i < numPoints; i++) {
+    if (vertUsed[i]) usedVertCount++;
+  }
+  
+  if (triCount < 4 || usedVertCount < 4) {
+    // For degenerate cases (collinear/coplanar with < 4 faces),
+    // create a degenerate tetrahedron to match C++ behavior
+    if (numPoints >= 2) {
+      // Find most distant pair
+      double maxDist = 0;
+      size_t dp0 = 0, dp1 = 1;
+      for (size_t i = 0; i < numPoints; i++) {
+        for (size_t j = i + 1; j < numPoints; j++) {
+          double dx = points[i].x - points[j].x;
+          double dy = points[i].y - points[j].y;
+          double dz = points[i].z - points[j].z;
+          double d = dx*dx + dy*dy + dz*dz;
+          if (d > maxDist) { maxDist = d; dp0 = i; dp1 = j; }
+        }
+      }
+      if (maxDist > 0) {
+        impl->vertPos = vec_vec3_create_n(4);
+        impl->vertPos.data[0] = points[dp0];
+        impl->vertPos.data[1] = points[dp1];
+        impl->vertPos.data[2] = points[dp0];
+        impl->vertPos.data[3] = points[dp0];
+        ManifoldVecIVec3 tv = {0};
+        vec_ivec3_push(&tv, manifold_ivec3(0, 1, 2));
+        vec_ivec3_push(&tv, manifold_ivec3(0, 2, 3));
+        vec_ivec3_push(&tv, manifold_ivec3(0, 3, 1));
+        vec_ivec3_push(&tv, manifold_ivec3(1, 3, 2));
+        ManifoldVecIVec3 empty2 = {0};
+        manifold_impl_create_halfedges(impl, &tv, &empty2);
+        manifold_impl_initialize_original(impl);
+        manifold_impl_calculate_bbox(impl);
+        manifold_impl_set_epsilon(impl, -1.0, false);
+        // Don't call sort_geometry — it may collapse degenerate faces
+        vec_ivec3_free(&tv);
+        vec_ivec3_free(&empty2);
+        free(vertUsed);
+        qhs_free(&state);
+        free(paddedPoints);
+        return;
+      }
+    }
     free(vertUsed);
     qhs_free(&state);
     free(paddedPoints);

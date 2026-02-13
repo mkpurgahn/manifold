@@ -622,7 +622,11 @@ void manifold_impl_create_halfedges(ManifoldImpl *impl,
   free(tmpBuf);
   free(edgeKeys);
 
-  // Group by undirected edge and pair reverses
+  // Group by undirected edge, detect opposite faces, then pair reverses
+  // kRemovedHalfedge = -1 (already default for pairedHalfedge)
+  // We use -2 to mark halfedges of removed opposite face pairs
+  const int kRemovedHalfedge = -2;
+
   size_t i = 0;
   while (i < numHalfedge) {
     // Find group end
@@ -640,13 +644,45 @@ void manifold_impl_create_halfedges(ManifoldImpl *impl,
     }
     size_t groupEnd = i;
 
-    // Pair reverses within the group
+    // Detect opposite face pairs: two reverse halfedges whose triangles share
+    // all 3 vertices (the third vertex of each triangle is the same).
     for (size_t a = groupStart; a < groupEnd; a++) {
       int ea = ids[a];
-      if (impl->halfedge.data[ea].pairedHalfedge >= 0) continue;
+      if (impl->halfedge.data[ea].pairedHalfedge == kRemovedHalfedge) continue;
       for (size_t b = a + 1; b < groupEnd; b++) {
         int eb = ids[b];
-        if (impl->halfedge.data[eb].pairedHalfedge >= 0) continue;
+        if (impl->halfedge.data[eb].pairedHalfedge == kRemovedHalfedge)
+          continue;
+        if (impl->halfedge.data[ea].startVert ==
+                impl->halfedge.data[eb].endVert &&
+            impl->halfedge.data[ea].endVert ==
+                impl->halfedge.data[eb].startVert) {
+          // Check if third vertices match (opposite face)
+          int nextA = 3 * (ea / 3) + (ea % 3 + 1) % 3;
+          int nextB = 3 * (eb / 3) + (eb % 3 + 1) % 3;
+          if (impl->halfedge.data[nextA].endVert ==
+              impl->halfedge.data[nextB].endVert) {
+            // Mark all 3 halfedges of both triangles as removed
+            int triA = ea / 3, triB = eb / 3;
+            for (int k = 0; k < 3; k++) {
+              impl->halfedge.data[3 * triA + k].pairedHalfedge =
+                  kRemovedHalfedge;
+              impl->halfedge.data[3 * triB + k].pairedHalfedge =
+                  kRemovedHalfedge;
+            }
+            break;
+          }
+        }
+      }
+    }
+
+    // Pair reverses within the group (skip removed halfedges)
+    for (size_t a = groupStart; a < groupEnd; a++) {
+      int ea = ids[a];
+      if (impl->halfedge.data[ea].pairedHalfedge != -1) continue;
+      for (size_t b = a + 1; b < groupEnd; b++) {
+        int eb = ids[b];
+        if (impl->halfedge.data[eb].pairedHalfedge != -1) continue;
         if (impl->halfedge.data[ea].startVert ==
                 impl->halfedge.data[eb].endVert &&
             impl->halfedge.data[ea].endVert ==
@@ -656,6 +692,15 @@ void manifold_impl_create_halfedges(ManifoldImpl *impl,
           break;
         }
       }
+    }
+  }
+
+  // Set removed halfedges to {-1, -1, -1}
+  for (size_t e = 0; e < numHalfedge; e++) {
+    if (impl->halfedge.data[e].pairedHalfedge == kRemovedHalfedge) {
+      impl->halfedge.data[e].startVert = -1;
+      impl->halfedge.data[e].endVert = -1;
+      impl->halfedge.data[e].pairedHalfedge = -1;
     }
   }
 

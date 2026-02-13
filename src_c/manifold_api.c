@@ -80,6 +80,11 @@ Manifold manifold_from_mesh(const ManifoldVec3 *vertPos, size_t numVert,
   manifold_impl_initialize_original(&m.impl);
   manifold_impl_calculate_bbox(&m.impl);
   manifold_impl_set_epsilon(&m.impl, -1.0, false);
+  // Only call CleanupTopology if mesh is manifold (all edges paired)
+  if (manifold_impl_is_manifold(&m.impl)) {
+    manifold_impl_cleanup_topology(&m.impl);
+    manifold_impl_remove_unreferenced_verts(&m.impl);
+  }
   manifold_impl_sort_geometry(&m.impl);
   manifold_impl_set_normals_and_coplanar(&m.impl);
 
@@ -836,6 +841,16 @@ Manifold manifold_simplify(const Manifold *m, double tolerance) {
   }
   manifold_impl_simplify_topology(&out.impl, 0);
   manifold_impl_sort_geometry(&out.impl);
+  // Check for degenerate mesh (zero volume after simplification)
+  if (out.impl.halfedge.len > 0) {
+    double vol = fabs(manifold_volume(&out));
+    double eps3 = out.impl.epsilon * out.impl.epsilon * out.impl.epsilon;
+    if (vol < eps3) {
+      manifold_destroy(&out);
+      manifold_impl_init(&out.impl);
+      return out;
+    }
+  }
   out.impl.tolerance = oldTolerance;
   return out;
 }
