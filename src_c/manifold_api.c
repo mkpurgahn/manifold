@@ -744,3 +744,99 @@ Manifold manifold_set_tolerance(const Manifold *m, double tolerance) {
   }
   return out;
 }
+
+Manifold manifold_refine(const Manifold *m, int n) {
+  if (n < 2 || manifold_is_empty(m)) {
+    Manifold out;
+    manifold_copy(&out, m);
+    return out;
+  }
+
+  const ManifoldImpl *src = &m->impl;
+  size_t origTri = manifold_impl_num_tri(src);
+  size_t origVert = manifold_impl_num_vert(src);
+
+  if (n != 2) {
+    // For n>2, apply n=2 repeatedly
+    Manifold cur;
+    manifold_copy(&cur, m);
+    int remaining = n;
+    while (remaining >= 2) {
+      Manifold next = manifold_refine(&cur, 2);
+      manifold_destroy(&cur);
+      cur = next;
+      remaining /= 2;
+    }
+    return cur;
+  }
+
+  // n=2: split each edge at midpoint, each triangle becomes 4
+  size_t numEdge = src->halfedge.len;
+
+  int *edgeMidVert = (int *)malloc(numEdge * sizeof(int));
+  for (size_t i = 0; i < numEdge; i++) edgeMidVert[i] = -1;
+
+  ManifoldVecVec3 newVerts = MANIFOLD_VEC_INIT;
+  for (size_t i = 0; i < origVert; i++)
+    vec_vec3_push(&newVerts, src->vertPos.data[i]);
+
+  ManifoldVecIVec3 newTris = MANIFOLD_VEC_INIT;
+
+  for (size_t tri = 0; tri < origTri; tri++) {
+    int e0 = (int)(tri * 3);
+    int e1 = (int)(tri * 3 + 1);
+    int e2 = (int)(tri * 3 + 2);
+
+    int v0 = src->halfedge.data[e0].startVert;
+    int v1 = src->halfedge.data[e1].startVert;
+    int v2 = src->halfedge.data[e2].startVert;
+
+    int mid[3];
+    int edges[3] = {e0, e1, e2};
+    for (int j = 0; j < 3; j++) {
+      int edge = edges[j];
+      int paired = src->halfedge.data[edge].pairedHalfedge;
+      if (paired >= 0 && edgeMidVert[paired] >= 0) {
+        mid[j] = edgeMidVert[paired];
+      } else if (edgeMidVert[edge] >= 0) {
+        mid[j] = edgeMidVert[edge];
+      } else {
+        int sv = src->halfedge.data[edge].startVert;
+        int ev = src->halfedge.data[edge].endVert;
+        ManifoldVec3 midPt = vec3_scale(
+            vec3_add(src->vertPos.data[sv], src->vertPos.data[ev]), 0.5);
+        mid[j] = (int)newVerts.len;
+        vec_vec3_push(&newVerts, midPt);
+        edgeMidVert[edge] = mid[j];
+      }
+    }
+
+    vec_ivec3_push(&newTris, manifold_ivec3(v0, mid[0], mid[2]));
+    vec_ivec3_push(&newTris, manifold_ivec3(mid[0], v1, mid[1]));
+    vec_ivec3_push(&newTris, manifold_ivec3(mid[2], mid[1], v2));
+    vec_ivec3_push(&newTris, manifold_ivec3(mid[0], mid[1], mid[2]));
+  }
+
+  free(edgeMidVert);
+
+  Manifold out;
+  manifold_impl_init(&out.impl);
+  out.impl.vertPos = newVerts;
+
+  ManifoldVecIVec3 triProp = MANIFOLD_VEC_INIT;
+  for (size_t i = 0; i < newTris.len; i++)
+    vec_ivec3_push(&triProp, newTris.data[i]);
+
+  manifold_impl_create_halfedges(&out.impl, &triProp, &newTris);
+  vec_ivec3_free(&newTris);
+  vec_ivec3_free(&triProp);
+
+  manifold_impl_calculate_bbox(&out.impl);
+  manifold_impl_set_epsilon(&out.impl, -1, false);
+  out.impl.tolerance = out.impl.epsilon;
+  manifold_impl_set_normals_and_coplanar(&out.impl);
+  manifold_impl_initialize_original(&out.impl);
+  manifold_impl_sort_geometry(&out.impl);
+
+  return out;
+}

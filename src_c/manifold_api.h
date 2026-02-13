@@ -144,6 +144,10 @@ uint32_t manifold_reserve_ids_api(uint32_t n);
 Manifold manifold_simplify(const Manifold *m, double tolerance);
 Manifold manifold_set_tolerance(const Manifold *m, double tolerance);
 
+// ---------- Refine ----------
+// Subdivide each triangle into n^2 sub-triangles (n>=2)
+Manifold manifold_refine(const Manifold *m, int n);
+
 // ---------- Mesh Data Access ----------
 // Get raw vertex positions (read-only)
 const ManifoldVec3 *manifold_get_vert_positions(const Manifold *m, size_t *count);

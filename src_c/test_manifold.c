@@ -2054,6 +2054,41 @@ static void test_cylinder_properties(void) {
   manifold_destroy(&c);
 }
 
+// ---------- Refine test ----------
+
+static void test_refine(void) {
+  Manifold m = manifold_cube(manifold_vec3(1, 1, 1), false);
+  size_t origTri = manifold_num_tri(&m);
+  ASSERT_EQ(origTri, (size_t)12);
+
+  // Refine with n=2: each tri → 4 tris
+  Manifold r = manifold_refine(&m, 2);
+  ASSERT_TRUE(!manifold_is_empty(&r));
+  ASSERT_EQ(manifold_num_tri(&r), origTri * 4);
+  // Volume should be preserved
+  ASSERT_NEAR(manifold_volume(&r), 1.0, 0.01);
+  ASSERT_EQ(manifold_genus(&r), 0);
+
+  manifold_destroy(&m);
+  manifold_destroy(&r);
+}
+
+static void test_refine_sphere(void) {
+  manifold_set_circular_segments(8);
+  Manifold m = manifold_sphere(1.0, 8);
+  double vol1 = manifold_volume(&m);
+  size_t tri1 = manifold_num_tri(&m);
+
+  Manifold r = manifold_refine(&m, 2);
+  ASSERT_EQ(manifold_num_tri(&r), tri1 * 4);
+  // Volume should be approximately the same (vertices stay on flat faces)
+  ASSERT_NEAR(manifold_volume(&r), vol1, 0.5);
+
+  manifold_quality_reset();
+  manifold_destroy(&m);
+  manifold_destroy(&r);
+}
+
 // ============== Main ==============
 
 int main(void) {
@@ -2239,7 +2274,9 @@ int main(void) {
   RUN_TEST(scale_topology);
   RUN_TEST(hull_random_points);
   RUN_TEST(cylinder_properties);
+  RUN_TEST(refine);
+  RUN_TEST(refine_sphere);
 
-  printf("\n=== All %d tests passed! ===\n", 119);
+  printf("\n=== All %d tests passed! ===\n", 121);
   return 0;
 }
