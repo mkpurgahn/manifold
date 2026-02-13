@@ -180,6 +180,35 @@ static inline int ivec3_get(ManifoldIVec3 v, int i) {
   return i == 0 ? v.x : (i == 1 ? v.y : v.z);
 }
 
+static inline int ivec4_get(ManifoldIVec4 v, int i) {
+  switch (i) {
+    case 0: return v.x;
+    case 1: return v.y;
+    case 2: return v.z;
+    case 3: return v.w;
+    default: return 0;
+  }
+}
+
+static inline ManifoldIVec4 ivec4_set(ManifoldIVec4 v, int i, int val) {
+  switch (i) {
+    case 0: v.x = val; break;
+    case 1: v.y = val; break;
+    case 2: v.z = val; break;
+    case 3: v.w = val; break;
+  }
+  return v;
+}
+
+static inline ManifoldIVec3 ivec3_set(ManifoldIVec3 v, int i, int val) {
+  switch (i) {
+    case 0: v.x = val; break;
+    case 1: v.y = val; break;
+    case 2: v.z = val; break;
+  }
+  return v;
+}
+
 // ============== Vec3 ↔ Vec4 conversions ==============
 
 static inline ManifoldVec4 vec3_to_vec4(ManifoldVec3 v, double w) {
@@ -508,6 +537,102 @@ static inline double manifold_cosd(double x) {
 static inline ManifoldVec3 manifold_safe_normalize(ManifoldVec3 v) {
   v = vec3_normalize(v);
   return isfinite(v.x) ? v : manifold_vec3(0.0, 0.0, 0.0);
+}
+
+// Lerp functions
+static inline double double_lerp(double a, double b, double t) {
+  return a + t * (b - a);
+}
+
+static inline ManifoldVec3 vec3_lerp(ManifoldVec3 a, ManifoldVec3 b, double t) {
+  return vec3_add(vec3_scale(a, 1.0 - t), vec3_scale(b, t));
+}
+
+static inline ManifoldVec4 vec4_lerp(ManifoldVec4 a, ManifoldVec4 b, double t) {
+  return vec4_add(vec4_scale(a, 1.0 - t), vec4_scale(b, t));
+}
+
+// Quaternion operations (vec4: x,y,z,w where w is scalar)
+typedef ManifoldVec4 ManifoldQuat;
+
+static inline ManifoldQuat quat_conj(ManifoldQuat q) {
+  return manifold_vec4(-q.x, -q.y, -q.z, q.w);
+}
+
+static inline ManifoldQuat quat_mul(ManifoldQuat a, ManifoldQuat b) {
+  return manifold_vec4(
+      a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
+      a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
+      a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,
+      a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z);
+}
+
+static inline ManifoldVec3 quat_rotate(ManifoldQuat q, ManifoldVec3 v) {
+  ManifoldQuat p = manifold_vec4(v.x, v.y, v.z, 0);
+  ManifoldQuat r = quat_mul(quat_mul(q, p), quat_conj(q));
+  return manifold_vec3(r.x, r.y, r.z);
+}
+
+// Construct quaternion from rotation matrix (3x3 columns)
+static inline ManifoldQuat quat_from_mat3(ManifoldMat3 m) {
+  // Shepperd's method
+  double tr = m.cols[0].x + m.cols[1].y + m.cols[2].z;
+  ManifoldQuat q;
+  if (tr > 0) {
+    double s = sqrt(tr + 1.0) * 2;
+    q.w = 0.25 * s;
+    q.x = (m.cols[1].z - m.cols[2].y) / s;
+    q.y = (m.cols[2].x - m.cols[0].z) / s;
+    q.z = (m.cols[0].y - m.cols[1].x) / s;
+  } else if (m.cols[0].x > m.cols[1].y && m.cols[0].x > m.cols[2].z) {
+    double s = sqrt(1.0 + m.cols[0].x - m.cols[1].y - m.cols[2].z) * 2;
+    q.w = (m.cols[1].z - m.cols[2].y) / s;
+    q.x = 0.25 * s;
+    q.y = (m.cols[1].x + m.cols[0].y) / s;
+    q.z = (m.cols[2].x + m.cols[0].z) / s;
+  } else if (m.cols[1].y > m.cols[2].z) {
+    double s = sqrt(1.0 + m.cols[1].y - m.cols[0].x - m.cols[2].z) * 2;
+    q.w = (m.cols[2].x - m.cols[0].z) / s;
+    q.x = (m.cols[1].x + m.cols[0].y) / s;
+    q.y = 0.25 * s;
+    q.z = (m.cols[2].y + m.cols[1].z) / s;
+  } else {
+    double s = sqrt(1.0 + m.cols[2].z - m.cols[0].x - m.cols[1].y) * 2;
+    q.w = (m.cols[0].y - m.cols[1].x) / s;
+    q.x = (m.cols[2].x + m.cols[0].z) / s;
+    q.y = (m.cols[2].y + m.cols[1].z) / s;
+    q.z = 0.25 * s;
+  }
+  return vec4_normalize(q);
+}
+
+// Get X direction from quaternion
+static inline ManifoldVec3 quat_xdir(ManifoldQuat q) {
+  return quat_rotate(q, manifold_vec3(1, 0, 0));
+}
+
+// Construct rotation quaternion from (unit axis, unit target)
+static inline ManifoldQuat quat_rotation(ManifoldVec3 from, ManifoldVec3 to) {
+  ManifoldVec3 axis = vec3_cross(from, to);
+  double d = vec3_dot(from, to);
+  if (d >= 1.0) return manifold_vec4(0, 0, 0, 1);
+  if (d <= -1.0) {
+    // 180-degree rotation about any perpendicular axis
+    ManifoldVec3 perp = (fabs(from.x) < 0.9)
+                            ? vec3_cross(from, manifold_vec3(1, 0, 0))
+                            : vec3_cross(from, manifold_vec3(0, 1, 0));
+    perp = vec3_normalize(perp);
+    return manifold_vec4(perp.x, perp.y, perp.z, 0);
+  }
+  double s = sqrt((1.0 + d) * 2.0);
+  return vec4_normalize(manifold_vec4(axis.x / s, axis.y / s, axis.z / s, s / 2.0));
+}
+
+// Rotation quaternion from axis and angle
+static inline ManifoldQuat quat_from_axis_angle(ManifoldVec3 axis, double angle) {
+  double ha = angle * 0.5;
+  double s = sin(ha);
+  return manifold_vec4(axis.x * s, axis.y * s, axis.z * s, cos(ha));
 }
 
 static inline double manifold_max_epsilon(double minEpsilon, ManifoldBox bBox) {

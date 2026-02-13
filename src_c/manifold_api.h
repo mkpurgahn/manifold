@@ -156,6 +156,17 @@ Manifold manifold_refine(const Manifold *m, int n);
 // Refine until all edges are roughly the given length
 Manifold manifold_refine_to_length(const Manifold *m, double length);
 
+// ---------- Smoothing ----------
+// Smooth by calculating tangents from vertex normal properties
+Manifold manifold_smooth_by_normals(const Manifold *m, int normalIdx);
+// Smooth by calculating tangents from geometry
+Manifold manifold_smooth_out(const Manifold *m, double minSharpAngle,
+                              double minSmoothness);
+// Construct smooth manifold from mesh (static constructor equivalent)
+Manifold manifold_smooth(const Manifold *m,
+                          const ManifoldSmoothness *sharpenedEdges,
+                          int numSharpened);
+
 // ---------- Minkowski ----------
 Manifold manifold_minkowski_sum(const Manifold *a, const Manifold *b);
 Manifold manifold_minkowski_difference(const Manifold *a, const Manifold *b);

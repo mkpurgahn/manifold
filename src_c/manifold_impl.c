@@ -484,6 +484,7 @@ void manifold_impl_create_halfedges(ManifoldImpl *impl,
   size_t numTri = triProp->len;
   size_t numHalfedge = numTri * 3;
 
+  vec_halfedge_free(&impl->halfedge);
   impl->halfedge = vec_halfedge_create_n(numHalfedge);
 
   // For each triangle, create 3 halfedges

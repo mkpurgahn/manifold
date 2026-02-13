@@ -200,4 +200,30 @@ void manifold_impl_level_set(ManifoldImpl *impl,
                               double level,
                               double tolerance);
 
+// smoothing.c / subdivision.c equivalents
+typedef int (*ManifoldEdgeDivisionsFn)(ManifoldVec3 edgeVec, ManifoldVec4 tangent0,
+                                       ManifoldVec4 tangent1, void *ctx);
+bool manifold_impl_is_inside_quad(const ManifoldImpl *impl, int halfedge);
+bool manifold_impl_is_marked_inside_quad(const ManifoldImpl *impl, int halfedge);
+int manifold_impl_get_neighbor(const ManifoldImpl *impl, int tri);
+ManifoldIVec4 manifold_impl_get_halfedges(const ManifoldImpl *impl, int tri);
+ManifoldBaryIndices manifold_impl_get_indices(const ManifoldImpl *impl, int halfedge);
+ManifoldVecBarycentric manifold_impl_subdivide(ManifoldImpl *impl,
+    ManifoldEdgeDivisionsFn edgeDivisions, void *ctx, bool keepInterior);
+void manifold_impl_refine(ManifoldImpl *impl, ManifoldEdgeDivisionsFn edgeDivisions,
+                           void *ctx, bool keepInterior);
+ManifoldVec3 manifold_impl_get_normal(const ManifoldImpl *impl, int halfedge,
+                                       int normalIdx);
+ManifoldVec4 manifold_impl_tangent_from_normal(const ManifoldImpl *impl,
+                                                ManifoldVec3 normal, int halfedge);
+ManifoldVecSmoothness manifold_impl_sharpen_edges(const ManifoldImpl *impl,
+    double minSharpAngle, double minSmoothness);
+void manifold_impl_set_normals_smooth(ManifoldImpl *impl, int normalIdx,
+                                       double minSharpAngle);
+void manifold_impl_create_tangents_normals(ManifoldImpl *impl, int normalIdx);
+void manifold_impl_create_tangents_smooth(ManifoldImpl *impl,
+    const ManifoldSmoothness *sharpenedEdges, int numSharpened);
+ManifoldVecSmoothness manifold_impl_update_sharpened_edges(
+    const ManifoldImpl *impl, const ManifoldSmoothness *edges, int numEdges);
+
 #endif // MANIFOLD_IMPL_H

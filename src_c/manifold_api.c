@@ -690,23 +690,32 @@ int manifold_num_degenerate_tris(const Manifold *m) {
   return count;
 }
 
+static int refine_tol_cb(ManifoldVec3 edge, ManifoldVec4 t0, ManifoldVec4 t1, void *ctx) {
+  double tolerance = *((double *)ctx);
+  ManifoldVec3 edgeNorm = manifold_safe_normalize(edge);
+  ManifoldVec3 tStart = vec4_to_vec3(t0);
+  ManifoldVec3 tEnd = vec4_to_vec3(t1);
+  ManifoldVec3 start = vec3_sub(tStart, vec3_scale(edgeNorm, vec3_dot(edgeNorm, tStart)));
+  ManifoldVec3 end = vec3_sub(tEnd, vec3_scale(edgeNorm, vec3_dot(edgeNorm, tEnd)));
+  double d = 0.5 * (vec3_length(start) + vec3_length(end)) +
+             vec3_length(vec3_sub(start, end));
+  return (int)sqrt(3.0 * d / (4.0 * tolerance));
+}
+
 Manifold manifold_refine_to_tolerance(const Manifold *m, double tolerance) {
-  // Find the longest edge, refine until max edge < tolerance
-  Manifold result;
-  manifold_copy(&result, m);
-  double maxEdge = 0;
-  for (size_t i = 0; i < result.impl.halfedge.len; i++) {
-    ManifoldHalfedge he = result.impl.halfedge.data[i];
-    ManifoldVec3 a = result.impl.vertPos.data[he.startVert];
-    ManifoldVec3 b = result.impl.vertPos.data[he.endVert];
-    double len = vec3_length(vec3_sub(b, a));
-    if (len > maxEdge) maxEdge = len;
+  tolerance = fabs(tolerance);
+  if (tolerance <= 0 || manifold_is_empty(m)) {
+    Manifold out;
+    manifold_copy(&out, m);
+    return out;
   }
-  if (maxEdge <= tolerance || tolerance <= 0) return result;
-  int n = (int)ceil(maxEdge / tolerance);
-  if (n < 2) n = 2;
-  manifold_destroy(&result);
-  return manifold_refine(m, n);
+
+  Manifold out;
+  manifold_copy(&out, m);
+  if (out.impl.halfedgeTangent.len > 0) {
+    manifold_impl_refine(&out.impl, refine_tol_cb, &tolerance, true);
+  }
+  return out;
 }
 
 Manifold manifold_mirror(const Manifold *m, ManifoldVec3 normal) {
@@ -909,6 +918,11 @@ Manifold manifold_set_tolerance(const Manifold *m, double tolerance) {
   return out;
 }
 
+static int refine_n_cb(ManifoldVec3 e, ManifoldVec4 t0, ManifoldVec4 t1, void *ctx) {
+  (void)e; (void)t0; (void)t1;
+  return *((int *)ctx) - 1;
+}
+
 Manifold manifold_refine(const Manifold *m, int n) {
   if (n < 2 || manifold_is_empty(m)) {
     Manifold out;
@@ -916,93 +930,17 @@ Manifold manifold_refine(const Manifold *m, int n) {
     return out;
   }
 
-  const ManifoldImpl *src = &m->impl;
-  size_t origTri = manifold_impl_num_tri(src);
-  size_t origVert = manifold_impl_num_vert(src);
-
-  if (n != 2) {
-    // For n>2, apply n=2 repeatedly
-    Manifold cur;
-    manifold_copy(&cur, m);
-    int remaining = n;
-    while (remaining >= 2) {
-      Manifold next = manifold_refine(&cur, 2);
-      manifold_destroy(&cur);
-      cur = next;
-      remaining /= 2;
-    }
-    return cur;
-  }
-
-  // n=2: split each edge at midpoint, each triangle becomes 4
-  size_t numEdge = src->halfedge.len;
-
-  int *edgeMidVert = (int *)malloc(numEdge * sizeof(int));
-  for (size_t i = 0; i < numEdge; i++) edgeMidVert[i] = -1;
-
-  ManifoldVecVec3 newVerts = MANIFOLD_VEC_INIT;
-  for (size_t i = 0; i < origVert; i++)
-    vec_vec3_push(&newVerts, src->vertPos.data[i]);
-
-  ManifoldVecIVec3 newTris = MANIFOLD_VEC_INIT;
-
-  for (size_t tri = 0; tri < origTri; tri++) {
-    int e0 = (int)(tri * 3);
-    int e1 = (int)(tri * 3 + 1);
-    int e2 = (int)(tri * 3 + 2);
-
-    int v0 = src->halfedge.data[e0].startVert;
-    int v1 = src->halfedge.data[e1].startVert;
-    int v2 = src->halfedge.data[e2].startVert;
-
-    int mid[3];
-    int edges[3] = {e0, e1, e2};
-    for (int j = 0; j < 3; j++) {
-      int edge = edges[j];
-      int paired = src->halfedge.data[edge].pairedHalfedge;
-      if (paired >= 0 && edgeMidVert[paired] >= 0) {
-        mid[j] = edgeMidVert[paired];
-      } else if (edgeMidVert[edge] >= 0) {
-        mid[j] = edgeMidVert[edge];
-      } else {
-        int sv = src->halfedge.data[edge].startVert;
-        int ev = src->halfedge.data[edge].endVert;
-        ManifoldVec3 midPt = vec3_scale(
-            vec3_add(src->vertPos.data[sv], src->vertPos.data[ev]), 0.5);
-        mid[j] = (int)newVerts.len;
-        vec_vec3_push(&newVerts, midPt);
-        edgeMidVert[edge] = mid[j];
-      }
-    }
-
-    vec_ivec3_push(&newTris, manifold_ivec3(v0, mid[0], mid[2]));
-    vec_ivec3_push(&newTris, manifold_ivec3(mid[0], v1, mid[1]));
-    vec_ivec3_push(&newTris, manifold_ivec3(mid[2], mid[1], v2));
-    vec_ivec3_push(&newTris, manifold_ivec3(mid[0], mid[1], mid[2]));
-  }
-
-  free(edgeMidVert);
-
   Manifold out;
-  manifold_impl_init(&out.impl);
-  out.impl.vertPos = newVerts;
-
-  ManifoldVecIVec3 triProp = MANIFOLD_VEC_INIT;
-  for (size_t i = 0; i < newTris.len; i++)
-    vec_ivec3_push(&triProp, newTris.data[i]);
-
-  manifold_impl_create_halfedges(&out.impl, &triProp, &newTris);
-  vec_ivec3_free(&newTris);
-  vec_ivec3_free(&triProp);
-
-  manifold_impl_calculate_bbox(&out.impl);
-  manifold_impl_set_epsilon(&out.impl, -1, false);
-  out.impl.tolerance = out.impl.epsilon;
-  manifold_impl_set_normals_and_coplanar(&out.impl);
-  manifold_impl_initialize_original(&out.impl);
-  manifold_impl_sort_geometry(&out.impl);
-
+  manifold_copy(&out, m);
+  int nMinus1 = n;
+  manifold_impl_refine(&out.impl, refine_n_cb, &nMinus1, false);
   return out;
+}
+
+static int refine_length_cb(ManifoldVec3 edge, ManifoldVec4 t0, ManifoldVec4 t1, void *ctx) {
+  (void)t0; (void)t1;
+  double length = *((double *)ctx);
+  return (int)(vec3_length(edge) / length);
 }
 
 Manifold manifold_refine_to_length(const Manifold *m, double length) {
@@ -1013,26 +951,87 @@ Manifold manifold_refine_to_length(const Manifold *m, double length) {
   }
   length = fabs(length);
 
-  const ManifoldImpl *src = &m->impl;
-  size_t numEdge = src->halfedge.len;
+  Manifold out;
+  manifold_copy(&out, m);
+  manifold_impl_refine(&out.impl, refine_length_cb, &length, false);
+  return out;
+}
 
-  // Find maximum edge length to determine required refinement level
-  double maxLen = 0;
-  for (size_t e = 0; e < numEdge; e++) {
-    ManifoldHalfedge he = src->halfedge.data[e];
-    if (!manifold_halfedge_is_forward(&he)) continue;
-    ManifoldVec3 edgeVec = vec3_sub(src->vertPos.data[he.endVert],
-                                     src->vertPos.data[he.startVert]);
-    double len = vec3_length(edgeVec);
-    if (len > maxLen) maxLen = len;
+Manifold manifold_smooth_by_normals(const Manifold *m, int normalIdx) {
+  Manifold out;
+  manifold_copy(&out, m);
+  if (!manifold_is_empty(&out)) {
+    manifold_impl_create_tangents_normals(&out.impl, normalIdx);
   }
+  return out;
+}
 
-  int n = (int)(maxLen / length) + 1;
-  if (n < 2) n = 2;
-  // Cap at reasonable refinement
-  if (n > 100) n = 100;
+Manifold manifold_smooth_out(const Manifold *m, double minSharpAngle,
+                              double minSmoothness) {
+  Manifold out;
+  manifold_copy(&out, m);
+  if (!manifold_is_empty(&out)) {
+    if (minSmoothness == 0) {
+      int numProp = out.impl.numProp;
+      ManifoldVecDouble savedProps = MANIFOLD_VEC_INIT;
+      if (out.impl.properties.len > 0) {
+        vec_double_resize(&savedProps, out.impl.properties.len);
+        memcpy(savedProps.data, out.impl.properties.data,
+               out.impl.properties.len * sizeof(double));
+      }
+      ManifoldVecHalfedge savedHE = MANIFOLD_VEC_INIT;
+      vec_halfedge_resize(&savedHE, out.impl.halfedge.len);
+      memcpy(savedHE.data, out.impl.halfedge.data,
+             out.impl.halfedge.len * sizeof(ManifoldHalfedge));
 
-  return manifold_refine(m, n);
+      manifold_impl_set_normals_smooth(&out.impl, 0, minSharpAngle);
+      manifold_impl_create_tangents_normals(&out.impl, 0);
+
+      // Restore original properties and halfedge propVerts
+      out.impl.numProp = numProp;
+      vec_double_free(&out.impl.properties);
+      out.impl.properties = savedProps;
+      vec_halfedge_free(&out.impl.halfedge);
+      out.impl.halfedge = savedHE;
+    } else {
+      ManifoldVecSmoothness sharp = manifold_impl_sharpen_edges(&out.impl,
+          minSharpAngle, minSmoothness);
+      manifold_impl_create_tangents_smooth(&out.impl,
+          sharp.data, (int)sharp.len);
+      vec_smooth_free(&sharp);
+    }
+  }
+  return out;
+}
+
+Manifold manifold_smooth(const Manifold *m,
+                          const ManifoldSmoothness *sharpenedEdges,
+                          int numSharpened) {
+  Manifold out;
+  manifold_copy(&out, m);
+  if (!manifold_is_empty(&out)) {
+    // Add faceID mapping for UpdateSharpenedEdges
+    size_t numTri = manifold_impl_num_tri(&out.impl);
+    for (size_t i = 0; i < numTri; i++) {
+      out.impl.meshRelation.triRef.data[i].faceID = (int)i;
+    }
+    // Re-create from mesh to get proper sorting
+    // Then create tangents with mapped sharpened edges
+    if (numSharpened > 0 && sharpenedEdges != NULL) {
+      ManifoldVecSmoothness updated = manifold_impl_update_sharpened_edges(
+          &out.impl, sharpenedEdges, numSharpened);
+      manifold_impl_create_tangents_smooth(&out.impl,
+          updated.data, (int)updated.len);
+      vec_smooth_free(&updated);
+    } else {
+      manifold_impl_create_tangents_smooth(&out.impl, NULL, 0);
+    }
+    // Restore faceID
+    for (size_t i = 0; i < numTri; i++) {
+      out.impl.meshRelation.triRef.data[i].faceID = -1;
+    }
+  }
+  return out;
 }
 
 bool manifold_is_convex(const Manifold *m) {
