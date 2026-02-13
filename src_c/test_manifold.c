@@ -2499,6 +2499,86 @@ static void test_get_mesh_data(void) {
   manifold_destroy(&m);
 }
 
+// ---------- Edge case tests ----------
+
+static void test_zero_size_cube(void) {
+  Manifold m = manifold_cube(manifold_vec3(0, 0, 0), false);
+  ASSERT_TRUE(manifold_is_empty(&m));
+  manifold_destroy(&m);
+}
+
+static void test_tiny_cube(void) {
+  Manifold m = manifold_cube(manifold_vec3(1e-10, 1e-10, 1e-10), false);
+  ASSERT_TRUE(!manifold_is_empty(&m));
+  ASSERT_NEAR(manifold_volume(&m), 1e-30, 1e-28);
+  manifold_destroy(&m);
+}
+
+static void test_boolean_contained(void) {
+  // Small cube fully inside big cube
+  Manifold big = manifold_cube(manifold_vec3(4, 4, 4), true);
+  Manifold small_base = manifold_cube(manifold_vec3(1, 1, 1), true);
+
+  Manifold d = manifold_difference(&big, &small_base);
+  ASSERT_TRUE(!manifold_is_empty(&d));
+  // 64 - 1 = 63
+  ASSERT_NEAR(manifold_volume(&d), 63.0, 0.5);
+
+  Manifold i = manifold_intersection(&big, &small_base);
+  ASSERT_NEAR(manifold_volume(&i), 1.0, 0.05);
+
+  manifold_destroy(&big);
+  manifold_destroy(&small_base);
+  manifold_destroy(&d);
+  manifold_destroy(&i);
+}
+
+static void test_split_symmetric(void) {
+  Manifold c = manifold_cube(manifold_vec3(2, 2, 2), true);
+  Manifold first, second;
+  manifold_split_by_plane(&c, manifold_vec3(0, 0, 1), 0, &first, &second);
+
+  // Each half should be ~4
+  double v1 = manifold_volume(&first);
+  double v2 = manifold_volume(&second);
+  ASSERT_NEAR(v1, 4.0, 0.5);
+  ASSERT_NEAR(v2, 4.0, 0.5);
+  ASSERT_NEAR(v1 + v2, 8.0, 0.5);
+
+  manifold_destroy(&c);
+  manifold_destroy(&first);
+  manifold_destroy(&second);
+}
+
+static void test_from_mesh_degenerate(void) {
+  // Create a mesh with zero vertices - should create empty manifold
+  Manifold m = manifold_from_mesh(NULL, 0, NULL, 0);
+  ASSERT_TRUE(manifold_is_empty(&m));
+  manifold_destroy(&m);
+}
+
+static void test_transform_identity(void) {
+  Manifold c = manifold_cube(manifold_vec3(1, 1, 1), false);
+
+  // Identity transform
+  ManifoldMat3x4 ident = {0};
+  ident.cols[0] = manifold_vec3(1, 0, 0);
+  ident.cols[1] = manifold_vec3(0, 1, 0);
+  ident.cols[2] = manifold_vec3(0, 0, 1);
+  ident.cols[3] = manifold_vec3(0, 0, 0);
+
+  Manifold t = manifold_transform(&c, ident);
+  ASSERT_NEAR(manifold_volume(&t), 1.0, 0.01);
+
+  ManifoldBox bb1 = manifold_bounding_box(&c);
+  ManifoldBox bb2 = manifold_bounding_box(&t);
+  ASSERT_NEAR(bb1.min.x, bb2.min.x, 0.01);
+  ASSERT_NEAR(bb1.max.x, bb2.max.x, 0.01);
+
+  manifold_destroy(&c);
+  manifold_destroy(&t);
+}
+
 // ============== Main ==============
 
 int main(void) {
@@ -2709,6 +2789,14 @@ int main(void) {
   RUN_TEST(curvature_scaled);
   RUN_TEST(get_mesh_data);
 
-  printf("\n=== All %d tests passed! ===\n", 147);
+  printf("\nEdge Cases:\n");
+  RUN_TEST(zero_size_cube);
+  RUN_TEST(tiny_cube);
+  RUN_TEST(boolean_contained);
+  RUN_TEST(split_symmetric);
+  RUN_TEST(from_mesh_degenerate);
+  RUN_TEST(transform_identity);
+
+  printf("\n=== All %d tests passed! ===\n", 153);
   return 0;
 }
