@@ -328,9 +328,10 @@ static void test_sdf_sphere(void) {
   ASSERT_TRUE(manifold_num_tri(&m) > 0);
 
   // Volume of sphere = 4/3 * pi * r^3 ≈ 4.189
-  // Marching cubes with partial tri table gives approximate result
-  double vol = fabs(manifold_volume(&m));
-  ASSERT_TRUE(vol > 0.5);  // should produce non-trivial geometry
+  // Marching cubes gives approximate result
+  double vol = manifold_volume(&m);
+  ASSERT_TRUE(vol > 3.0);   // should be close to 4.189
+  ASSERT_TRUE(vol < 5.5);
 
   manifold_destroy(&m);
 }
@@ -388,6 +389,86 @@ static void test_rotate(void) {
   manifold_destroy(&r);
 }
 
+// ============== Boolean Tests ==============
+
+static void test_boolean_union_non_overlapping(void) {
+  // Two cubes that don't overlap
+  Manifold a = manifold_cube(manifold_vec3(1, 1, 1), false);
+  Manifold b_base = manifold_cube(manifold_vec3(1, 1, 1), false);
+  Manifold b = manifold_translate(&b_base, manifold_vec3(3, 0, 0));
+
+  Manifold u = manifold_union(&a, &b);
+
+  ASSERT_EQ(manifold_status(&u), MANIFOLD_ERROR_NO_ERROR);
+  ASSERT_TRUE(!manifold_is_empty(&u));
+  // Non-overlapping union should have combined vertices and tris
+  ASSERT_EQ(manifold_num_vert(&u), manifold_num_vert(&a) + manifold_num_vert(&b));
+  ASSERT_EQ(manifold_num_tri(&u), manifold_num_tri(&a) + manifold_num_tri(&b));
+  // Volume should be sum of both cubes
+  ASSERT_NEAR(manifold_volume(&u), 2.0, 0.01);
+
+  manifold_destroy(&a);
+  manifold_destroy(&b_base);
+  manifold_destroy(&b);
+  manifold_destroy(&u);
+}
+
+static void test_boolean_empty(void) {
+  Manifold a = manifold_cube(manifold_vec3(1, 1, 1), false);
+  Manifold empty;
+  manifold_create(&empty);
+
+  // Union with empty
+  Manifold u = manifold_union(&a, &empty);
+  ASSERT_EQ(manifold_num_vert(&u), manifold_num_vert(&a));
+  ASSERT_NEAR(manifold_volume(&u), 1.0, 0.01);
+
+  // Intersect with empty
+  Manifold inter = manifold_intersection(&a, &empty);
+  ASSERT_TRUE(manifold_is_empty(&inter));
+
+  manifold_destroy(&a);
+  manifold_destroy(&empty);
+  manifold_destroy(&u);
+  manifold_destroy(&inter);
+}
+
+static void test_boolean_subtract_non_overlapping(void) {
+  // Two cubes that don't overlap - subtraction should return the first
+  Manifold a = manifold_cube(manifold_vec3(1, 1, 1), false);
+  Manifold b_base = manifold_cube(manifold_vec3(1, 1, 1), false);
+  Manifold b = manifold_translate(&b_base, manifold_vec3(5, 0, 0));
+
+  Manifold d = manifold_difference(&a, &b);
+
+  ASSERT_EQ(manifold_status(&d), MANIFOLD_ERROR_NO_ERROR);
+  ASSERT_TRUE(!manifold_is_empty(&d));
+  ASSERT_EQ(manifold_num_vert(&d), manifold_num_vert(&a));
+  ASSERT_NEAR(manifold_volume(&d), 1.0, 0.01);
+
+  manifold_destroy(&a);
+  manifold_destroy(&b_base);
+  manifold_destroy(&b);
+  manifold_destroy(&d);
+}
+
+static void test_boolean_intersect_non_overlapping(void) {
+  // Two cubes that don't overlap - intersection should be empty
+  Manifold a = manifold_cube(manifold_vec3(1, 1, 1), false);
+  Manifold b_base = manifold_cube(manifold_vec3(1, 1, 1), false);
+  Manifold b = manifold_translate(&b_base, manifold_vec3(5, 0, 0));
+
+  Manifold inter = manifold_intersection(&a, &b);
+
+  ASSERT_EQ(manifold_status(&inter), MANIFOLD_ERROR_NO_ERROR);
+  ASSERT_TRUE(manifold_is_empty(&inter));
+
+  manifold_destroy(&a);
+  manifold_destroy(&b_base);
+  manifold_destroy(&b);
+  manifold_destroy(&inter);
+}
+
 // ============== Main ==============
 
 int main(void) {
@@ -437,6 +518,12 @@ int main(void) {
   RUN_TEST(copy);
   RUN_TEST(rotate);
 
-  printf("\n=== All %d tests passed! ===\n", 23);
+  printf("\nBoolean Operations:\n");
+  RUN_TEST(boolean_union_non_overlapping);
+  RUN_TEST(boolean_empty);
+  RUN_TEST(boolean_subtract_non_overlapping);
+  RUN_TEST(boolean_intersect_non_overlapping);
+
+  printf("\n=== All %d tests passed! ===\n", 27);
   return 0;
 }

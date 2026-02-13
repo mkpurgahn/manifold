@@ -2,7 +2,7 @@ CC = cc
 CFLAGS = -std=c11 -Wall -Wextra -Wpedantic -I src_c/ -O2
 LDFLAGS = -lm
 
-SRCS = src_c/manifold_impl.c src_c/manifold_constructors.c src_c/manifold_properties.c src_c/manifold_api.c src_c/manifold_sdf.c
+SRCS = src_c/manifold_impl.c src_c/manifold_constructors.c src_c/manifold_properties.c src_c/manifold_api.c src_c/manifold_sdf.c src_c/manifold_boolean.c
 OBJS = $(SRCS:.c=.o)
 
 TEST_SRCS = src_c/test_manifold.c

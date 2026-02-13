@@ -4,6 +4,7 @@
 // Public API implementation for the C11 Manifold port.
 
 #include "manifold_api.h"
+#include "manifold_boolean.h"
 #include <string.h>
 
 // Quality settings (global)
@@ -145,15 +146,11 @@ Manifold manifold_transform(const Manifold *m, ManifoldMat3x4 t) {
   return out;
 }
 
-// Boolean operations - stub implementation
-// Full boolean implementation requires boolean3.c and boolean_result.c
+// Boolean operations
 Manifold manifold_boolean(const Manifold *a, const Manifold *b,
                           ManifoldOpType op) {
-  (void)op;
-  // TODO: implement boolean operations
   Manifold result;
-  manifold_copy(&result, a);
-  (void)b;
+  manifold_boolean_op(&result.impl, &a->impl, &b->impl, op);
   return result;
 }
 
