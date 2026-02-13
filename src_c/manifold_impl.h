@@ -174,6 +174,9 @@ void manifold_impl_calculate_normals(ManifoldImpl *impl, int normalIdx,
 // Convexity check
 bool manifold_impl_is_convex(const ManifoldImpl *impl);
 
+// Triangle-triangle distance (for testing)
+double distance_tri_tri_squared(ManifoldVec3 p[3], ManifoldVec3 q[3]);
+
 // constructors.cpp equivalents
 void manifold_impl_tetrahedron(ManifoldImpl *impl);
 void manifold_impl_cube(ManifoldImpl *impl, ManifoldMat3x4 transform);

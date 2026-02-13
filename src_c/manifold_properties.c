@@ -383,7 +383,7 @@ static void edge_edge_dist(ManifoldVec3 *x, ManifoldVec3 *y,
   *y = vec3_add(q, vec3_scale(b, u));
 }
 
-static double distance_tri_tri_squared(ManifoldVec3 p[3], ManifoldVec3 q[3]) {
+double distance_tri_tri_squared(ManifoldVec3 p[3], ManifoldVec3 q[3]) {
   ManifoldVec3 Sv[3], Tv[3];
   Sv[0] = vec3_sub(p[1], p[0]);
   Sv[1] = vec3_sub(p[2], p[1]);

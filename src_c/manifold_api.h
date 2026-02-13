@@ -179,4 +179,18 @@ void manifold_get_mesh(const Manifold *m,
 // Free mesh data returned by manifold_get_mesh
 void manifold_free_mesh(float *vertProps, int *triVerts);
 
+// ---------- MeshGL-style Input ----------
+// Flat mesh representation for import/export
+typedef struct ManifoldMeshGL {
+  int numProp;          // properties per vertex (>= 3 for xyz)
+  double *vertProperties; // flat: numProp * vertLen doubles
+  size_t vertLen;       // number of vertices
+  int *triVerts;        // flat: 3 * triLen ints (vertex indices)
+  size_t triLen;        // number of triangles
+  double tolerance;
+} ManifoldMeshGL;
+
+// Create a manifold from a MeshGL-style flat structure
+Manifold manifold_from_meshgl(const ManifoldMeshGL *mesh);
+
 #endif // MANIFOLD_API_H

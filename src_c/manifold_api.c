@@ -146,6 +146,40 @@ Manifold manifold_scale(const Manifold *m, ManifoldVec3 v) {
   for (size_t i = 0; i < out.impl.vertPos.len; i++) {
     out.impl.vertPos.data[i] = vec3_mul(out.impl.vertPos.data[i], v);
   }
+  // Negative determinant means we need to flip triangle winding
+  if (v.x * v.y * v.z < 0) {
+    size_t numTri = out.impl.halfedge.len / 3;
+    for (size_t tri = 0; tri < numTri; tri++) {
+      // Swap halfedges 0 and 2 within the triangle
+      ManifoldHalfedge tmp = out.impl.halfedge.data[3 * tri];
+      out.impl.halfedge.data[3 * tri] = out.impl.halfedge.data[3 * tri + 2];
+      out.impl.halfedge.data[3 * tri + 2] = tmp;
+      // Swap startVert/endVert and fix pairedHalfedge indices
+      for (int i = 0; i < 3; i++) {
+        ManifoldHalfedge *he = &out.impl.halfedge.data[3 * tri + i];
+        int sv = he->startVert;
+        he->startVert = he->endVert;
+        he->endVert = sv;
+        // FlipHalfedge: remap index within its triangle
+        if (he->pairedHalfedge >= 0) {
+          int pTri = he->pairedHalfedge / 3;
+          int pVert = 2 - (he->pairedHalfedge - 3 * pTri);
+          he->pairedHalfedge = 3 * pTri + pVert;
+        }
+      }
+    }
+  }
+  // Transform normals with sign flips
+  ManifoldVec3 signV = manifold_vec3(v.x < 0 ? -1 : 1, v.y < 0 ? -1 : 1,
+                                     v.z < 0 ? -1 : 1);
+  for (size_t i = 0; i < out.impl.faceNormal.len; i++) {
+    out.impl.faceNormal.data[i] = vec3_normalize(
+        vec3_mul(out.impl.faceNormal.data[i], signV));
+  }
+  for (size_t i = 0; i < out.impl.vertNormal.len; i++) {
+    out.impl.vertNormal.data[i] = vec3_normalize(
+        vec3_mul(out.impl.vertNormal.data[i], signV));
+  }
   manifold_impl_calculate_bbox(&out.impl);
   manifold_impl_set_epsilon(&out.impl, -1, false);
   return out;
@@ -1129,5 +1163,47 @@ Manifold manifold_calculate_normals(const Manifold *m, int normalIdx,
   Manifold result;
   manifold_copy(&result, m);
   manifold_impl_calculate_normals(&result.impl, normalIdx, minSharpAngle);
+  return result;
+}
+
+Manifold manifold_from_meshgl(const ManifoldMeshGL *mesh) {
+  if (!mesh || mesh->vertLen == 0 || mesh->triLen == 0 || mesh->numProp < 3) {
+    Manifold m;
+    manifold_impl_init(&m.impl);
+    return m;
+  }
+  // Check for NaN vertices
+  for (size_t i = 0; i < mesh->vertLen; i++) {
+    for (int p = 0; p < 3; p++) {
+      if (isnan(mesh->vertProperties[i * mesh->numProp + p]) ||
+          isinf(mesh->vertProperties[i * mesh->numProp + p])) {
+        Manifold m;
+        manifold_impl_init(&m.impl);
+        return m;
+      }
+    }
+  }
+  // Extract positions
+  ManifoldVec3 *verts = (ManifoldVec3 *)malloc(mesh->vertLen * sizeof(ManifoldVec3));
+  for (size_t i = 0; i < mesh->vertLen; i++) {
+    verts[i].x = mesh->vertProperties[i * mesh->numProp + 0];
+    verts[i].y = mesh->vertProperties[i * mesh->numProp + 1];
+    verts[i].z = mesh->vertProperties[i * mesh->numProp + 2];
+  }
+  // Extract triangles
+  ManifoldIVec3 *tris = (ManifoldIVec3 *)malloc(mesh->triLen * sizeof(ManifoldIVec3));
+  for (size_t i = 0; i < mesh->triLen; i++) {
+    tris[i].x = mesh->triVerts[i * 3 + 0];
+    tris[i].y = mesh->triVerts[i * 3 + 1];
+    tris[i].z = mesh->triVerts[i * 3 + 2];
+  }
+  Manifold result = manifold_from_mesh(verts, mesh->vertLen, tris, mesh->triLen);
+  if (mesh->tolerance > 0) {
+    Manifold tol = manifold_set_tolerance(&result, mesh->tolerance);
+    manifold_destroy(&result);
+    result = tol;
+  }
+  free(verts);
+  free(tris);
   return result;
 }

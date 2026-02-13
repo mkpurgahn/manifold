@@ -3423,6 +3423,309 @@ static void test_hull_menger(void) {
   manifold_destroy(&h);
 }
 
+// ===== Extrude + Boolean Tests =====
+
+static void test_extrude_hole_boolean(void) {
+  // Extrude a diamond, then union with an offset diamond
+  ManifoldVec2 outerPoly[4] = {{0,2}, {2,0}, {4,2}, {2,4}};
+  int outerSizes[1] = {4};
+  Manifold big = manifold_extrude(outerPoly, outerSizes, 1,
+                                   1.0, 0, 0, manifold_vec2(1, 1));
+  ASSERT_TRUE(!manifold_is_empty(&big));
+
+  ManifoldVec2 innerPoly[4] = {{2,1}, {3,2}, {2,3}, {1,2}};
+  int innerSizes[1] = {4};
+  Manifold littleBase = manifold_extrude(innerPoly, innerSizes, 1,
+                                          1.0, 0, 0, manifold_vec2(1, 1));
+  Manifold little = manifold_translate(&littleBase, manifold_vec3(0, 0, 1));
+
+  Manifold joined = manifold_union(&big, &little);
+  ASSERT_TRUE(!manifold_is_empty(&joined));
+  ASSERT_TRUE(manifold_volume(&joined) > 3.0);
+
+  manifold_destroy(&big);
+  manifold_destroy(&littleBase);
+  manifold_destroy(&little);
+  manifold_destroy(&joined);
+}
+
+static void test_revolve_torus_like(void) {
+  // Revolve a small polygon offset from Y axis to make a torus-like shape
+  ManifoldVec2 polyVerts[8];
+  int sizes[1] = {8};
+  double r = 0.3;
+  double R = 1.0;
+  for (int i = 0; i < 8; i++) {
+    double angle = (double)i * 2.0 * MANIFOLD_PI / 8.0;
+    polyVerts[i] = manifold_vec2(R + r * cos(angle), r * sin(angle));
+  }
+  Manifold torus = manifold_revolve(polyVerts, sizes, 1, 16, 360.0);
+  ASSERT_TRUE(!manifold_is_empty(&torus));
+  double expected = 2.0 * MANIFOLD_PI * MANIFOLD_PI * R * r * r;
+  ASSERT_NEAR(manifold_volume(&torus), expected, 0.3);
+  ASSERT_EQ(manifold_genus(&torus), 1);
+  manifold_destroy(&torus);
+}
+
+static void test_batch_boolean_non_overlap(void) {
+  // Batch union of 3 non-overlapping cubes
+  Manifold c1 = manifold_cube(manifold_vec3(1, 1, 1), false);
+  Manifold c2base = manifold_cube(manifold_vec3(1, 1, 1), false);
+  Manifold c2 = manifold_translate(&c2base, manifold_vec3(2, 0, 0));
+  Manifold c3base = manifold_cube(manifold_vec3(1, 1, 1), false);
+  Manifold c3 = manifold_translate(&c3base, manifold_vec3(4, 0, 0));
+
+  Manifold arr[3];
+  manifold_copy(&arr[0], &c1);
+  manifold_copy(&arr[1], &c2);
+  manifold_copy(&arr[2], &c3);
+  Manifold result = manifold_batch_boolean(arr, 3, MANIFOLD_OP_ADD);
+  ASSERT_NEAR(manifold_volume(&result), 3.0, 0.01);
+
+  manifold_destroy(&c1);
+  manifold_destroy(&c2base);
+  manifold_destroy(&c2);
+  manifold_destroy(&c3base);
+  manifold_destroy(&c3);
+  for (int i = 0; i < 3; i++) manifold_destroy(&arr[i]);
+  manifold_destroy(&result);
+}
+
+static void test_tolerance_sphere(void) {
+  Manifold sphere = manifold_sphere(1.0, 64);
+  double tol = manifold_get_tolerance(&sphere);
+  ASSERT_TRUE(tol >= 0);
+  Manifold simplified = manifold_set_tolerance(&sphere, 0.05);
+  ASSERT_TRUE(!manifold_is_empty(&simplified));
+  manifold_destroy(&sphere);
+  manifold_destroy(&simplified);
+}
+
+static void test_mesh_id_unique(void) {
+  Manifold c1 = manifold_cube(manifold_vec3(1, 1, 1), false);
+  Manifold a1 = manifold_as_original(&c1);
+  Manifold c2 = manifold_cube(manifold_vec3(1, 1, 1), false);
+  Manifold a2 = manifold_as_original(&c2);
+  ASSERT_TRUE(manifold_original_id(&a1) != manifold_original_id(&a2));
+  manifold_destroy(&c1);
+  manifold_destroy(&c2);
+  manifold_destroy(&a1);
+  manifold_destroy(&a2);
+}
+
+static void test_negative_volume(void) {
+  Manifold cube = manifold_cube(manifold_vec3(1, 1, 1), false);
+  Manifold scaled = manifold_scale(&cube, manifold_vec3(-1, -1, -1));
+  ASSERT_NEAR(manifold_volume(&scaled), 1.0, 0.01);
+  manifold_destroy(&cube);
+  manifold_destroy(&scaled);
+}
+
+// ===== Triangle Distance Tests (C++ parity) =====
+
+static void test_tri_dist_edge(void) {
+  ManifoldVec3 p[3] = {{-1,0,0}, {1,0,0}, {0,1,0}};
+  ManifoldVec3 q[3] = {{-1,2,0}, {1,2,0}, {0,3,0}};
+  double d = distance_tri_tri_squared(p, q);
+  ASSERT_NEAR(d, 1.0, 1e-5);
+}
+
+static void test_tri_dist_face(void) {
+  ManifoldVec3 p[3] = {{-1,0,0}, {1,0,0}, {0,1,0}};
+  ManifoldVec3 q[3] = {{-1,2,-0.5}, {1,2,-0.5}, {0,2,1.5}};
+  double d = distance_tri_tri_squared(p, q);
+  ASSERT_NEAR(d, 1.0, 1e-5);
+}
+
+static void test_tri_dist_overlap(void) {
+  ManifoldVec3 p[3] = {{-1,0,0}, {1,0,0}, {0,1,0}};
+  ManifoldVec3 q[3] = {{-1,0,0}, {1,0.5,0}, {0,1,0}};
+  double d = distance_tri_tri_squared(p, q);
+  ASSERT_NEAR(d, 0.0, 1e-5);
+}
+
+// ===== More Boolean Tests =====
+
+static void test_boolean_tree_transforms(void) {
+  // Two offset unit cubes, non-overlapping union
+  Manifold c1 = manifold_cube(manifold_vec3(1,1,1), false);
+  Manifold a = manifold_translate(&c1, manifold_vec3(2,0,0));
+
+  Manifold c2 = manifold_cube(manifold_vec3(1,1,1), false);
+
+  Manifold result = manifold_union(&a, &c2);
+  ASSERT_NEAR(manifold_volume(&result), 2.0, 0.01);
+
+  manifold_destroy(&c1); manifold_destroy(&c2);
+  manifold_destroy(&a); manifold_destroy(&result);
+}
+
+static void test_boolean_mirrored_scale(void) {
+  // Scale with negative axis should produce valid mesh
+  Manifold cube = manifold_cube(manifold_vec3(1,1,1), false);
+  Manifold mirrored = manifold_scale(&cube, manifold_vec3(1,-1,1));
+
+  Manifold cube2 = manifold_cube(manifold_vec3(0.5,1,0.5), false);
+  Manifold small = manifold_scale(&cube2, manifold_vec3(1,-1,1));
+  Manifold result = manifold_difference(&mirrored, &small);
+
+  ASSERT_NEAR(manifold_volume(&result), 0.75, 0.02);
+  ASSERT_NEAR(manifold_surface_area(&result), 5.5, 0.2);
+
+  manifold_destroy(&cube); manifold_destroy(&mirrored);
+  manifold_destroy(&cube2); manifold_destroy(&small);
+  manifold_destroy(&result);
+}
+
+static void test_boolean_perturb_tet(void) {
+  // Subtract tet from itself -> empty
+  ManifoldVec3 verts[4] = {{0,0,0}, {0,1,0}, {1,0,0}, {0,0,1}};
+  ManifoldIVec3 tris[4] = {{2,0,1}, {0,3,1}, {2,3,0}, {3,2,1}};
+  Manifold corner = manifold_from_mesh(verts, 4, tris, 4);
+  Manifold dup;
+  manifold_copy(&dup, &corner);
+  Manifold empty = manifold_difference(&corner, &dup);
+  ASSERT_TRUE(manifold_is_empty(&empty));
+  ASSERT_NEAR(manifold_volume(&empty), 0.0, 1e-5);
+  manifold_destroy(&corner);
+  manifold_destroy(&dup);
+  manifold_destroy(&empty);
+}
+
+// ===== Transform Test =====
+
+static void test_transform_equivalence(void) {
+  // rotate + scale + translate = single transform
+  Manifold cube = manifold_cube(manifold_vec3(1,2,3), false);
+  Manifold rotated = manifold_rotate(&cube, 30, 40, 50);
+  Manifold scaled = manifold_scale(&rotated, manifold_vec3(6,5,4));
+  Manifold t1 = manifold_translate(&scaled, manifold_vec3(1,2,3));
+
+  // Build the same transform manually as a mat3x4
+  double cx = manifold_cosd(30), sx = manifold_sind(30);
+  double cy = manifold_cosd(40), sy = manifold_sind(40);
+  double cz = manifold_cosd(50), sz = manifold_sind(50);
+  ManifoldMat3 rx, ry, rz, s;
+  rx.cols[0] = manifold_vec3(1,0,0);
+  rx.cols[1] = manifold_vec3(0,cx,sx);
+  rx.cols[2] = manifold_vec3(0,-sx,cx);
+  ry.cols[0] = manifold_vec3(cy,0,-sy);
+  ry.cols[1] = manifold_vec3(0,1,0);
+  ry.cols[2] = manifold_vec3(sy,0,cy);
+  rz.cols[0] = manifold_vec3(cz,sz,0);
+  rz.cols[1] = manifold_vec3(-sz,cz,0);
+  rz.cols[2] = manifold_vec3(0,0,1);
+  s.cols[0] = manifold_vec3(6,0,0);
+  s.cols[1] = manifold_vec3(0,5,0);
+  s.cols[2] = manifold_vec3(0,0,4);
+  ManifoldMat3 rot = mat3_mul(rz, mat3_mul(ry, rx));
+  ManifoldMat3 full = mat3_mul(s, rot);
+  ManifoldMat3x4 xf;
+  xf.cols[0] = manifold_vec3(full.cols[0].x, full.cols[0].y, full.cols[0].z);
+  xf.cols[1] = manifold_vec3(full.cols[1].x, full.cols[1].y, full.cols[1].z);
+  xf.cols[2] = manifold_vec3(full.cols[2].x, full.cols[2].y, full.cols[2].z);
+  xf.cols[3] = manifold_vec3(1,2,3);
+
+  Manifold cube2 = manifold_cube(manifold_vec3(1,2,3), false);
+  Manifold t2 = manifold_transform(&cube2, xf);
+
+  ASSERT_NEAR(manifold_volume(&t1), manifold_volume(&t2), 0.001);
+  ASSERT_NEAR(manifold_surface_area(&t1), manifold_surface_area(&t2), 0.01);
+
+  manifold_destroy(&cube); manifold_destroy(&rotated);
+  manifold_destroy(&scaled); manifold_destroy(&t1);
+  manifold_destroy(&cube2); manifold_destroy(&t2);
+}
+
+// ===== Warp Test (adapted) =====
+
+static void warp_identity(double *x, double *y, double *z, void *ctx) {
+  (void)x; (void)y; (void)z; (void)ctx;
+}
+
+static void warp_shift_xz2(double *x, double *y, double *z, void *ctx) {
+  (void)y; (void)ctx;
+  *x += (*z) * (*z);
+}
+
+static void test_warp_cube(void) {
+  Manifold cube = manifold_cube(manifold_vec3(1,1,1), false);
+  double origVol = manifold_volume(&cube);
+
+  // Identity warp - volume should be preserved
+  Manifold warped = manifold_warp(&cube, warp_identity, NULL);
+  ASSERT_NEAR(manifold_volume(&warped), origVol, 0.001);
+
+  manifold_destroy(&cube);
+  manifold_destroy(&warped);
+}
+
+static void test_warp_shift(void) {
+  // Warp a cube by shifting x += z^2, volume should stay at 1
+  Manifold cube = manifold_cube(manifold_vec3(1,1,1), false);
+  Manifold warped = manifold_warp(&cube, warp_shift_xz2, NULL);
+  ASSERT_NEAR(manifold_volume(&warped), 1.0, 0.01);
+  manifold_destroy(&cube);
+  manifold_destroy(&warped);
+}
+
+// ===== Decompose Test =====
+
+static void test_decompose_basic(void) {
+  Manifold tet = manifold_tetrahedron();
+  Manifold t_tet = manifold_translate(&tet, manifold_vec3(5, 0, 0));
+  Manifold a_tet = manifold_as_original(&t_tet);
+
+  Manifold cube = manifold_cube(manifold_vec3(1, 1, 1), false);
+  Manifold t_cube = manifold_translate(&cube, manifold_vec3(10, 0, 0));
+  Manifold a_cube = manifold_as_original(&t_cube);
+
+  // Union of separated objects
+  Manifold combined = manifold_union(&a_tet, &a_cube);
+  ASSERT_TRUE(!manifold_is_empty(&combined));
+
+  // Decompose
+  Manifold *parts = NULL;
+  int numComponents = manifold_decompose(&combined, &parts, 10);
+  ASSERT_EQ(numComponents, 2);
+  // Each part should be non-empty
+  for (int i = 0; i < numComponents; i++) {
+    ASSERT_TRUE(!manifold_is_empty(&parts[i]));
+  }
+  // Total volume should match
+  double totalVol = 0;
+  for (int i = 0; i < numComponents; i++) {
+    totalVol += manifold_volume(&parts[i]);
+  }
+  ASSERT_NEAR(totalVol, manifold_volume(&combined), 0.001);
+
+  for (int i = 0; i < numComponents; i++) manifold_destroy(&parts[i]);
+  free(parts);
+  manifold_destroy(&tet); manifold_destroy(&t_tet);
+  manifold_destroy(&a_tet);
+  manifold_destroy(&cube); manifold_destroy(&t_cube);
+  manifold_destroy(&a_cube);
+  manifold_destroy(&combined);
+}
+
+// ===== Invalid Input Tests =====
+
+static void test_invalid_nan_vertex(void) {
+  double vp[] = {0,0,0, 0,1,0, 1,0,0, 0,0,1};
+  int tv[] = {2,0,1, 0,3,1, 2,3,0, 3,2,1};
+  vp[2*3+1] = 0.0/0.0;  // NaN
+  ManifoldMeshGL mesh;
+  mesh.numProp = 3;
+  mesh.vertProperties = vp;
+  mesh.vertLen = 4;
+  mesh.triVerts = tv;
+  mesh.triLen = 4;
+  mesh.tolerance = 0;
+  Manifold tet = manifold_from_meshgl(&mesh);
+  ASSERT_TRUE(manifold_is_empty(&tet));
+  manifold_destroy(&tet);
+}
+
 // ============== Main ==============
 
 int main(void) {
@@ -3742,6 +4045,39 @@ int main(void) {
   printf("\nMore Edge Cases:\n");
   RUN_TEST(merge_empty);
 
-  printf("\n=== All %d tests passed! ===\n", 220);
+  printf("\nExtrude + Boolean:\n");
+  RUN_TEST(extrude_hole_boolean);
+  RUN_TEST(revolve_torus_like);
+  RUN_TEST(batch_boolean_non_overlap);
+
+  printf("\nProperty Tests:\n");
+  RUN_TEST(tolerance_sphere);
+  RUN_TEST(mesh_id_unique);
+  RUN_TEST(negative_volume);
+
+  printf("\nTriangle Distance (C++ parity):\n");
+  RUN_TEST(tri_dist_edge);
+  RUN_TEST(tri_dist_face);
+  RUN_TEST(tri_dist_overlap);
+
+  printf("\nMore Boolean:\n");
+  RUN_TEST(boolean_tree_transforms);
+  RUN_TEST(boolean_mirrored_scale);
+  RUN_TEST(boolean_perturb_tet);
+
+  printf("\nTransform:\n");
+  RUN_TEST(transform_equivalence);
+
+  printf("\nWarp:\n");
+  RUN_TEST(warp_cube);
+  RUN_TEST(warp_shift);
+
+  printf("\nDecompose:\n");
+  RUN_TEST(decompose_basic);
+
+  printf("\nInvalid Input:\n");
+  RUN_TEST(invalid_nan_vertex);
+
+  printf("\n=== All %d tests passed! ===\n", 239);
   return 0;
 }
