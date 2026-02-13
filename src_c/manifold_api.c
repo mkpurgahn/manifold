@@ -217,7 +217,52 @@ Manifold manifold_transform(const Manifold *m, ManifoldMat3x4 t) {
   for (size_t i = 0; i < out.impl.vertPos.len; i++) {
     out.impl.vertPos.data[i] = mat3x4_transform_point(t, out.impl.vertPos.data[i]);
   }
+
+  // Extract 3x3 rotation/scale part
+  ManifoldMat3 m3;
+  m3.cols[0] = manifold_vec3(t.cols[0].x, t.cols[0].y, t.cols[0].z);
+  m3.cols[1] = manifold_vec3(t.cols[1].x, t.cols[1].y, t.cols[1].z);
+  m3.cols[2] = manifold_vec3(t.cols[2].x, t.cols[2].y, t.cols[2].z);
+
+  // Normal transform = inverse(transpose(m3))
+  ManifoldMat3 normalXf = mat3_inverse(mat3_transpose(m3));
+
+  for (size_t i = 0; i < out.impl.faceNormal.len; i++) {
+    out.impl.faceNormal.data[i] = vec3_normalize(
+        mat3_mul_vec3(normalXf, out.impl.faceNormal.data[i]));
+  }
+  for (size_t i = 0; i < out.impl.vertNormal.len; i++) {
+    out.impl.vertNormal.data[i] = vec3_normalize(
+        mat3_mul_vec3(normalXf, out.impl.vertNormal.data[i]));
+  }
+
+  // Flip triangle winding if negative determinant
+  double det = mat3_det(m3);
+  if (det < 0) {
+    size_t numTri = out.impl.halfedge.len / 3;
+    for (size_t tri = 0; tri < numTri; tri++) {
+      ManifoldHalfedge tmp = out.impl.halfedge.data[3 * tri];
+      out.impl.halfedge.data[3 * tri] = out.impl.halfedge.data[3 * tri + 2];
+      out.impl.halfedge.data[3 * tri + 2] = tmp;
+      for (int i = 0; i < 3; i++) {
+        ManifoldHalfedge *he = &out.impl.halfedge.data[3 * tri + i];
+        int sv = he->startVert;
+        he->startVert = he->endVert;
+        he->endVert = sv;
+        if (he->pairedHalfedge >= 0) {
+          int pTri = he->pairedHalfedge / 3;
+          int pVert = 2 - (he->pairedHalfedge - 3 * pTri);
+          he->pairedHalfedge = 3 * pTri + pVert;
+        }
+      }
+    }
+  }
+
   manifold_impl_calculate_bbox(&out.impl);
+  // Scale epsilon by spectral norm of the 3x3 part
+  double sn = manifold_spectral_norm(m3);
+  out.impl.epsilon *= sn;
+  manifold_impl_set_epsilon(&out.impl, out.impl.epsilon, false);
   return out;
 }
 
