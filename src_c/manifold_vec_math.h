@@ -639,4 +639,176 @@ static inline ManifoldVec3 manifold_get_barycentric(ManifoldVec3 v,
   }
 }
 
+// ============== SVD (Singular Value Decomposition) ==============
+// Ported from src/svd.h
+
+#define SVD_GAMMA 5.82842712474619
+#define SVD_CSTAR 0.9238795325112867
+#define SVD_SSTAR 0.3826834323650898
+#define SVD_EPSILON 1e-6
+#define SVD_JACOBI_STEPS 12
+
+typedef struct { double m_00, m_10, m_11, m_20, m_21, m_22; } Symmetric3x3;
+typedef struct { double ch, sh; } Givens;
+typedef struct { ManifoldMat3 Q, R; } QR;
+typedef struct { ManifoldMat3 U, S, V; } SVDSet;
+
+static inline void svd_cond_swap(bool c, double *X, double *Y) {
+  double Z = *X;
+  *X = c ? *Y : *X;
+  *Y = c ? Z : *Y;
+}
+
+static inline void svd_cond_neg_swap(bool c, double *X, double *Y) {
+  double Z = -*X;
+  *X = c ? *Y : *X;
+  *Y = c ? Z : *Y;
+}
+
+static inline double svd_dist2(ManifoldVec3 v) { return vec3_dot(v, v); }
+
+static inline Givens svd_approx_givens(Symmetric3x3 *A) {
+  Givens g = {2.0 * (A->m_00 - A->m_11), A->m_10};
+  bool b = SVD_GAMMA * g.sh * g.sh < g.ch * g.ch;
+  double w = 1.0 / hypot(g.ch, g.sh);
+  if (!isfinite(w)) b = false;
+  return (Givens){b ? w * g.ch : SVD_CSTAR, b ? w * g.sh : SVD_SSTAR};
+}
+
+static inline void svd_jacobi_conjugation(int x, int y, int z,
+                                            Symmetric3x3 *S, double q[4]) {
+  Givens g = svd_approx_givens(S);
+  double scale = 1.0 / (g.ch * g.ch + g.sh * g.sh);
+  double a = (g.ch * g.ch - g.sh * g.sh) * scale;
+  double b = 2.0 * g.sh * g.ch * scale;
+  Symmetric3x3 _S = *S;
+  S->m_00 = a * (a * _S.m_00 + b * _S.m_10) + b * (a * _S.m_10 + b * _S.m_11);
+  S->m_10 = a * (-b * _S.m_00 + a * _S.m_10) + b * (-b * _S.m_10 + a * _S.m_11);
+  S->m_11 = -b * (-b * _S.m_00 + a * _S.m_10) + a * (-b * _S.m_10 + a * _S.m_11);
+  S->m_20 = a * _S.m_20 + b * _S.m_21;
+  S->m_21 = -b * _S.m_20 + a * _S.m_21;
+  S->m_22 = _S.m_22;
+  double tmp[3] = {g.sh * q[0], g.sh * q[1], g.sh * q[2]};
+  double shw = g.sh * q[3];
+  q[z] = q[z] * g.ch + shw;
+  q[3] = q[3] * g.ch + (-tmp[z]);
+  q[x] = q[x] * g.ch + tmp[y];
+  q[y] = q[y] * g.ch + (-tmp[x]);
+  _S.m_00 = S->m_11; _S.m_10 = S->m_21; _S.m_11 = S->m_22;
+  _S.m_20 = S->m_10; _S.m_21 = S->m_20; _S.m_22 = S->m_00;
+  *S = _S;
+}
+
+static inline ManifoldMat3 svd_jacobi_eigen(Symmetric3x3 S) {
+  double q[4] = {0, 0, 0, 1};
+  for (int i = 0; i < SVD_JACOBI_STEPS; i++) {
+    svd_jacobi_conjugation(0, 1, 2, &S, q);
+    svd_jacobi_conjugation(1, 2, 0, &S, q);
+    svd_jacobi_conjugation(2, 0, 1, &S, q);
+  }
+  ManifoldMat3 V;
+  V.cols[0] = manifold_vec3(1 - 2*(q[1]*q[1] + q[2]*q[2]),
+                        2*(q[0]*q[1] + q[3]*q[2]),
+                        2*(q[0]*q[2] - q[3]*q[1]));
+  V.cols[1] = manifold_vec3(2*(q[0]*q[1] - q[3]*q[2]),
+                        1 - 2*(q[0]*q[0] + q[2]*q[2]),
+                        2*(q[1]*q[2] + q[3]*q[0]));
+  V.cols[2] = manifold_vec3(2*(q[0]*q[2] + q[3]*q[1]),
+                        2*(q[1]*q[2] - q[3]*q[0]),
+                        1 - 2*(q[0]*q[0] + q[1]*q[1]));
+  return V;
+}
+
+static inline void svd_sort_singular(ManifoldMat3 *B, ManifoldMat3 *V) {
+  double rho1 = svd_dist2(B->cols[0]);
+  double rho2 = svd_dist2(B->cols[1]);
+  double rho3 = svd_dist2(B->cols[2]);
+  bool c;
+  c = rho1 < rho2;
+  svd_cond_neg_swap(c, &B->cols[0].x, &B->cols[1].x);
+  svd_cond_neg_swap(c, &V->cols[0].x, &V->cols[1].x);
+  svd_cond_neg_swap(c, &B->cols[0].y, &B->cols[1].y);
+  svd_cond_neg_swap(c, &V->cols[0].y, &V->cols[1].y);
+  svd_cond_neg_swap(c, &B->cols[0].z, &B->cols[1].z);
+  svd_cond_neg_swap(c, &V->cols[0].z, &V->cols[1].z);
+  svd_cond_swap(c, &rho1, &rho2);
+  c = rho1 < rho3;
+  svd_cond_neg_swap(c, &B->cols[0].x, &B->cols[2].x);
+  svd_cond_neg_swap(c, &V->cols[0].x, &V->cols[2].x);
+  svd_cond_neg_swap(c, &B->cols[0].y, &B->cols[2].y);
+  svd_cond_neg_swap(c, &V->cols[0].y, &V->cols[2].y);
+  svd_cond_neg_swap(c, &B->cols[0].z, &B->cols[2].z);
+  svd_cond_neg_swap(c, &V->cols[0].z, &V->cols[2].z);
+  svd_cond_swap(c, &rho1, &rho3);
+  c = rho2 < rho3;
+  svd_cond_neg_swap(c, &B->cols[1].x, &B->cols[2].x);
+  svd_cond_neg_swap(c, &V->cols[1].x, &V->cols[2].x);
+  svd_cond_neg_swap(c, &B->cols[1].y, &B->cols[2].y);
+  svd_cond_neg_swap(c, &V->cols[1].y, &V->cols[2].y);
+  svd_cond_neg_swap(c, &B->cols[1].z, &B->cols[2].z);
+  svd_cond_neg_swap(c, &V->cols[1].z, &V->cols[2].z);
+}
+
+static inline Givens svd_qr_givens(double a1, double a2) {
+  double rho = hypot(a1, a2);
+  Givens g = {fabs(a1) + fmax(rho, SVD_EPSILON), rho > SVD_EPSILON ? a2 : 0};
+  bool b = a1 < 0.0;
+  svd_cond_swap(b, &g.sh, &g.ch);
+  double w = 1.0 / hypot(g.ch, g.sh);
+  g.ch *= w; g.sh *= w;
+  return g;
+}
+
+static inline QR svd_qr_decompose(ManifoldMat3 *B) {
+  QR qr;
+  ManifoldMat3 R;
+  Givens g1 = svd_qr_givens(B->cols[0].x, B->cols[0].y);
+  double a = -2.0 * g1.sh * g1.sh + 1.0;
+  double b = 2.0 * g1.ch * g1.sh;
+  R.cols[0].x = a*B->cols[0].x + b*B->cols[0].y; R.cols[1].x = a*B->cols[1].x + b*B->cols[1].y; R.cols[2].x = a*B->cols[2].x + b*B->cols[2].y;
+  R.cols[0].y = -b*B->cols[0].x + a*B->cols[0].y; R.cols[1].y = -b*B->cols[1].x + a*B->cols[1].y; R.cols[2].y = -b*B->cols[2].x + a*B->cols[2].y;
+  R.cols[0].z = B->cols[0].z; R.cols[1].z = B->cols[1].z; R.cols[2].z = B->cols[2].z;
+  Givens g2 = svd_qr_givens(R.cols[0].x, R.cols[0].z);
+  a = -2.0 * g2.sh * g2.sh + 1.0; b = 2.0 * g2.ch * g2.sh;
+  B->cols[0].x = a*R.cols[0].x + b*R.cols[0].z; B->cols[1].x = a*R.cols[1].x + b*R.cols[1].z; B->cols[2].x = a*R.cols[2].x + b*R.cols[2].z;
+  B->cols[0].y = R.cols[0].y; B->cols[1].y = R.cols[1].y; B->cols[2].y = R.cols[2].y;
+  B->cols[0].z = -b*R.cols[0].x + a*R.cols[0].z; B->cols[1].z = -b*R.cols[1].x + a*R.cols[1].z; B->cols[2].z = -b*R.cols[2].x + a*R.cols[2].z;
+  Givens g3 = svd_qr_givens(B->cols[1].y, B->cols[1].z);
+  a = -2.0 * g3.sh * g3.sh + 1.0; b = 2.0 * g3.ch * g3.sh;
+  R.cols[0].x = B->cols[0].x; R.cols[1].x = B->cols[1].x; R.cols[2].x = B->cols[2].x;
+  R.cols[0].y = a*B->cols[0].y + b*B->cols[0].z; R.cols[1].y = a*B->cols[1].y + b*B->cols[1].z; R.cols[2].y = a*B->cols[2].y + b*B->cols[2].z;
+  R.cols[0].z = -b*B->cols[0].y + a*B->cols[0].z; R.cols[1].z = -b*B->cols[1].y + a*B->cols[1].z; R.cols[2].z = -b*B->cols[2].y + a*B->cols[2].z;
+  double sh12 = 2.0*(g1.sh*g1.sh - 0.5);
+  double sh22 = 2.0*(g2.sh*g2.sh - 0.5);
+  double sh32 = 2.0*(g3.sh*g3.sh - 0.5);
+  ManifoldMat3 Q;
+  Q.cols[0].x = sh12*sh22;
+  Q.cols[0].y = 4*g2.ch*g3.ch*sh12*g2.sh*g3.sh + 2*g1.ch*g1.sh*sh32;
+  Q.cols[0].z = 4*g1.ch*g3.ch*g1.sh*g3.sh + (-2)*g2.ch*sh12*g2.sh*sh32;
+  Q.cols[1].x = -2*g1.ch*g1.sh*sh22;
+  Q.cols[1].y = -8*g1.ch*g2.ch*g3.ch*g1.sh*g2.sh*g3.sh + sh12*sh32;
+  Q.cols[1].z = -2*g3.ch*g3.sh + 4*g1.sh*(g3.ch*g1.sh*g3.sh + g1.ch*g2.ch*g2.sh*sh32);
+  Q.cols[2].x = 2*g2.ch*g2.sh;
+  Q.cols[2].y = -2*g3.ch*sh22*g3.sh;
+  Q.cols[2].z = sh22*sh32;
+  qr.Q = Q; qr.R = R;
+  return qr;
+}
+
+static inline SVDSet manifold_svd(ManifoldMat3 A) {
+  ManifoldMat3 AtA = mat3_mul(mat3_transpose(A), A);
+  Symmetric3x3 sym = {AtA.cols[0].x, AtA.cols[0].y, AtA.cols[1].y,
+                       AtA.cols[0].z, AtA.cols[1].z, AtA.cols[2].z};
+  ManifoldMat3 V = svd_jacobi_eigen(sym);
+  ManifoldMat3 B = mat3_mul(A, V);
+  svd_sort_singular(&B, &V);
+  QR qr = svd_qr_decompose(&B);
+  return (SVDSet){qr.Q, qr.R, V};
+}
+
+static inline double manifold_spectral_norm(ManifoldMat3 A) {
+  SVDSet usv = manifold_svd(A);
+  return usv.S.cols[0].x;
+}
+
 #endif // MANIFOLD_VEC_MATH_H

@@ -149,6 +149,8 @@ Manifold manifold_set_tolerance(const Manifold *m, double tolerance);
 // ---------- Refine ----------
 // Subdivide each triangle into n^2 sub-triangles (n>=2)
 Manifold manifold_refine(const Manifold *m, int n);
+// Refine until all edges are roughly the given length
+Manifold manifold_refine_to_length(const Manifold *m, double length);
 
 // ---------- Minkowski ----------
 Manifold manifold_minkowski_sum(const Manifold *a, const Manifold *b);

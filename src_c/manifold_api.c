@@ -844,6 +844,36 @@ Manifold manifold_refine(const Manifold *m, int n) {
   return out;
 }
 
+Manifold manifold_refine_to_length(const Manifold *m, double length) {
+  if (length <= 0 || manifold_is_empty(m)) {
+    Manifold out;
+    manifold_copy(&out, m);
+    return out;
+  }
+  length = fabs(length);
+
+  const ManifoldImpl *src = &m->impl;
+  size_t numEdge = src->halfedge.len;
+
+  // Find maximum edge length to determine required refinement level
+  double maxLen = 0;
+  for (size_t e = 0; e < numEdge; e++) {
+    ManifoldHalfedge he = src->halfedge.data[e];
+    if (!manifold_halfedge_is_forward(&he)) continue;
+    ManifoldVec3 edgeVec = vec3_sub(src->vertPos.data[he.endVert],
+                                     src->vertPos.data[he.startVert]);
+    double len = vec3_length(edgeVec);
+    if (len > maxLen) maxLen = len;
+  }
+
+  int n = (int)(maxLen / length) + 1;
+  if (n < 2) n = 2;
+  // Cap at reasonable refinement
+  if (n > 100) n = 100;
+
+  return manifold_refine(m, n);
+}
+
 bool manifold_is_convex(const Manifold *m) {
   return manifold_impl_is_convex(&m->impl);
 }

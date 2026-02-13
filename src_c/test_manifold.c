@@ -3219,6 +3219,62 @@ static void test_mirror_union2(void) {
   manifold_destroy(&u);
 }
 
+// ===== SVD Tests =====
+
+static void test_svd_identity(void) {
+  ManifoldMat3 I = mat3_identity();
+  SVDSet svd = manifold_svd(I);
+  // S should be identity (singular values = 1)
+  ASSERT_NEAR(svd.S.cols[0].x, 1.0, 0.01);
+  ASSERT_NEAR(svd.S.cols[1].y, 1.0, 0.01);
+  ASSERT_NEAR(svd.S.cols[2].z, 1.0, 0.01);
+}
+
+static void test_svd_scale(void) {
+  ManifoldMat3 S;
+  S.cols[0] = manifold_vec3(3, 0, 0);
+  S.cols[1] = manifold_vec3(0, 2, 0);
+  S.cols[2] = manifold_vec3(0, 0, 1);
+  SVDSet svd = manifold_svd(S);
+  // Singular values should be 3, 2, 1
+  ASSERT_NEAR(svd.S.cols[0].x, 3.0, 0.01);
+  ASSERT_NEAR(svd.S.cols[1].y, 2.0, 0.01);
+  ASSERT_NEAR(svd.S.cols[2].z, 1.0, 0.01);
+}
+
+static void test_spectral_norm(void) {
+  ManifoldMat3 S;
+  S.cols[0] = manifold_vec3(5, 0, 0);
+  S.cols[1] = manifold_vec3(0, 3, 0);
+  S.cols[2] = manifold_vec3(0, 0, 1);
+  double norm = manifold_spectral_norm(S);
+  ASSERT_NEAR(norm, 5.0, 0.01);
+}
+
+// ===== RefineToLength Tests =====
+
+static void test_refine_to_length(void) {
+  Manifold cube = manifold_cube(manifold_vec3(1, 1, 1), false);
+  Manifold refined = manifold_refine_to_length(&cube, 0.4);
+  ASSERT_TRUE(!manifold_is_empty(&refined));
+  // Should have more triangles than original cube (12 tris)
+  ASSERT_TRUE(manifold_num_tri(&refined) > 12);
+  // Volume should be preserved
+  ASSERT_NEAR(manifold_volume(&refined), 1.0, 0.01);
+  manifold_destroy(&cube);
+  manifold_destroy(&refined);
+}
+
+static void test_refine_to_length_sphere(void) {
+  Manifold sph = manifold_sphere(1.0, 8);
+  size_t origTri = manifold_num_tri(&sph);
+  Manifold refined = manifold_refine_to_length(&sph, 0.2);
+  ASSERT_TRUE(!manifold_is_empty(&refined));
+  ASSERT_TRUE(manifold_num_tri(&refined) > origTri);
+  manifold_destroy(&sph);
+  manifold_destroy(&refined);
+}
+
 // ============== Main ==============
 
 int main(void) {
@@ -3522,6 +3578,15 @@ int main(void) {
   RUN_TEST(pinched_vert);
   RUN_TEST(mirror_union2);
 
-  printf("\n=== All %d tests passed! ===\n", 205);
+  printf("\nSVD:\n");
+  RUN_TEST(svd_identity);
+  RUN_TEST(svd_scale);
+  RUN_TEST(spectral_norm);
+
+  printf("\nRefine To Length:\n");
+  RUN_TEST(refine_to_length);
+  RUN_TEST(refine_to_length_sphere);
+
+  printf("\n=== All %d tests passed! ===\n", 215);
   return 0;
 }
