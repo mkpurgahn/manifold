@@ -574,8 +574,10 @@ void manifold_impl_remove_unreferenced_verts(ManifoldImpl *impl) {
   bool hasProp = impl->numProp > 0;
   for (size_t i = 0; i < impl->halfedge.len; i++) {
     ManifoldHalfedge *he = &impl->halfedge.data[i];
-    if (he->startVert >= 0) he->startVert = old2new.data[he->startVert];
-    if (he->endVert >= 0) he->endVert = old2new.data[he->endVert];
+    if (he->startVert >= 0 && (size_t)he->startVert < old2new.len)
+      he->startVert = old2new.data[he->startVert];
+    if (he->endVert >= 0 && (size_t)he->endVert < old2new.len)
+      he->endVert = old2new.data[he->endVert];
     if (!hasProp) he->propVert = he->startVert;
   }
 

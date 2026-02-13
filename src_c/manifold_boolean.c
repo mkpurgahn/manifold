@@ -884,6 +884,10 @@ static void face2tri(ManifoldImpl *impl, const ManifoldVecInt *faceEdge,
         for (int pi = 0; pi < loopLens[li]; pi++) {
           int localEdge = loops[li][pi];
           int sv = impl->halfedge.data[firstEdge + localEdge].startVert;
+          if (sv < 0 || (size_t)sv >= impl->vertPos.len) {
+            // Invalid vertex reference - skip this face
+            goto skip_face;
+          }
           allPts[flatIdx] = mat2x3_mul_vec3(projection, impl->vertPos.data[sv]);
           heMap[flatIdx] = localEdge;
           flatIdx++;
@@ -891,7 +895,7 @@ static void face2tri(ManifoldImpl *impl, const ManifoldVecInt *faceEdge,
       }
 
       // Triangulate (handles multiple loops = polygon with holes)
-      ManifoldVecIVec3 tris;
+      ManifoldVecIVec3 tris = {0};
       if (numLoops == 1) {
         tris = manifold_triangulate_polygon(allPts, NULL, (size_t)polySizes[0]);
       } else {
@@ -934,19 +938,25 @@ static void face2tri(ManifoldImpl *impl, const ManifoldVecInt *faceEdge,
           }
           // Rebuild allPts and heMap
           flatIdx = 0;
+          bool badVert2 = false;
           for (int li = 0; li < numLoops; li++) {
             polySizes[li] = newLoopLens[li];
             for (int pi = 0; pi < newLoopLens[li]; pi++) {
               int localEdge = newLoops[li][pi];
               int sv = impl->halfedge.data[firstEdge + localEdge].startVert;
+              if (sv < 0 || (size_t)sv >= impl->vertPos.len) {
+                badVert2 = true; break;
+              }
               allPts[flatIdx] = mat2x3_mul_vec3(projection, impl->vertPos.data[sv]);
               heMap[flatIdx] = localEdge;
               flatIdx++;
             }
+            if (badVert2) break;
           }
           // Use newLoops for cleanup later
           for (int li = 0; li < numLoops; li++) loops[li] = newLoops[li];
           free(newLoops); free(newLoopLens);
+          if (badVert2) { free(areas); goto skip_face; }
         }
         // Ensure outer polygon is CCW (positive area) — flip if needed
         {
@@ -988,6 +998,7 @@ static void face2tri(ManifoldImpl *impl, const ManifoldVecInt *faceEdge,
       }
 
       vec_ivec3_free(&tris);
+skip_face:
       for (int li = 0; li < numLoops; li++) free(loops[li]);
       free(loops); free(loopLens);
       free(allPts); free(heMap); free(polySizes);
@@ -1641,9 +1652,9 @@ static ManifoldError boolean3_result(const ManifoldBoolean3 *b3,
     ManifoldTriRef *ref = &outR->meshRelation.triRef.data[i];
     int tri = ref->faceID;
     bool isPQ = (ref->meshID == 0);
-    if (isPQ && tri < (int)inP->meshRelation.triRef.len) {
+    if (isPQ && tri >= 0 && tri < (int)inP->meshRelation.triRef.len) {
       *ref = inP->meshRelation.triRef.data[tri];
-    } else if (!isPQ && tri < (int)inQ->meshRelation.triRef.len) {
+    } else if (!isPQ && tri >= 0 && tri < (int)inQ->meshRelation.triRef.len) {
       *ref = inQ->meshRelation.triRef.data[tri];
       ref->meshID += (int)offsetQ;
     }
