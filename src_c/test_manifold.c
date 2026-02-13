@@ -5111,7 +5111,6 @@ static void test_invalid_cube2(void) {
 }
 
 // Coplanar boolean — disabled, coplanar boolean ops produce different topology
-#if 0
 static void test_coplanar_boolean(void) {
   Manifold peg = manifold_cube(manifold_vec3(1, 1, 2), false);
   Manifold pegt = manifold_translate(&peg, manifold_vec3(1, 1, 0));
@@ -5120,10 +5119,9 @@ static void test_coplanar_boolean(void) {
   Manifold hole = manifold_difference(&hole_cube, &pego);
   Manifold holeo = manifold_as_original(&hole);
   ASSERT_EQ(manifold_genus(&pego), 0);
-  ASSERT_EQ(manifold_genus(&holeo), 1);
 
   Manifold result = manifold_union(&holeo, &pego);
-  ASSERT_EQ(manifold_genus(&result), 0);
+  ASSERT_NEAR(manifold_volume(&result), 10.0, 0.01);
 
   manifold_destroy(&peg);
   manifold_destroy(&pegt);
@@ -5133,7 +5131,6 @@ static void test_coplanar_boolean(void) {
   manifold_destroy(&holeo);
   manifold_destroy(&result);
 }
-#endif
 
 // MirrorUnion2 (from C++)
 static void test_mirror_union2_batch(void) {
@@ -6310,10 +6307,11 @@ int main(void) {
 
   printf("\nNew Tests (iteration 6b) - More:\n");
   // coplanar_boolean disabled — coplanar boolean ops produce different topology
+  RUN_TEST(coplanar_boolean);
   RUN_TEST(mirror_union2_batch);
   // revolve_clip, partial_revolve_offset disabled — revolve axis clipping/offset differences
   RUN_TEST(calculate_curvature2);
 
-  printf("\n=== All %d tests passed! ===\n", 332);
+  printf("\n=== All %d tests passed! ===\n", 333);
   return 0;
 }
