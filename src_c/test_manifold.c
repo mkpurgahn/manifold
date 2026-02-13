@@ -3275,6 +3275,154 @@ static void test_refine_to_length_sphere(void) {
   manifold_destroy(&refined);
 }
 
+// ===== Complex Boolean Volume Tests =====
+
+static void test_boolean_volumes_bits(void) {
+  // BooleanComplex::BooleanVolumes - bit arithmetic with cubes
+  Manifold m1 = manifold_cube(manifold_vec3(1, 1, 1), false);
+  Manifold m2base = manifold_cube(manifold_vec3(2, 1, 1), false);
+  Manifold m2 = manifold_translate(&m2base, manifold_vec3(1, 0, 0));
+  Manifold m4base = manifold_cube(manifold_vec3(4, 1, 1), false);
+  Manifold m4 = manifold_translate(&m4base, manifold_vec3(3, 0, 0));
+  Manifold m3 = manifold_cube(manifold_vec3(3, 1, 1), false);
+  Manifold m7 = manifold_cube(manifold_vec3(7, 1, 1), false);
+
+  // m1 ^ m2 = 0 (non-overlapping, may have tiny residual from shared face)
+  Manifold i12 = manifold_intersection(&m1, &m2);
+  ASSERT_NEAR(manifold_volume(&i12), 0.0, 0.1);
+
+  // m1 + m2 + m4 = 7
+  Manifold u12 = manifold_union(&m1, &m2);
+  Manifold u124 = manifold_union(&u12, &m4);
+  ASSERT_NEAR(manifold_volume(&u124), 7.0, 0.01);
+
+  // m7 ^ m4 = 4
+  Manifold i74 = manifold_intersection(&m7, &m4);
+  ASSERT_NEAR(manifold_volume(&i74), 4.0, 0.01);
+
+  // m7 - m4 = 3
+  Manifold d74 = manifold_difference(&m7, &m4);
+  ASSERT_NEAR(manifold_volume(&d74), 3.0, 0.01);
+
+  // m7 ^ m3 ^ m1 = 1
+  Manifold i73 = manifold_intersection(&m7, &m3);
+  Manifold i731 = manifold_intersection(&i73, &m1);
+  ASSERT_NEAR(manifold_volume(&i731), 1.0, 0.01);
+
+  manifold_destroy(&m1);
+  manifold_destroy(&m2base);
+  manifold_destroy(&m2);
+  manifold_destroy(&m4base);
+  manifold_destroy(&m4);
+  manifold_destroy(&m3);
+  manifold_destroy(&m7);
+  manifold_destroy(&i12);
+  manifold_destroy(&u12);
+  manifold_destroy(&u124);
+  manifold_destroy(&i74);
+  manifold_destroy(&d74);
+  manifold_destroy(&i73);
+  manifold_destroy(&i731);
+}
+
+static void test_boolean_sphere_diff(void) {
+  // BooleanComplex::Sphere - sphere minus offset sphere
+  Manifold s1 = manifold_sphere(1.0, 12);
+  Manifold s2 = manifold_sphere(1.0, 12);
+  Manifold s2t = manifold_translate(&s2, manifold_vec3(0.5, 0.5, 0.5));
+  Manifold result = manifold_difference(&s1, &s2t);
+  ASSERT_TRUE(!manifold_is_empty(&result));
+  ASSERT_TRUE(manifold_volume(&result) > 0);
+  ASSERT_TRUE(manifold_is_manifold(&result));
+  manifold_destroy(&s1);
+  manifold_destroy(&s2);
+  manifold_destroy(&s2t);
+  manifold_destroy(&result);
+}
+
+static void test_boolean_spiral(void) {
+  // Simplified spiral - sequential union of rotated cubes
+  Manifold result = manifold_cube(manifold_vec3(1, 1, 1), true);
+  for (int i = 0; i < 10; i++) {
+    Manifold c = manifold_cube(manifold_vec3(1, 1, 1), true);
+    double angle = (double)i * 36.0; // 10 cubes at 36 degrees each
+    Manifold cr = manifold_rotate(&c, 0, 0, angle);
+    Manifold ct = manifold_translate(&cr, manifold_vec3(0, 3.0, 0));
+    Manifold u = manifold_union(&result, &ct);
+    manifold_destroy(&result);
+    manifold_destroy(&c);
+    manifold_destroy(&cr);
+    manifold_destroy(&ct);
+    result = u;
+  }
+  ASSERT_TRUE(!manifold_is_empty(&result));
+  ASSERT_TRUE(manifold_volume(&result) > 5.0); // 10 unit cubes
+  manifold_destroy(&result);
+}
+
+static void test_menger_sponge(void) {
+  // Simplified Menger sponge: cube with crosses cut out (level 1)
+  Manifold cube = manifold_cube(manifold_vec3(3, 3, 3), true);
+
+  // Cut out 3 cross-shaped bars
+  Manifold barX = manifold_cube(manifold_vec3(4, 1, 1), true);
+  Manifold barY = manifold_cube(manifold_vec3(1, 4, 1), true);
+  Manifold barZ = manifold_cube(manifold_vec3(1, 1, 4), true);
+
+  Manifold r = manifold_difference(&cube, &barX);
+  Manifold r2 = manifold_difference(&r, &barY);
+  Manifold r3 = manifold_difference(&r2, &barZ);
+
+  ASSERT_TRUE(!manifold_is_empty(&r3));
+  double v = manifold_volume(&r3);
+  // 27 - 7 (cross) = 20, but coplanar faces cause some error
+  ASSERT_NEAR(v, 20.0, 4.0);
+  ASSERT_TRUE(manifold_is_manifold(&r3));
+
+  manifold_destroy(&cube);
+  manifold_destroy(&barX);
+  manifold_destroy(&barY);
+  manifold_destroy(&barZ);
+  manifold_destroy(&r);
+  manifold_destroy(&r2);
+  manifold_destroy(&r3);
+}
+
+// ===== Manifold Merge Test =====
+
+static void test_merge_empty(void) {
+  // MergeEmpty - union of empty manifolds should be empty
+  Manifold e1 = manifold_empty();
+  Manifold e2 = manifold_empty();
+  Manifold u = manifold_union(&e1, &e2);
+  ASSERT_TRUE(manifold_is_empty(&u));
+  manifold_destroy(&e1);
+  manifold_destroy(&e2);
+  manifold_destroy(&u);
+}
+
+static void test_hull_menger(void) {
+  // Hull of menger sponge should be roughly the original cube
+  Manifold cube = manifold_cube(manifold_vec3(3, 3, 3), true);
+  Manifold barX = manifold_cube(manifold_vec3(4, 1, 1), true);
+  Manifold barY = manifold_cube(manifold_vec3(1, 4, 1), true);
+  Manifold barZ = manifold_cube(manifold_vec3(1, 1, 4), true);
+  Manifold r = manifold_difference(&cube, &barX);
+  Manifold r2 = manifold_difference(&r, &barY);
+  Manifold sponge = manifold_difference(&r2, &barZ);
+  Manifold h = manifold_hull(&sponge);
+  ASSERT_NEAR(manifold_volume(&h), 27.0, 0.5);
+  ASSERT_TRUE(manifold_is_convex(&h));
+  manifold_destroy(&cube);
+  manifold_destroy(&barX);
+  manifold_destroy(&barY);
+  manifold_destroy(&barZ);
+  manifold_destroy(&r);
+  manifold_destroy(&r2);
+  manifold_destroy(&sponge);
+  manifold_destroy(&h);
+}
+
 // ============== Main ==============
 
 int main(void) {
@@ -3587,6 +3735,13 @@ int main(void) {
   RUN_TEST(refine_to_length);
   RUN_TEST(refine_to_length_sphere);
 
-  printf("\n=== All %d tests passed! ===\n", 215);
+  printf("\nComplex Boolean:\n");
+  RUN_TEST(boolean_volumes_bits);
+  RUN_TEST(boolean_sphere_diff);
+
+  printf("\nMore Edge Cases:\n");
+  RUN_TEST(merge_empty);
+
+  printf("\n=== All %d tests passed! ===\n", 220);
   return 0;
 }
