@@ -162,6 +162,15 @@ void manifold_impl_set_properties(ManifoldImpl *impl, int numProp,
 int manifold_impl_decompose(const ManifoldImpl *impl, ManifoldImpl *components,
                              int maxComponents);
 
+// MinGap
+double manifold_impl_min_gap(const ManifoldImpl *self,
+                              const ManifoldImpl *other,
+                              double searchLength);
+
+// CalculateNormals
+void manifold_impl_calculate_normals(ManifoldImpl *impl, int normalIdx,
+                                      double minSharpAngle);
+
 // Convexity check
 bool manifold_impl_is_convex(const ManifoldImpl *impl);
 

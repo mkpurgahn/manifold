@@ -157,6 +157,14 @@ Manifold manifold_minkowski_difference(const Manifold *a, const Manifold *b);
 // ---------- Convexity ----------
 bool manifold_is_convex(const Manifold *m);
 
+// ---------- MinGap ----------
+double manifold_min_gap(const Manifold *a, const Manifold *b,
+                        double searchLength);
+
+// ---------- CalculateNormals ----------
+Manifold manifold_calculate_normals(const Manifold *m, int normalIdx,
+                                     double minSharpAngle);
+
 // ---------- Mesh Data Access ----------
 // Get raw vertex positions (read-only)
 const ManifoldVec3 *manifold_get_vert_positions(const Manifold *m, size_t *count);

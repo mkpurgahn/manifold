@@ -1088,3 +1088,16 @@ Manifold manifold_minkowski_sum(const Manifold *a, const Manifold *b) {
 Manifold manifold_minkowski_difference(const Manifold *a, const Manifold *b) {
   return manifold_minkowski_impl(a, b, true);
 }
+
+double manifold_min_gap(const Manifold *a, const Manifold *b,
+                        double searchLength) {
+  return manifold_impl_min_gap(&a->impl, &b->impl, searchLength);
+}
+
+Manifold manifold_calculate_normals(const Manifold *m, int normalIdx,
+                                     double minSharpAngle) {
+  Manifold result;
+  manifold_copy(&result, m);
+  manifold_impl_calculate_normals(&result.impl, normalIdx, minSharpAngle);
+  return result;
+}
