@@ -158,4 +158,12 @@ void manifold_impl_tetrahedron(ManifoldImpl *impl);
 void manifold_impl_cube(ManifoldImpl *impl, ManifoldMat3x4 transform);
 void manifold_impl_octahedron(ManifoldImpl *impl, ManifoldMat3x4 transform);
 
+// sdf.c equivalents
+void manifold_impl_level_set(ManifoldImpl *impl,
+                              double (*sdf)(double x, double y, double z, void *ctx),
+                              void *ctx,
+                              ManifoldBox bounds,
+                              double edgeLength,
+                              double level);
+
 #endif // MANIFOLD_IMPL_H

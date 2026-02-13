@@ -51,6 +51,11 @@ Manifold manifold_union(const Manifold *a, const Manifold *b);
 Manifold manifold_difference(const Manifold *a, const Manifold *b);
 Manifold manifold_intersection(const Manifold *a, const Manifold *b);
 
+// ---------- SDF Level Set ----------
+Manifold manifold_level_set(double (*sdf)(double x, double y, double z, void *ctx),
+                            void *ctx, ManifoldBox bounds, double edgeLength,
+                            double level, double tolerance);
+
 // ---------- Quality ----------
 int manifold_get_circular_segments(double radius);
 void manifold_set_circular_segments(int n);

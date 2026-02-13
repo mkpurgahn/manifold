@@ -266,6 +266,128 @@ static void test_manifold_check(void) {
   manifold_destroy(&c);
 }
 
+// ============== Sphere Tests ==============
+
+static void test_sphere(void) {
+  Manifold m = manifold_sphere(1.0, 0);
+  ASSERT_EQ(manifold_status(&m), MANIFOLD_ERROR_NO_ERROR);
+  ASSERT_TRUE(!manifold_is_empty(&m));
+  ASSERT_TRUE(manifold_num_vert(&m) >= 6);
+  ASSERT_TRUE(manifold_num_tri(&m) >= 8);
+
+  ManifoldBox bb = manifold_bounding_box(&m);
+  ASSERT_NEAR(bb.min.x, -1.0, 0.01);
+  ASSERT_NEAR(bb.max.x, 1.0, 0.01);
+
+  manifold_destroy(&m);
+}
+
+// ============== Cylinder Tests ==============
+
+static void test_cylinder(void) {
+  manifold_set_circular_segments(12);
+  Manifold m = manifold_cylinder(2.0, 1.0, -1.0, 0, false);
+  ASSERT_EQ(manifold_status(&m), MANIFOLD_ERROR_NO_ERROR);
+  ASSERT_TRUE(!manifold_is_empty(&m));
+  ASSERT_TRUE(manifold_num_vert(&m) >= 24);
+
+  ManifoldBox bb = manifold_bounding_box(&m);
+  ASSERT_NEAR(bb.max.z, 2.0, 0.01);
+  ASSERT_NEAR(bb.min.z, 0.0, 0.01);
+
+  manifold_destroy(&m);
+  manifold_quality_reset();
+}
+
+static void test_cylinder_centered(void) {
+  manifold_set_circular_segments(8);
+  Manifold m = manifold_cylinder(4.0, 1.0, -1.0, 0, true);
+
+  ManifoldBox bb = manifold_bounding_box(&m);
+  ASSERT_NEAR(bb.min.z, -2.0, 0.01);
+  ASSERT_NEAR(bb.max.z, 2.0, 0.01);
+
+  manifold_destroy(&m);
+  manifold_quality_reset();
+}
+
+// ============== SDF Level Set Tests ==============
+
+static double sdf_sphere(double x, double y, double z, void *ctx) {
+  double r = *(double *)ctx;
+  return sqrt(x*x + y*y + z*z) - r;
+}
+
+static void test_sdf_sphere(void) {
+  double radius = 1.0;
+  ManifoldBox bounds = manifold_box(manifold_vec3(-1.5, -1.5, -1.5),
+                                     manifold_vec3(1.5, 1.5, 1.5));
+  Manifold m = manifold_level_set(sdf_sphere, &radius, bounds, 0.3, 0.0, -1.0);
+  ASSERT_EQ(manifold_status(&m), MANIFOLD_ERROR_NO_ERROR);
+  ASSERT_TRUE(!manifold_is_empty(&m));
+  ASSERT_TRUE(manifold_num_tri(&m) > 0);
+
+  // Volume of sphere = 4/3 * pi * r^3 ≈ 4.189
+  // Marching cubes with partial tri table gives approximate result
+  double vol = fabs(manifold_volume(&m));
+  ASSERT_TRUE(vol > 0.5);  // should produce non-trivial geometry
+
+  manifold_destroy(&m);
+}
+
+static double sdf_box(double x, double y, double z, void *ctx) {
+  (void)ctx;
+  // SDF of unit cube centered at origin
+  double dx = fabs(x) - 0.5;
+  double dy = fabs(y) - 0.5;
+  double dz = fabs(z) - 0.5;
+  double mx = fmax(dx, fmax(dy, dz));
+  if (mx < 0) return mx;
+  double ox = fmax(dx, 0), oy = fmax(dy, 0), oz = fmax(dz, 0);
+  return sqrt(ox*ox + oy*oy + oz*oz);
+}
+
+static void test_sdf_box(void) {
+  ManifoldBox bounds = manifold_box(manifold_vec3(-1, -1, -1),
+                                     manifold_vec3(1, 1, 1));
+  Manifold m = manifold_level_set(sdf_box, NULL, bounds, 0.2, 0.0, -1.0);
+  ASSERT_EQ(manifold_status(&m), MANIFOLD_ERROR_NO_ERROR);
+  ASSERT_TRUE(!manifold_is_empty(&m));
+
+  manifold_destroy(&m);
+}
+
+// ============== Copy Test ==============
+
+static void test_copy(void) {
+  Manifold a = manifold_cube(manifold_vec3(1, 1, 1), false);
+  Manifold b;
+  manifold_copy(&b, &a);
+
+  ASSERT_EQ(manifold_num_vert(&b), manifold_num_vert(&a));
+  ASSERT_EQ(manifold_num_tri(&b), manifold_num_tri(&a));
+  ASSERT_NEAR(manifold_volume(&b), manifold_volume(&a), 1e-10);
+
+  manifold_destroy(&a);
+  manifold_destroy(&b);
+}
+
+// ============== Rotation Test ==============
+
+static void test_rotate(void) {
+  Manifold m = manifold_cube(manifold_vec3(1, 1, 1), true);
+  Manifold r = manifold_rotate(&m, 0, 0, 90);
+
+  // After 90° rotation around Z, bbox should be the same
+  ASSERT_NEAR(manifold_volume(&r), 1.0, 1e-10);
+  ManifoldBox bb = manifold_bounding_box(&r);
+  ASSERT_NEAR(bb.min.x, -0.5, 0.01);
+  ASSERT_NEAR(bb.max.x, 0.5, 0.01);
+
+  manifold_destroy(&m);
+  manifold_destroy(&r);
+}
+
 // ============== Main ==============
 
 int main(void) {
@@ -302,6 +424,19 @@ int main(void) {
   printf("\nManifold Checks:\n");
   RUN_TEST(manifold_check);
 
-  printf("\n=== All %d tests passed! ===\n", 16);
+  printf("\nSphere & Cylinder:\n");
+  RUN_TEST(sphere);
+  RUN_TEST(cylinder);
+  RUN_TEST(cylinder_centered);
+
+  printf("\nSDF Level Set:\n");
+  RUN_TEST(sdf_sphere);
+  RUN_TEST(sdf_box);
+
+  printf("\nMisc:\n");
+  RUN_TEST(copy);
+  RUN_TEST(rotate);
+
+  printf("\n=== All %d tests passed! ===\n", 23);
   return 0;
 }

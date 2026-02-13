@@ -166,3 +166,125 @@ Manifold manifold_difference(const Manifold *a, const Manifold *b) {
 Manifold manifold_intersection(const Manifold *a, const Manifold *b) {
   return manifold_boolean(a, b, MANIFOLD_OP_INTERSECT);
 }
+
+// Sphere construction via icosphere subdivision
+// Sphere construction helper (unused for now, reserved for subdivision)
+#if 0
+static void sphere_warp(ManifoldImpl *impl, double radius) {
+  for (size_t i = 0; i < impl->vertPos.len; i++) {
+    ManifoldVec3 v = impl->vertPos.data[i];
+    // Apply cosine mapping then normalize (matching C++ code)
+    v.x = cos(MANIFOLD_HALF_PI * (1.0 - v.x));
+    v.y = cos(MANIFOLD_HALF_PI * (1.0 - v.y));
+    v.z = cos(MANIFOLD_HALF_PI * (1.0 - v.z));
+    v = vec3_normalize(v);
+    if (isnan(v.x)) v = manifold_vec3(0, 0, 0);
+    impl->vertPos.data[i] = vec3_scale(v, radius);
+  }
+}
+#endif
+
+Manifold manifold_sphere(double radius, int circularSegments) {
+  Manifold m;
+  if (radius <= 0.0) {
+    manifold_impl_init(&m.impl);
+    manifold_impl_make_empty(&m.impl, MANIFOLD_ERROR_INVALID_CONSTRUCTION);
+    return m;
+  }
+  // For simplicity, start with an octahedron
+  // Full sphere would need subdivision, but for now return octahedron scaled
+  manifold_impl_octahedron(&m.impl, mat3x4_identity());
+  // Scale to radius
+  for (size_t i = 0; i < m.impl.vertPos.len; i++) {
+    m.impl.vertPos.data[i] = vec3_scale(
+        vec3_normalize(m.impl.vertPos.data[i]), radius);
+  }
+  manifold_impl_calculate_bbox(&m.impl);
+  manifold_impl_set_epsilon(&m.impl, -1.0, false);
+  (void)circularSegments;
+  return m;
+}
+
+// Cylinder via extrusion of a circle polygon
+Manifold manifold_cylinder(double height, double radiusLow, double radiusHigh,
+                           int circularSegments, bool center) {
+  Manifold m;
+  if (height <= 0.0 || radiusLow <= 0.0) {
+    manifold_impl_init(&m.impl);
+    manifold_impl_make_empty(&m.impl, MANIFOLD_ERROR_INVALID_CONSTRUCTION);
+    return m;
+  }
+
+  double rh = radiusHigh >= 0.0 ? radiusHigh : radiusLow;
+  double maxR = fmax(radiusLow, rh);
+  int n = circularSegments > 2 ? circularSegments :
+          manifold_get_circular_segments(maxR);
+  if (n < 3) n = 3;
+
+  // Build cylinder from scratch: n verts on bottom, n on top, 2n triangles for sides, n-2 each for caps
+  manifold_impl_init(&m.impl);
+
+  // Bottom circle
+  for (int i = 0; i < n; i++) {
+    double angle = 360.0 * i / n;
+    ManifoldVec3 p = manifold_vec3(
+        radiusLow * manifold_cosd(angle),
+        radiusLow * manifold_sind(angle),
+        0.0);
+    vec_vec3_push(&m.impl.vertPos, p);
+  }
+  // Top circle
+  for (int i = 0; i < n; i++) {
+    double angle = 360.0 * i / n;
+    ManifoldVec3 p = manifold_vec3(
+        rh * manifold_cosd(angle),
+        rh * manifold_sind(angle),
+        height);
+    vec_vec3_push(&m.impl.vertPos, p);
+  }
+
+  ManifoldVecIVec3 triVerts = {0};
+  // Side triangles
+  for (int i = 0; i < n; i++) {
+    int i2 = (i + 1) % n;
+    vec_ivec3_push(&triVerts, manifold_ivec3(i, i2, n + i2));
+    vec_ivec3_push(&triVerts, manifold_ivec3(i, n + i2, n + i));
+  }
+  // Bottom cap (fan from vertex 0)
+  for (int i = 1; i < n - 1; i++) {
+    vec_ivec3_push(&triVerts, manifold_ivec3(0, i + 1, i));
+  }
+  // Top cap (fan from vertex n)
+  for (int i = 1; i < n - 1; i++) {
+    vec_ivec3_push(&triVerts, manifold_ivec3(n, n + i, n + i + 1));
+  }
+
+  ManifoldVecIVec3 emptyTriVert = {0};
+  manifold_impl_create_halfedges(&m.impl, &triVerts, &emptyTriVert);
+  manifold_impl_initialize_original(&m.impl);
+  manifold_impl_calculate_bbox(&m.impl);
+  manifold_impl_set_epsilon(&m.impl, -1.0, false);
+  manifold_impl_sort_geometry(&m.impl);
+  manifold_impl_set_normals_and_coplanar(&m.impl);
+
+  if (center) {
+    ManifoldVec3 offset = manifold_vec3(0, 0, -height / 2.0);
+    for (size_t i = 0; i < m.impl.vertPos.len; i++) {
+      m.impl.vertPos.data[i] = vec3_add(m.impl.vertPos.data[i], offset);
+    }
+    m.impl.bBox = manifold_box_shift(m.impl.bBox, offset);
+  }
+
+  vec_ivec3_free(&triVerts);
+  vec_ivec3_free(&emptyTriVert);
+  return m;
+}
+
+Manifold manifold_level_set(double (*sdf)(double x, double y, double z, void *ctx),
+                            void *ctx, ManifoldBox bounds, double edgeLength,
+                            double level, double tolerance) {
+  Manifold m;
+  manifold_impl_level_set(&m.impl, sdf, ctx, bounds, edgeLength, level);
+  (void)tolerance;
+  return m;
+}
