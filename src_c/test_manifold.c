@@ -1544,6 +1544,110 @@ static void test_sphere_bounding_box(void) {
   manifold_destroy(&s);
 }
 
+// ============== Complex Boolean Volume Tests ==============
+
+static void test_boolean_bit_volumes(void) {
+  // Non-intersecting "bit" solids with clear gaps between them
+  Manifold m1 = manifold_cube(manifold_vec3(1, 1, 1), false);
+  Manifold m2_base = manifold_cube(manifold_vec3(2, 1, 1), false);
+  Manifold m2 = manifold_translate(&m2_base, manifold_vec3(1.5, 0, 0));
+  Manifold m4_base = manifold_cube(manifold_vec3(4, 1, 1), false);
+  Manifold m4 = manifold_translate(&m4_base, manifold_vec3(4, 0, 0));
+
+  // m1 ^ m2 = 0 (non-intersecting with gap)
+  Manifold r1 = manifold_intersection(&m1, &m2);
+  ASSERT_TRUE(manifold_is_empty(&r1) || manifold_volume(&r1) < 0.01);
+
+  // Overlapping cubes
+  Manifold big = manifold_cube(manifold_vec3(7, 1, 1), false);
+  Manifold med = manifold_cube(manifold_vec3(4, 1, 1), false);
+  Manifold sm  = manifold_cube(manifold_vec3(3, 1, 1), false);
+
+  // big ^ med = volume should be 4 (med fully inside big)
+  Manifold r2 = manifold_intersection(&big, &med);
+  ASSERT_NEAR(manifold_volume(&r2), 4.0, 0.1);
+
+  // big - med = 3
+  Manifold r3 = manifold_difference(&big, &med);
+  ASSERT_NEAR(manifold_volume(&r3), 3.0, 0.1);
+
+  // big ^ sm = 3
+  Manifold r4 = manifold_intersection(&big, &sm);
+  ASSERT_NEAR(manifold_volume(&r4), 3.0, 0.1);
+
+  manifold_destroy(&m1);
+  manifold_destroy(&m2_base);
+  manifold_destroy(&m2);
+  manifold_destroy(&m4_base);
+  manifold_destroy(&m4);
+  manifold_destroy(&big);
+  manifold_destroy(&med);
+  manifold_destroy(&sm);
+  manifold_destroy(&r1);
+  manifold_destroy(&r2);
+  manifold_destroy(&r3);
+  manifold_destroy(&r4);
+}
+
+// ============== IsManifold / Is2Manifold Tests ==============
+
+static void test_is_manifold(void) {
+  Manifold c = manifold_cube(manifold_vec3(1, 1, 1), false);
+  ASSERT_TRUE(manifold_impl_is_manifold(&c.impl));
+  ASSERT_TRUE(manifold_impl_is_2manifold(&c.impl));
+  manifold_destroy(&c);
+}
+
+static void test_empty_manifold_check(void) {
+  Manifold empty;
+  manifold_create(&empty);
+  ASSERT_TRUE(manifold_is_empty(&empty));
+  ASSERT_TRUE(manifold_impl_is_manifold(&empty.impl));
+  manifold_destroy(&empty);
+}
+
+// ============== Extrude with twist ==============
+
+static void test_extrude_twist(void) {
+  ManifoldVec2 square[4] = {
+    {0, 0}, {1, 0}, {1, 1}, {0, 1}
+  };
+  int sizes[] = {4};
+
+  Manifold m = manifold_extrude(square, sizes, 1, 2.0, 2, 90.0,
+                                 manifold_vec2(1.0, 1.0));
+  ASSERT_TRUE(!manifold_is_empty(&m));
+  ASSERT_EQ(manifold_status(&m), MANIFOLD_ERROR_NO_ERROR);
+
+  // Volume should be approximately 1 * 2 = 2 (square * height)
+  // With twist, it stays constant
+  double vol = manifold_volume(&m);
+  ASSERT_NEAR(vol, 2.0, 0.3);
+
+  manifold_destroy(&m);
+}
+
+// ============== Extrude with scale (cone) ==============
+
+static void test_extrude_scale(void) {
+  ManifoldVec2 square[4] = {
+    {0, 0}, {1, 0}, {1, 1}, {0, 1}
+  };
+  int sizes[] = {4};
+
+  // Scale top to 0.5 (pyramidal frustum)
+  Manifold m = manifold_extrude(square, sizes, 1, 1.0, 0, 0.0,
+                                 manifold_vec2(0.5, 0.5));
+  ASSERT_TRUE(!manifold_is_empty(&m));
+
+  // Volume of truncated pyramid: h/3 * (A1 + A2 + sqrt(A1*A2))
+  // A1=1, A2=0.25, h=1 => V = 1/3*(1 + 0.25 + 0.5) = 0.583
+  double vol = manifold_volume(&m);
+  ASSERT_NEAR(vol, 0.583, 0.1);
+
+  manifold_destroy(&m);
+}
+
 // ============== Main ==============
 
 int main(void) {
@@ -1693,6 +1797,17 @@ int main(void) {
   RUN_TEST(sphere_genus);
   RUN_TEST(sphere_bounding_box);
 
-  printf("\n=== All %d tests passed! ===\n", 86);
+  printf("\nComplex Boolean:\n");
+  RUN_TEST(boolean_bit_volumes);
+
+  printf("\nManifold Validation:\n");
+  RUN_TEST(is_manifold);
+  RUN_TEST(empty_manifold_check);
+
+  printf("\nExtrude Advanced:\n");
+  RUN_TEST(extrude_twist);
+  RUN_TEST(extrude_scale);
+
+  printf("\n=== All %d tests passed! ===\n", 93);
   return 0;
 }
