@@ -524,7 +524,9 @@ Manifold manifold_warp(const Manifold *m,
   }
   manifold_impl_calculate_bbox(&out.impl);
   manifold_impl_set_epsilon(&out.impl, -1.0, false);
+  manifold_impl_sort_geometry(&out.impl);
   manifold_impl_set_normals_and_coplanar(&out.impl);
+  out.impl.meshRelation.originalID = -1;
   return out;
 }
 
@@ -1235,28 +1237,23 @@ static Manifold manifold_minkowski_impl(const Manifold *a, const Manifold *b,
     return orig;
   }
 
-  // Convex-Convex Minkowski Difference (inset): intersect translated copies of A
-  if (inset && aConvex && bConvex) {
-    // A ⊖ B = intersection of (A translated by -b_j) for all vertices b_j of B
+  // Minkowski Difference (inset) with convex B: intersect translated copies of A
+  // A ⊖ B = intersection of (A translated by -b_j) for all vertices b_j of B
+  if (inset && bConvex) {
     size_t numBVerts = bImpl->vertPos.len;
-    Manifold result;
-    manifold_copy(&result, (aImpl == &a->impl) ? a : b);
-    // Translate A by -b_0
-    ManifoldVec3 b0 = bImpl->vertPos.data[0];
-    Manifold translated = manifold_translate(&result, manifold_vec3(-b0.x, -b0.y, -b0.z));
-    manifold_destroy(&result);
-    result = translated;
-    for (size_t j = 1; j < numBVerts; j++) {
+    const Manifold *aManifold = (aImpl == &a->impl) ? a : b;
+    Manifold *translated = (Manifold *)malloc(numBVerts * sizeof(Manifold));
+    for (size_t j = 0; j < numBVerts; j++) {
       ManifoldVec3 bj = bImpl->vertPos.data[j];
       Manifold aCopy;
-      manifold_copy(&aCopy, (aImpl == &a->impl) ? a : b);
-      Manifold tr = manifold_translate(&aCopy, manifold_vec3(-bj.x, -bj.y, -bj.z));
+      manifold_copy(&aCopy, aManifold);
+      translated[j] = manifold_translate(&aCopy, manifold_vec3(-bj.x, -bj.y, -bj.z));
       manifold_destroy(&aCopy);
-      Manifold inter = manifold_intersection(&result, &tr);
-      manifold_destroy(&result);
-      manifold_destroy(&tr);
-      result = inter;
     }
+    Manifold result = manifold_batch_boolean(translated, (int)numBVerts,
+                                              MANIFOLD_OP_INTERSECT);
+    for (size_t j = 0; j < numBVerts; j++) manifold_destroy(&translated[j]);
+    free(translated);
     manifold_destroy(&base);
     Manifold orig = manifold_as_original(&result);
     manifold_destroy(&result);

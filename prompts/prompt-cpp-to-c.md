@@ -178,7 +178,7 @@ genus: 0 != 5
    - `src_c/manifold_boolean.c` — any `static` variables or global caches?
    - `src_c/manifold_impl.c` — `manifold_impl_is_convex()` — does it cache results?
 4. Check if `processOverlaps` param (set in C++ via `ManifoldParams().processOverlaps = true`) has a C equivalent and whether it persists between tests.
-5. If state leak found: reset the state in the test or fix the implementation to not leak.
+5. If state leak found: fix the implementation to not leak.
 6. If timing-dependent: add `fprintf(stderr, ...)` to the Minkowski path to compare values between solo and suite runs.
 
 **Verification (do this LAST, after all test porting is done):**

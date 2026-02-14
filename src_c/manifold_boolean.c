@@ -1949,14 +1949,50 @@ ManifoldError manifold_boolean_op(ManifoldImpl *result,
       result->vertPos = vec_vec3_create_n(pNv + qNv);
       memcpy(result->vertPos.data, p->vertPos.data, pNv * sizeof(ManifoldVec3));
       memcpy(result->vertPos.data + pNv, q->vertPos.data, qNv * sizeof(ManifoldVec3));
+
+      // Handle properties: merge both property arrays
+      int numPropP = p->numProp;
+      int numPropQ = q->numProp;
+      int numPropOut = numPropP > numPropQ ? numPropP : numPropQ;
+      size_t pPropVert = (numPropP > 0) ? (p->properties.len / (size_t)numPropP) : 1;
+      size_t qPropVert = (numPropQ > 0) ? (q->properties.len / (size_t)numPropQ) : 1;
+      size_t totalPropVert = pPropVert + qPropVert;
+      if (numPropOut > 0) {
+        result->numProp = numPropOut;
+        result->properties = vec_double_create_n((size_t)numPropOut * totalPropVert);
+        memset(result->properties.data, 0, result->properties.len * sizeof(double));
+        // Copy P properties
+        if (numPropP > 0) {
+          for (size_t v = 0; v < pPropVert; v++)
+            for (int pp = 0; pp < numPropP; pp++)
+              result->properties.data[v * (size_t)numPropOut + pp] =
+                  p->properties.data[v * (size_t)numPropP + pp];
+        }
+        // Copy Q properties
+        if (numPropQ > 0) {
+          for (size_t v = 0; v < qPropVert; v++)
+            for (int pp = 0; pp < numPropQ; pp++)
+              result->properties.data[(pPropVert + v) * (size_t)numPropOut + pp] =
+                  q->properties.data[v * (size_t)numPropQ + pp];
+        }
+      }
+
       result->halfedge = vec_halfedge_create_n(pNhe + qNhe);
       memcpy(result->halfedge.data, p->halfedge.data, pNhe * sizeof(ManifoldHalfedge));
+      // Offset P propVerts if P has no props but output does
+      if (numPropOut > 0 && numPropP == 0) {
+        for (size_t i = 0; i < pNhe; i++)
+          result->halfedge.data[i].propVert = 0;
+      }
       for (size_t i = 0; i < qNhe; i++) {
         ManifoldHalfedge he = q->halfedge.data[i];
         he.startVert += (int)pNv;
         he.endVert += (int)pNv;
         he.pairedHalfedge += (int)pNhe;
-        he.propVert = he.startVert;
+        if (numPropOut > 0) {
+          if (numPropQ == 0) he.propVert = 0;
+          he.propVert += (int)pPropVert;
+        }
         result->halfedge.data[pNhe + i] = he;
       }
       size_t pNt = manifold_impl_num_tri(p);

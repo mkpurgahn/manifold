@@ -310,7 +310,7 @@ int manifold_impl_decompose(const ManifoldImpl *impl, ManifoldImpl *components,
   int outputCount = numComponents < maxComponents ? numComponents : maxComponents;
 
   for (int comp = 0; comp < outputCount; comp++) {
-    // Count verts and tris in this component
+    // Build vertex remap: old index → new index
     int nVert = 0;
     int *vertOld2New = (int *)malloc(numVert * sizeof(int));
     for (size_t i = 0; i < numVert; i++) vertOld2New[i] = -1;
@@ -320,42 +320,106 @@ int manifold_impl_decompose(const ManifoldImpl *impl, ManifoldImpl *components,
       }
     }
 
-    ManifoldVecIVec3 triVerts = {0};
+    // Gather face indices belonging to this component
+    int *faceNew2Old = (int *)malloc(numTri * sizeof(int));
+    int nFace = 0;
     for (size_t tri = 0; tri < numTri; tri++) {
       int sv = impl->halfedge.data[3 * tri].startVert;
       if (sv < 0 || (size_t)sv >= numVert) continue;
       if (componentLabel[sv] != comp) continue;
+      faceNew2Old[nFace++] = (int)tri;
+    }
 
-      ManifoldIVec3 tv;
-      tv.x = vertOld2New[impl->halfedge.data[3 * tri].startVert];
-      tv.y = vertOld2New[impl->halfedge.data[3 * tri + 1].startVert];
-      tv.z = vertOld2New[impl->halfedge.data[3 * tri + 2].startVert];
-      if (tv.x < 0 || tv.y < 0 || tv.z < 0) continue;
-      vec_ivec3_push(&triVerts, tv);
+    if (nFace == 0) {
+      free(vertOld2New);
+      free(faceNew2Old);
+      manifold_impl_init(&components[comp]);
+      continue;
     }
 
     manifold_impl_init(&components[comp]);
     components[comp].epsilon = impl->epsilon;
     components[comp].tolerance = impl->tolerance;
 
-    // Gather verts
+    // Gather vertex positions and normals
+    vec_vec3_resize(&components[comp].vertPos, (size_t)nVert);
+    if (impl->vertNormal.len >= numVert)
+      vec_vec3_resize(&components[comp].vertNormal, (size_t)nVert);
     for (size_t i = 0; i < numVert; i++) {
       if (componentLabel[i] == comp) {
-        vec_vec3_push(&components[comp].vertPos, impl->vertPos.data[i]);
+        components[comp].vertPos.data[vertOld2New[i]] = impl->vertPos.data[i];
+        if (impl->vertNormal.len >= numVert)
+          components[comp].vertNormal.data[vertOld2New[i]] = impl->vertNormal.data[i];
       }
     }
 
-    ManifoldVecIVec3 emptyTriVert = {0};
-    manifold_impl_create_halfedges(&components[comp], &triVerts, &emptyTriVert);
-    manifold_impl_initialize_original(&components[comp]);
+    // Copy properties wholesale (like C++ GatherFaces)
+    if (impl->numProp > 0) {
+      components[comp].numProp = impl->numProp;
+      components[comp].properties = vec_double_copy(&impl->properties);
+    }
+
+    // Build faceOld2New for pairedHalfedge remapping
+    int *faceOld2New = (int *)malloc(numTri * sizeof(int));
+    for (size_t i = 0; i < numTri; i++) faceOld2New[i] = -1;
+    for (int i = 0; i < nFace; i++) faceOld2New[faceNew2Old[i]] = i;
+
+    // Gather halfedges and tangents
+    int numHe = nFace * 3;
+    vec_halfedge_resize(&components[comp].halfedge, (size_t)numHe);
+    if (impl->halfedgeTangent.len > 0)
+      vec_vec4_resize(&components[comp].halfedgeTangent, (size_t)numHe);
+    for (int i = 0; i < nFace; i++) {
+      int oldTri = faceNew2Old[i];
+      for (int j = 0; j < 3; j++) {
+        ManifoldHalfedge he = impl->halfedge.data[3 * oldTri + j];
+        he.startVert = vertOld2New[he.startVert];
+        he.endVert = vertOld2New[he.endVert];
+        // Remap pairedHalfedge
+        int oldPair = he.pairedHalfedge;
+        if (oldPair >= 0) {
+          int oldPairTri = oldPair / 3;
+          int oldPairIdx = oldPair % 3;
+          int newPairTri = faceOld2New[oldPairTri];
+          he.pairedHalfedge = (newPairTri >= 0) ? (3 * newPairTri + oldPairIdx) : -1;
+        }
+        // propVert stays the same (indexes into global properties array)
+        components[comp].halfedge.data[3 * i + j] = he;
+        if (impl->halfedgeTangent.len > 0)
+          components[comp].halfedgeTangent.data[3 * i + j] =
+              impl->halfedgeTangent.data[3 * oldTri + j];
+      }
+    }
+
+    // Gather triRef and meshIDtransform
+    if (impl->meshRelation.triRef.len > 0) {
+      vec_triref_resize(&components[comp].meshRelation.triRef, (size_t)nFace);
+      for (int i = 0; i < nFace; i++) {
+        components[comp].meshRelation.triRef.data[i] =
+            impl->meshRelation.triRef.data[faceNew2Old[i]];
+      }
+    }
+    for (size_t i = 0; i < impl->meshRelation.meshIDtransform.len; i++) {
+      vec_meshid_push(&components[comp].meshRelation.meshIDtransform,
+                      impl->meshRelation.meshIDtransform.data[i]);
+    }
+
+    // Gather face normals
+    if (impl->faceNormal.len >= numTri) {
+      vec_vec3_resize(&components[comp].faceNormal, (size_t)nFace);
+      for (int i = 0; i < nFace; i++) {
+        components[comp].faceNormal.data[i] =
+            impl->faceNormal.data[faceNew2Old[i]];
+      }
+    }
+
     manifold_impl_calculate_bbox(&components[comp]);
     manifold_impl_set_epsilon(&components[comp], impl->epsilon, false);
     manifold_impl_sort_geometry(&components[comp]);
-    manifold_impl_set_normals_and_coplanar(&components[comp]);
 
-    vec_ivec3_free(&triVerts);
-    vec_ivec3_free(&emptyTriVert);
     free(vertOld2New);
+    free(faceNew2Old);
+    free(faceOld2New);
   }
 
   free(parent);

@@ -54,6 +54,10 @@ void manifold_compose_impls(const ManifoldImpl **impls, int count,
     }
     out->epsilon = impls[0]->epsilon;
     out->tolerance = impls[0]->tolerance;
+    if (impls[0]->numProp > 0) {
+      out->numProp = impls[0]->numProp;
+      out->properties = vec_double_copy(&impls[0]->properties);
+    }
     manifold_impl_calculate_bbox(out);
     return;
   }
@@ -62,6 +66,8 @@ void manifold_compose_impls(const ManifoldImpl **impls, int count,
   size_t totalVert = 0;
   size_t totalEdge = 0;
   size_t totalTri = 0;
+  size_t totalPropVert = 0;
+  int numPropOut = 0;
   double epsilon = -1;
   double tolerance = -1;
 
@@ -69,6 +75,9 @@ void manifold_compose_impls(const ManifoldImpl **impls, int count,
     totalVert += manifold_impl_num_vert(impls[i]);
     totalEdge += manifold_impl_num_edge(impls[i]);
     totalTri += manifold_impl_num_tri(impls[i]);
+    int np = impls[i]->numProp;
+    if (np > numPropOut) numPropOut = np;
+    totalPropVert += (np == 0) ? 1 : (impls[i]->properties.len / (size_t)np);
     if (impls[i]->epsilon > epsilon) epsilon = impls[i]->epsilon;
     if (impls[i]->tolerance > tolerance) tolerance = impls[i]->tolerance;
   }
@@ -83,11 +92,17 @@ void manifold_compose_impls(const ManifoldImpl **impls, int count,
   vec_halfedge_resize(&out->halfedge, 2 * totalEdge);
   vec_vec3_resize(&out->faceNormal, totalTri);
   vec_triref_resize(&out->meshRelation.triRef, totalTri);
+  if (numPropOut > 0) {
+    out->numProp = numPropOut;
+    vec_double_resize(&out->properties, (size_t)numPropOut * totalPropVert);
+    memset(out->properties.data, 0, out->properties.len * sizeof(double));
+  }
 
   // Copy data from each impl
   size_t vertOff = 0;
   size_t edgeOff = 0;
   size_t triOff = 0;
+  size_t propOff = 0;
 
   for (int i = 0; i < count; i++) {
     const ManifoldImpl *src = impls[i];
@@ -118,7 +133,23 @@ void manifold_compose_impls(const ManifoldImpl **impls, int count,
       h.startVert += (int)vertOff;
       h.endVert += (int)vertOff;
       h.pairedHalfedge += (int)edgeOff;
+      if (numPropOut > 0) {
+        if (src->numProp == 0) h.propVert = 0;
+        h.propVert += (int)propOff;
+      }
       out->halfedge.data[edgeOff + j] = h;
+    }
+
+    // Copy properties with stride conversion
+    if (src->numProp > 0 && numPropOut > 0) {
+      int srcNP = src->numProp;
+      size_t srcPropVert = src->properties.len / (size_t)srcNP;
+      for (size_t v = 0; v < srcPropVert; v++) {
+        for (int p = 0; p < srcNP; p++) {
+          out->properties.data[(propOff + v) * (size_t)numPropOut + p] =
+              src->properties.data[v * (size_t)srcNP + p];
+        }
+      }
     }
 
     // Copy triRef with mesh ID offset
@@ -130,6 +161,7 @@ void manifold_compose_impls(const ManifoldImpl **impls, int count,
     vertOff += nv;
     edgeOff += nhe;
     triOff += nt;
+    propOff += (src->numProp == 0) ? 1 : (src->properties.len / (size_t)src->numProp);
   }
 
   // Update bounding box

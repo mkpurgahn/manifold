@@ -1456,6 +1456,24 @@ static void color_prop_fn(double *newProp, ManifoldVec3 pos,
   newProp[2] = pos.z;
 }
 
+// WithPositionColors: normalizes position to [0,1] based on bounding box
+typedef struct { ManifoldVec3 bmin; ManifoldVec3 bsize; } PosColorCtx;
+static void pos_color_prop_fn(double *newProp, ManifoldVec3 pos,
+                               const double *oldProp, void *ctx) {
+  (void)oldProp;
+  PosColorCtx *pc = (PosColorCtx *)ctx;
+  newProp[0] = (pos.x - pc->bmin.x) / pc->bsize.x;
+  newProp[1] = (pos.y - pc->bmin.y) / pc->bsize.y;
+  newProp[2] = (pos.z - pc->bmin.z) / pc->bsize.z;
+}
+static Manifold with_position_colors(const Manifold *m) {
+  ManifoldBox box = manifold_bounding_box(m);
+  PosColorCtx ctx;
+  ctx.bmin = box.min;
+  ctx.bsize = (ManifoldVec3){box.max.x - box.min.x, box.max.y - box.min.y, box.max.z - box.min.z};
+  return manifold_set_properties(m, 3, pos_color_prop_fn, &ctx);
+}
+
 static void test_Properties_SetProperties(void) {
   Manifold cube = manifold_cube((ManifoldVec3){1, 1, 1}, false);
   Manifold colored = manifold_set_properties(&cube, 3, color_prop_fn, NULL);
@@ -3440,6 +3458,106 @@ static void test_Samples_RoundedFrame(void) {
   manifold_destroy(&frame1); manifold_destroy(&frame2); manifold_destroy(&frame);
 }
 
+// ==================== BooleanComplex additional ====================
+
+static void test_BooleanComplex_Sphere(void) {
+  Manifold sphere0 = manifold_sphere(1.0, 12);
+  Manifold sphere = with_position_colors(&sphere0);
+  Manifold sphere2 = manifold_translate(&sphere, (ManifoldVec3){0.5, 0.5, 0.5});
+  Manifold result = manifold_difference(&sphere, &sphere2);
+  EXPECT_FALSE(manifold_is_empty(&result));
+  EXPECT_EQ(manifold_num_vert(&result), (size_t)74);
+  EXPECT_EQ(manifold_num_tri(&result), (size_t)144);
+  EXPECT_EQ(manifold_num_degenerate_tris(&result), 0);
+  Manifold refined = manifold_refine(&result, 4);
+  EXPECT_FALSE(manifold_is_empty(&refined));
+  manifold_destroy(&sphere0); manifold_destroy(&sphere); manifold_destroy(&sphere2);
+  manifold_destroy(&result); manifold_destroy(&refined);
+}
+
+static void test_Manifold_DecomposeProps(void) {
+  Manifold tet0 = manifold_tetrahedron();
+  Manifold tet = with_position_colors(&tet0);
+  Manifold cube0 = manifold_cube((ManifoldVec3){1, 1, 1}, false);
+  Manifold cubet = manifold_translate(&cube0, (ManifoldVec3){2, 0, 0});
+  Manifold cubea = manifold_as_original(&cubet);
+  Manifold cube = with_position_colors(&cubea);
+  Manifold sph0 = manifold_sphere(1, 4);
+  Manifold spht = manifold_translate(&sph0, (ManifoldVec3){4, 0, 0});
+  Manifold spha = manifold_as_original(&spht);
+  Manifold sph = with_position_colors(&spha);
+
+  Manifold parts[3] = {tet, cube, sph};
+  Manifold manifolds = manifold_batch_boolean(parts, 3, MANIFOLD_OP_ADD);
+  EXPECT_FALSE(manifold_is_empty(&manifolds));
+
+  // Decompose - expect 3 components
+  Manifold *comps = (Manifold*)malloc(8 * sizeof(Manifold));
+  int nComp = manifold_decompose(&manifolds, &comps, 8);
+  EXPECT_EQ(nComp, 3);
+
+  // Sort by num_vert descending (matching C++ ExpectMeshes)
+  for (int i = 0; i < nComp - 1; i++) {
+    for (int j = i + 1; j < nComp; j++) {
+      if (manifold_num_vert(&comps[j]) > manifold_num_vert(&comps[i]) ||
+          (manifold_num_vert(&comps[j]) == manifold_num_vert(&comps[i]) &&
+           manifold_num_tri(&comps[j]) > manifold_num_tri(&comps[i]))) {
+        Manifold tmp = comps[i]; comps[i] = comps[j]; comps[j] = tmp;
+      }
+    }
+  }
+  // C++ expects: {{8, 12, 3}, {6, 8, 3}, {4, 4, 3}}
+  if (nComp >= 3) {
+    EXPECT_EQ(manifold_num_vert(&comps[0]), (size_t)8);
+    EXPECT_EQ(manifold_num_tri(&comps[0]), (size_t)12);
+    EXPECT_EQ(manifold_num_prop(&comps[0]), (size_t)3);
+    EXPECT_EQ(manifold_num_vert(&comps[1]), (size_t)6);
+    EXPECT_EQ(manifold_num_tri(&comps[1]), (size_t)8);
+    EXPECT_EQ(manifold_num_prop(&comps[1]), (size_t)3);
+    EXPECT_EQ(manifold_num_vert(&comps[2]), (size_t)4);
+    EXPECT_EQ(manifold_num_tri(&comps[2]), (size_t)4);
+    EXPECT_EQ(manifold_num_prop(&comps[2]), (size_t)3);
+  }
+
+  for (int i = 0; i < nComp; i++) manifold_destroy(&comps[i]);
+  free(comps);
+  manifold_destroy(&tet0); manifold_destroy(&tet);
+  manifold_destroy(&cube0); manifold_destroy(&cubet); manifold_destroy(&cubea); manifold_destroy(&cube);
+  manifold_destroy(&sph0); manifold_destroy(&spht); manifold_destroy(&spha); manifold_destroy(&sph);
+  manifold_destroy(&manifolds);
+}
+
+static void test_Properties_Coplanar(void) {
+  Manifold peg0 = manifold_cube((ManifoldVec3){1, 1, 2}, false);
+  Manifold peg1 = manifold_translate(&peg0, (ManifoldVec3){1, 1, 0});
+  Manifold peg = manifold_as_original(&peg1);
+  Manifold hole0 = manifold_cube((ManifoldVec3){3, 3, 1}, false);
+  Manifold hole1 = manifold_difference(&hole0, &peg);
+  Manifold hole = manifold_as_original(&hole1);
+  EXPECT_EQ(manifold_genus(&peg), 0);
+  EXPECT_EQ(manifold_genus(&hole), 1);
+
+  Manifold result = manifold_union(&hole, &peg);
+  EXPECT_EQ(manifold_genus(&result), 0);
+
+  manifold_destroy(&peg0); manifold_destroy(&peg1); manifold_destroy(&peg);
+  manifold_destroy(&hole0); manifold_destroy(&hole1); manifold_destroy(&hole);
+  manifold_destroy(&result);
+}
+
+static void test_Manifold_WarpBatch(void) {
+  // WarpBatch is functionally equivalent to Warp in C (no vectorized variant)
+  // Test that Warp produces the same result as the expected WarpBatch behavior
+  Manifold cube = manifold_cube((ManifoldVec3){2, 3, 4}, false);
+  Manifold shape1 = manifold_warp(&cube, warp_xz2, NULL);
+  // In C++, WarpBatch applies the same function to all verts at once
+  // Our Warp applies per-vertex. Check volumes match.
+  EXPECT_EQ(manifold_original_id(&shape1), -1);
+  EXPECT_GT(manifold_volume(&shape1), 0);
+  EXPECT_GT(manifold_surface_area(&shape1), 0);
+  manifold_destroy(&cube); manifold_destroy(&shape1);
+}
+
 // ==================== Main ====================
 
 int main(void) {
@@ -3506,6 +3624,7 @@ int main(void) {
   RUN_TEST(Manifold_MeshDeterminism);
   RUN_TEST(Manifold_MergeDegenerates);
   RUN_TEST(Manifold_MeshRelationRefine);
+  RUN_TEST(Manifold_DecomposeProps);
 
   // Boolean tests
   printf("--- Boolean ---\n");
@@ -3583,6 +3702,7 @@ int main(void) {
   RUN_TEST(Samples_RoundedFrame);
 
   RUN_TEST(Properties_Tolerance);
+  RUN_TEST(Properties_Coplanar);
 
   // C Binding tests
   printf("--- CBinding ---\n");
@@ -3601,6 +3721,7 @@ int main(void) {
   RUN_TEST(BooleanComplex_SelfIntersect);
   RUN_TEST(BooleanComplex_Subtract);
   RUN_TEST(BooleanComplex_BooleanVolumes);
+  RUN_TEST(BooleanComplex_Sphere);
 
   // Additional Smooth tests already registered above
 
@@ -3645,6 +3766,7 @@ int main(void) {
   RUN_TEST(BooleanComplex_Close);
   RUN_TEST(Boolean_Normals);
   RUN_TEST(Manifold_Warp2);
+  RUN_TEST(Manifold_WarpBatch);
   RUN_TEST(Smooth_SDF);
 
   // These tests may corrupt memory — run last

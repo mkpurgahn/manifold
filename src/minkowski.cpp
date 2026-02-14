@@ -92,6 +92,9 @@ Manifold Manifold::Impl::Minkowski(const Impl& other, bool inset) const {
             newHulls[iter] = Manifold::Hull(simpleHull);
           });
       composedHulls.push_back(Manifold::BatchBoolean(newHulls, OpType::Add));
+      fprintf(stderr, "C++ composedHulls[%zu]: vol=%.6f area=%.6f genus=%d verts=%d tris=%d\n",
+        composedHulls.size()-1, composedHulls.back().Volume(), composedHulls.back().SurfaceArea(),
+        composedHulls.back().Genus(), composedHulls.back().NumVert(), composedHulls.back().NumTri());
     }
     // Non-Convex - Non-Convex Minkowski: Very Slow
     // Process A faces sequentially with periodic batch reduction to balance
@@ -166,10 +169,20 @@ Manifold Manifold::Impl::Minkowski(const Impl& other, bool inset) const {
       composedHulls.push_back(Manifold::BatchBoolean(accumulated, OpType::Add));
     }
   }
-  return Manifold::BatchBoolean(composedHulls, inset
+  fprintf(stderr, "C++ composedHulls total: %zu\n", composedHulls.size());
+  for (size_t i = 0; i < composedHulls.size(); i++) {
+    fprintf(stderr, "C++ composedHulls[%zu]: vol=%.6f area=%.6f genus=%d verts=%d tris=%d\n",
+      i, composedHulls[i].Volume(), composedHulls[i].SurfaceArea(),
+      composedHulls[i].Genus(), composedHulls[i].NumVert(), composedHulls[i].NumTri());
+  }
+  auto finalResult = Manifold::BatchBoolean(composedHulls, inset
                                                    ? manifold::OpType::Subtract
                                                    : manifold::OpType::Add)
       .AsOriginal();
+  fprintf(stderr, "C++ result: vol=%.6f area=%.6f genus=%d verts=%d tris=%d\n",
+    finalResult.Volume(), finalResult.SurfaceArea(), finalResult.Genus(),
+    finalResult.NumVert(), finalResult.NumTri());
+  return finalResult;
 }
 
 }  // namespace manifold
