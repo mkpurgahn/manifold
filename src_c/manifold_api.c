@@ -2062,3 +2062,233 @@ Manifold manifold_read_obj(const char *path) {
   free(triVerts);
   return result;
 }
+
+// ---------- GLB Import ----------
+// Minimal JSON helpers for glTF parsing
+
+static const char *glb_skip_ws(const char *p) {
+  while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+  return p;
+}
+
+// Skip a JSON value (string, number, object, array, bool, null)
+static const char *glb_skip_json(const char *p) {
+  p = glb_skip_ws(p);
+  if (*p == '"') {
+    p++;
+    while (*p) {
+      if (*p == '\\') { p += 2; continue; }
+      if (*p == '"') return p + 1;
+      p++;
+    }
+    return p;
+  }
+  if (*p == '{' || *p == '[') {
+    int depth = 0;
+    while (*p) {
+      if (*p == '\\') { p += 2; continue; }
+      if (*p == '"') {
+        p++;
+        while (*p) {
+          if (*p == '\\') { p += 2; continue; }
+          if (*p == '"') break;
+          p++;
+        }
+        if (*p) p++;
+        continue;
+      }
+      if (*p == '{' || *p == '[') depth++;
+      else if (*p == '}' || *p == ']') {
+        depth--;
+        if (depth == 0) return p + 1;
+      }
+      p++;
+    }
+    return p;
+  }
+  while (*p && *p != ',' && *p != '}' && *p != ']' &&
+         *p != ' ' && *p != '\t' && *p != '\n' && *p != '\r') p++;
+  return p;
+}
+
+// Find a key's value in a JSON object. p must point to '{'
+static const char *glb_json_get(const char *p, const char *key) {
+  p = glb_skip_ws(p);
+  if (*p != '{') return NULL;
+  size_t keylen = strlen(key);
+  p = glb_skip_ws(p + 1);
+  while (*p && *p != '}') {
+    if (*p != '"') return NULL;
+    p++;
+    const char *kstart = p;
+    while (*p && *p != '"') p++;
+    size_t klen = (size_t)(p - kstart);
+    p++; // skip closing "
+    p = glb_skip_ws(p);
+    if (*p == ':') p = glb_skip_ws(p + 1);
+    if (klen == keylen && memcmp(kstart, key, klen) == 0) return p;
+    p = glb_skip_json(p);
+    p = glb_skip_ws(p);
+    if (*p == ',') p = glb_skip_ws(p + 1);
+  }
+  return NULL;
+}
+
+// Get the nth element of a JSON array. p must point to '['
+static const char *glb_json_idx(const char *p, int n) {
+  p = glb_skip_ws(p);
+  if (*p != '[') return NULL;
+  p = glb_skip_ws(p + 1);
+  for (int i = 0; i < n; i++) {
+    if (*p == ']') return NULL;
+    p = glb_skip_json(p);
+    p = glb_skip_ws(p);
+    if (*p == ',') p = glb_skip_ws(p + 1);
+  }
+  return (*p == ']') ? NULL : p;
+}
+
+static int glb_json_int(const char *p) {
+  if (!p) return 0;
+  p = glb_skip_ws(p);
+  return atoi(p);
+}
+
+Manifold manifold_read_glb(const char *path) {
+  FILE *f = fopen(path, "rb");
+  if (!f) return manifold_invalid();
+
+  // Read entire file
+  fseek(f, 0, SEEK_END);
+  long fsize = ftell(f);
+  fseek(f, 0, SEEK_SET);
+  unsigned char *buf = (unsigned char *)malloc(fsize);
+  if (!buf || fread(buf, 1, fsize, f) != (size_t)fsize) {
+    free(buf);
+    fclose(f);
+    return manifold_invalid();
+  }
+  fclose(f);
+
+  // Parse GLB header: magic(4) + version(4) + length(4)
+  if (fsize < 12) { free(buf); return manifold_invalid(); }
+  uint32_t magic, version, total;
+  memcpy(&magic, buf, 4);
+  memcpy(&version, buf + 4, 4);
+  memcpy(&total, buf + 8, 4);
+  if (magic != 0x46546C67 || version != 2) { // "glTF"
+    free(buf);
+    return manifold_invalid();
+  }
+
+  // Chunk 0: JSON
+  if (fsize < 20) { free(buf); return manifold_invalid(); }
+  uint32_t json_len, json_type;
+  memcpy(&json_len, buf + 12, 4);
+  memcpy(&json_type, buf + 16, 4);
+  if (json_type != 0x4E4F534A) { free(buf); return manifold_invalid(); } // "JSON"
+  char *json = (char *)malloc(json_len + 1);
+  memcpy(json, buf + 20, json_len);
+  json[json_len] = '\0';
+
+  // Chunk 1: BIN
+  size_t bin_off = 20 + json_len;
+  if ((long)bin_off + 8 > fsize) { free(json); free(buf); return manifold_invalid(); }
+  uint32_t bin_len, bin_type;
+  memcpy(&bin_len, buf + bin_off, 4);
+  memcpy(&bin_type, buf + bin_off + 4, 4);
+  if (bin_type != 0x004E4942) { free(json); free(buf); return manifold_invalid(); } // "BIN\0"
+  const unsigned char *bin = buf + bin_off + 8;
+
+  // Parse JSON: meshes[0].primitives[0].attributes.POSITION and .indices
+  const char *meshes = glb_json_get(json, "meshes");
+  const char *mesh0 = meshes ? glb_json_idx(meshes, 0) : NULL;
+  const char *prims = mesh0 ? glb_json_get(mesh0, "primitives") : NULL;
+  const char *prim0 = prims ? glb_json_idx(prims, 0) : NULL;
+  const char *attrs = prim0 ? glb_json_get(prim0, "attributes") : NULL;
+  const char *pos_val = attrs ? glb_json_get(attrs, "POSITION") : NULL;
+  const char *idx_val = prim0 ? glb_json_get(prim0, "indices") : NULL;
+
+  if (!pos_val || !idx_val) { free(json); free(buf); return manifold_invalid(); }
+  int pos_acc = glb_json_int(pos_val);
+  int idx_acc = glb_json_int(idx_val);
+
+  // Parse accessors
+  const char *accessors = glb_json_get(json, "accessors");
+  const char *bufferViews = glb_json_get(json, "bufferViews");
+  if (!accessors || !bufferViews) { free(json); free(buf); return manifold_invalid(); }
+
+  // Position accessor
+  const char *pa = glb_json_idx(accessors, pos_acc);
+  int pa_bv = glb_json_int(glb_json_get(pa, "bufferView"));
+  int pa_count = glb_json_int(glb_json_get(pa, "count"));
+  const char *pa_bo_val = pa ? glb_json_get(pa, "byteOffset") : NULL;
+  int pa_byte_offset = pa_bo_val ? glb_json_int(pa_bo_val) : 0;
+
+  // Index accessor
+  const char *ia = glb_json_idx(accessors, idx_acc);
+  int ia_bv = glb_json_int(glb_json_get(ia, "bufferView"));
+  int ia_count = glb_json_int(glb_json_get(ia, "count"));
+  int ia_comp_type = glb_json_int(glb_json_get(ia, "componentType"));
+  const char *ia_bo_val = ia ? glb_json_get(ia, "byteOffset") : NULL;
+  int ia_byte_offset = ia_bo_val ? glb_json_int(ia_bo_val) : 0;
+
+  // Position buffer view
+  const char *pbv = glb_json_idx(bufferViews, pa_bv);
+  const char *pbv_bo_val = pbv ? glb_json_get(pbv, "byteOffset") : NULL;
+  int pbv_offset = pbv_bo_val ? glb_json_int(pbv_bo_val) : 0;
+
+  // Index buffer view
+  const char *ibv = glb_json_idx(bufferViews, ia_bv);
+  const char *ibv_bo_val = ibv ? glb_json_get(ibv, "byteOffset") : NULL;
+  int ibv_offset = ibv_bo_val ? glb_json_int(ibv_bo_val) : 0;
+
+  size_t numVert = (size_t)pa_count;
+  size_t numIdx = (size_t)ia_count;
+  size_t numTri = numIdx / 3;
+
+  // Build MeshGL (float precision, matching C++ ImportMesh)
+  ManifoldMeshGL mgl = manifold_meshgl_empty();
+  mgl.numProp = 3;
+  mgl.vertLen = numVert;
+  mgl.triLen = numTri;
+  mgl.vertProperties = (float *)malloc(numVert * 3 * sizeof(float));
+  mgl.triVerts = (int *)malloc(numTri * 3 * sizeof(int));
+
+  // Read positions (float VEC3) with (z,x,y) coordinate swap
+  const float *pos_data = (const float *)(bin + pbv_offset + pa_byte_offset);
+  for (size_t i = 0; i < numVert; i++) {
+    float x = pos_data[3 * i + 0];
+    float y = pos_data[3 * i + 1];
+    float z = pos_data[3 * i + 2];
+    mgl.vertProperties[3 * i + 0] = z;
+    mgl.vertProperties[3 * i + 1] = x;
+    mgl.vertProperties[3 * i + 2] = y;
+  }
+
+  // Read indices
+  const unsigned char *idx_data = bin + ibv_offset + ia_byte_offset;
+  if (ia_comp_type == 5125) { // UNSIGNED_INT
+    const uint32_t *idx32 = (const uint32_t *)idx_data;
+    for (size_t i = 0; i < numIdx; i++)
+      mgl.triVerts[i] = (int)idx32[i];
+  } else if (ia_comp_type == 5123) { // UNSIGNED_SHORT
+    const uint16_t *idx16 = (const uint16_t *)idx_data;
+    for (size_t i = 0; i < numIdx; i++)
+      mgl.triVerts[i] = (int)idx16[i];
+  } else { // unsupported
+    free(mgl.vertProperties);
+    free(mgl.triVerts);
+    free(json);
+    free(buf);
+    return manifold_invalid();
+  }
+
+  free(json);
+  free(buf);
+
+  Manifold result = manifold_from_meshgl(&mgl);
+  free(mgl.vertProperties);
+  free(mgl.triVerts);
+  return result;
+}

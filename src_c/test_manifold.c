@@ -4699,6 +4699,19 @@ static Manifold read_test_obj(const char *filename) {
   return manifold_read_obj(path);
 }
 
+static Manifold read_test_glb(const char *filename) {
+  const char *file = __FILE__;
+  const char *sep = strrchr(file, '/');
+  char path[512];
+  if (sep) {
+    int dirlen = (int)(sep - file);
+    snprintf(path, sizeof(path), "%.*s/../test/models/%s", dirlen, file, filename);
+  } else {
+    snprintf(path, sizeof(path), "../test/models/%s", filename);
+  }
+  return manifold_read_glb(path);
+}
+
 static void test_BooleanComplex_OffsetSelfIntersect(void) {
   ManifoldExecutionParams *params = manifold_get_params();
   bool old_self_intersection = params->selfIntersectionChecks;
@@ -4729,6 +4742,26 @@ static void test_BooleanComplex_OffsetTriangulationFailure(void) {
   manifold_destroy(&a);
   manifold_destroy(&b);
   manifold_destroy(&result);
+}
+
+// ==================== BooleanComplex_CraycloudBool ====================
+
+static void test_BooleanComplex_CraycloudBool(void) {
+  Manifold m1 = read_test_glb("Cray_left.glb");
+  Manifold m2 = read_test_glb("Cray_right.glb");
+  Manifold res = manifold_difference(&m1, &m2);
+  EXPECT_EQ((int)manifold_status(&res), (int)MANIFOLD_ERROR_NO_ERROR);
+  EXPECT_FALSE(manifold_is_empty(&res));
+
+  Manifold orig = manifold_as_original(&res);
+  Manifold simplified = manifold_simplify(&orig, 0.0);
+  EXPECT_TRUE(manifold_is_empty(&simplified));
+
+  manifold_destroy(&simplified);
+  manifold_destroy(&orig);
+  manifold_destroy(&res);
+  manifold_destroy(&m2);
+  manifold_destroy(&m1);
 }
 
 // --- BooleanComplex_Sweep helpers ---
@@ -5218,6 +5251,7 @@ int main(void) {
   RUN_TEST(BooleanComplex_HullMask);
   RUN_TEST(BooleanComplex_OffsetSelfIntersect);
   RUN_TEST(BooleanComplex_OffsetTriangulationFailure);
+  RUN_TEST(BooleanComplex_CraycloudBool);
   RUN_TEST(BooleanComplex_Sweep);
 
   // Additional Smooth tests already registered above

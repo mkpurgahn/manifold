@@ -191,6 +191,11 @@ Manifold manifold_calculate_normals(const Manifold *m, int normalIdx,
 // Read a Manifold from a Wavefront OBJ file (matching C++ ReadOBJ).
 Manifold manifold_read_obj(const char *path);
 
+// ---------- GLB Import ----------
+// Read a Manifold from a binary glTF 2.0 (.glb) file.
+// Applies the same (z,x,y) coordinate swap as the C++ ImportMesh.
+Manifold manifold_read_glb(const char *path);
+
 // ---------- Execution Params ----------
 typedef struct {
   bool intermediateChecks;
