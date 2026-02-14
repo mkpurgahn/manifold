@@ -6,7 +6,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TESTS_DIR="$SCRIPT_DIR/prompts/tests"
-RALPH_LOOP="$SCRIPT_DIR/../ralph-loop/ralph-loop.sh"
+RALPH_LOOP="/Users/admin/projects/Axolotl/tools/ralph-loop/ralph-loop.sh"
 WORKING_DIR="/Users/admin/projects/manifold"
 
 COMPLETION_PROMISE="Phase complete — test ported and verified"
