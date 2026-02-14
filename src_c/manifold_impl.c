@@ -466,6 +466,15 @@ void manifold_impl_calculate_vert_normals(ManifoldImpl *impl) {
       int nextEdge = manifold_next_halfedge(edge);
       int thirdV = impl->halfedge.data[nextEdge].endVert;
 
+      if (startV < 0 || (size_t)startV >= numVert ||
+          endV < 0 || (size_t)endV >= numVert ||
+          thirdV < 0 || (size_t)thirdV >= numVert) {
+        edge = manifold_next_halfedge(
+            impl->halfedge.data[edge].pairedHalfedge);
+        if (++iterations > (int)impl->halfedge.len) break;
+        continue;
+      }
+
       ManifoldVec3 currEdge = vec3_normalize(
           vec3_sub(impl->vertPos.data[endV], impl->vertPos.data[startV]));
       ManifoldVec3 prevEdge = vec3_normalize(
@@ -479,8 +488,10 @@ void manifold_impl_calculate_vert_normals(ManifoldImpl *impl) {
             vec3_scale(impl->faceNormal.data[edge / 3], phi));
       }
 
-      edge = manifold_next_halfedge(
-          impl->halfedge.data[edge].pairedHalfedge);
+      int paired = impl->halfedge.data[edge].pairedHalfedge;
+      if (paired < 0 || (size_t)paired >= impl->halfedge.len) break;
+      edge = manifold_next_halfedge(paired);
+      if (edge < 0 || (size_t)edge >= impl->halfedge.len) break;
       if (++iterations > (int)impl->halfedge.len) break;
     } while (edge != firstEdge);
 
