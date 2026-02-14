@@ -925,6 +925,7 @@ void manifold_impl_initialize_original(ManifoldImpl *impl) {
   rel.backSide = false;
 
   impl->meshRelation.originalID = (int)meshID;
+  impl->meshRelation.meshIDtransform.len = 0;  // clear existing entries
   manifold_meshrelation_insert(&impl->meshRelation, (int)meshID, rel);
 
   vec_triref_resize(&impl->meshRelation.triRef, numTri);

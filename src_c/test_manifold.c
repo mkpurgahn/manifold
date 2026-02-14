@@ -3732,14 +3732,26 @@ static void test_Samples_RoundedFrame(void) {
 static void test_BooleanComplex_Sphere(void) {
   Manifold sphere0 = manifold_sphere(1.0, 12);
   Manifold sphere = with_position_colors(&sphere0);
+  ManifoldMeshGL sphereGL = manifold_get_meshgl(&sphere);
+
   Manifold sphere2 = manifold_translate(&sphere, (ManifoldVec3){0.5, 0.5, 0.5});
   Manifold result = manifold_difference(&sphere, &sphere2);
-  EXPECT_FALSE(manifold_is_empty(&result));
-  EXPECT_EQ(manifold_num_vert(&result), (size_t)74);
-  EXPECT_EQ(manifold_num_tri(&result), (size_t)144);
+
+  // ExpectMeshes(result, {{74, 144, 3, 110}})
+  {
+    int sizes[][2] = {{74, 144}};
+    expect_meshes(&result, sizes, 1);
+  }
+  EXPECT_EQ(manifold_num_prop(&result), (size_t)3);
+  EXPECT_EQ(manifold_num_prop_vert(&result), (size_t)110);
   EXPECT_EQ(manifold_num_degenerate_tris(&result), 0);
+
+  related_gl(&result, &sphereGL, 1, false);
+
   Manifold refined = manifold_refine(&result, 4);
-  EXPECT_FALSE(manifold_is_empty(&refined));
+  related_gl(&refined, &sphereGL, 1, false);
+
+  manifold_free_meshgl(&sphereGL);
   manifold_destroy(&sphere0); manifold_destroy(&sphere); manifold_destroy(&sphere2);
   manifold_destroy(&result); manifold_destroy(&refined);
 }
