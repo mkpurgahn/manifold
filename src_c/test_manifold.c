@@ -5771,17 +5771,40 @@ static void test_Properties_Coplanar(void) {
   manifold_destroy(&result);
 }
 
+static void warp_batch_xz2(ManifoldVec3 *verts, size_t numVerts, void *ctx) {
+  (void)ctx;
+  for (size_t i = 0; i < numVerts; i++) {
+    verts[i].x += verts[i].z * verts[i].z;
+  }
+}
+
 static void test_Manifold_WarpBatch(void) {
-  // WarpBatch is functionally equivalent to Warp in C (no vectorized variant)
-  // Test that Warp produces the same result as the expected WarpBatch behavior
   Manifold cube = manifold_cube((ManifoldVec3){2, 3, 4}, false);
+  int id = manifold_original_id(&cube);
+
   Manifold shape1 = manifold_warp(&cube, warp_xz2, NULL);
-  // In C++, WarpBatch applies the same function to all verts at once
-  // Our Warp applies per-vertex. Check volumes match.
+  Manifold shape2 = manifold_warp_batch(&cube, warp_batch_xz2, NULL);
+
+  EXPECT_GE(id, 0);
   EXPECT_EQ(manifold_original_id(&shape1), -1);
-  EXPECT_GT(manifold_volume(&shape1), 0);
-  EXPECT_GT(manifold_surface_area(&shape1), 0);
-  manifold_destroy(&cube); manifold_destroy(&shape1);
+  EXPECT_EQ(manifold_original_id(&shape2), -1);
+
+  ManifoldMeshGL gl1 = manifold_get_meshgl(&shape1);
+  EXPECT_EQ((int)gl1.runOriginalIDLen, 1);
+  EXPECT_EQ((int)gl1.runOriginalID[0], id);
+
+  ManifoldMeshGL gl2 = manifold_get_meshgl(&shape2);
+  EXPECT_EQ((int)gl2.runOriginalIDLen, 1);
+  EXPECT_EQ((int)gl2.runOriginalID[0], id);
+
+  EXPECT_FLOAT_EQ(manifold_volume(&shape1), manifold_volume(&shape2));
+  EXPECT_FLOAT_EQ(manifold_surface_area(&shape1), manifold_surface_area(&shape2));
+
+  manifold_free_meshgl(&gl1);
+  manifold_free_meshgl(&gl2);
+  manifold_destroy(&cube);
+  manifold_destroy(&shape1);
+  manifold_destroy(&shape2);
 }
 
 static void test_Manifold_MeshID(void) {

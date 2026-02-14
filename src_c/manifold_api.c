@@ -572,6 +572,20 @@ Manifold manifold_warp(const Manifold *m,
   return out;
 }
 
+Manifold manifold_warp_batch(const Manifold *m,
+                            void (*warpFn)(ManifoldVec3 *verts, size_t numVerts, void *ctx),
+                            void *ctx) {
+  Manifold out;
+  manifold_copy(&out, m);
+  warpFn(out.impl.vertPos.data, out.impl.vertPos.len, ctx);
+  manifold_impl_calculate_bbox(&out.impl);
+  manifold_impl_set_epsilon(&out.impl, -1.0, false);
+  manifold_impl_sort_geometry(&out.impl);
+  manifold_impl_set_normals_and_coplanar(&out.impl);
+  out.impl.meshRelation.originalID = -1;
+  return out;
+}
+
 Manifold manifold_hull(const Manifold *m) {
   Manifold result;
   manifold_convex_hull(&result.impl, m->impl.vertPos.data, m->impl.vertPos.len);

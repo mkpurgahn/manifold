@@ -91,6 +91,9 @@ Manifold manifold_level_set(double (*sdf)(double x, double y, double z, void *ct
 Manifold manifold_warp(const Manifold *m,
                        void (*warpFn)(double *x, double *y, double *z, void *ctx),
                        void *ctx);
+Manifold manifold_warp_batch(const Manifold *m,
+                             void (*warpFn)(ManifoldVec3 *verts, size_t numVerts, void *ctx),
+                             void *ctx);
 
 // ---------- Quality ----------
 int manifold_get_circular_segments(double radius);
