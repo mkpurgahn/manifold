@@ -564,6 +564,43 @@ static void expect_meshes(const Manifold *manifold,
   free(comps);
 }
 
+// Identical: verify two MeshGLs have same vertices and triangles
+static int ivec3_compare(const void *a, const void *b) {
+  const int *ia = (const int *)a;
+  const int *ib = (const int *)b;
+  if (ia[0] != ib[0]) return ia[0] < ib[0] ? -1 : 1;
+  if (ia[1] != ib[1]) return ia[1] < ib[1] ? -1 : 1;
+  if (ia[2] != ib[2]) return ia[2] < ib[2] ? -1 : 1;
+  return 0;
+}
+
+static void identical_meshgl(const ManifoldMeshGL *m1, const ManifoldMeshGL *m2) {
+  ASSERT_EQ(m1->vertLen, m2->vertLen);
+  for (size_t i = 0; i < m1->vertLen; i++) {
+    float dx = m1->vertProperties[i * m1->numProp + 0] - m2->vertProperties[i * m2->numProp + 0];
+    float dy = m1->vertProperties[i * m1->numProp + 1] - m2->vertProperties[i * m2->numProp + 1];
+    float dz = m1->vertProperties[i * m1->numProp + 2] - m2->vertProperties[i * m2->numProp + 2];
+    float len = sqrtf(dx*dx + dy*dy + dz*dz);
+    ASSERT_LE((double)len, 0.0001);
+  }
+  ASSERT_EQ(m1->triLen, m2->triLen);
+  size_t nTri = m1->triLen;
+  int (*tri1)[3] = (int(*)[3])malloc(nTri * sizeof(int[3]));
+  int (*tri2)[3] = (int(*)[3])malloc(nTri * sizeof(int[3]));
+  for (size_t i = 0; i < nTri; i++) {
+    tri1[i][0] = m1->triVerts[3*i]; tri1[i][1] = m1->triVerts[3*i+1]; tri1[i][2] = m1->triVerts[3*i+2];
+    tri2[i][0] = m2->triVerts[3*i]; tri2[i][1] = m2->triVerts[3*i+1]; tri2[i][2] = m2->triVerts[3*i+2];
+  }
+  qsort(tri1, nTri, sizeof(int[3]), ivec3_compare);
+  qsort(tri2, nTri, sizeof(int[3]), ivec3_compare);
+  for (size_t i = 0; i < nTri; i++) {
+    ASSERT_EQ(tri1[i][0], tri2[i][0]);
+    ASSERT_EQ(tri1[i][1], tri2[i][1]);
+    ASSERT_EQ(tri1[i][2], tri2[i][2]);
+  }
+  free(tri1); free(tri2);
+}
+
 // RelatedGL: verify output mesh can be traced back to originals
 static void related_gl(const Manifold *out,
                         const ManifoldMeshGL *originals, size_t nOriginals,
@@ -2693,6 +2730,18 @@ static void test_Manifold_MeshRelationTransform(void) {
   EXPECT_EQ((int)manifold_status(&turned), (int)MANIFOLD_ERROR_NO_ERROR);
   EXPECT_NEAR(manifold_volume(&turned), 1.0, 1e-5);
   manifold_destroy(&cube); manifold_destroy(&turned);
+}
+
+static void test_Manifold_GetMeshGL(void) {
+  Manifold manifold = manifold_sphere(0.01, 0);
+  ManifoldMeshGL mesh_out = manifold_get_meshgl(&manifold);
+  Manifold manifold2 = manifold_from_meshgl(&mesh_out);
+  ManifoldMeshGL mesh_out2 = manifold_get_meshgl(&manifold2);
+  identical_meshgl(&mesh_out, &mesh_out2);
+  manifold_free_meshgl(&mesh_out2);
+  manifold_free_meshgl(&mesh_out);
+  manifold_destroy(&manifold2);
+  manifold_destroy(&manifold);
 }
 
 static void test_Manifold_MeshGLRoundTrip(void) {
@@ -5186,6 +5235,7 @@ int main(void) {
   RUN_TEST(Manifold_InvalidInput6);
   RUN_TEST(Manifold_Warp);
   RUN_TEST(Manifold_MeshRelationTransform);
+  RUN_TEST(Manifold_GetMeshGL);
   RUN_TEST(Manifold_MeshGLRoundTrip);
   RUN_TEST(Manifold_MeshDeterminism);
   RUN_TEST(Manifold_MergeDegenerates);
