@@ -21,6 +21,10 @@ static const double kPi = M_PI;
 static const double kTwoPi = 2.0 * M_PI;
 static const double kPrecision = 1e-12;  // matches C++ kPrecision in src/utils.h
 
+// Forward declarations for helpers defined later
+static double gyroid_sdf(double x, double y, double z, void *ctx);
+static Manifold make_gyroid(void);
+
 static int test_passed = 0;
 static int test_failed = 0;
 static int _current_test_failed = 0;  // per-test failure flag
@@ -2723,6 +2727,20 @@ static void test_Manifold_Warp(void) {
   manifold_destroy(&shape); manifold_destroy(&warped);
 }
 
+static void test_Manifold_MeshRelation(void) {
+  Manifold gyroid0 = make_gyroid();
+  Manifold gyroid = with_position_colors(&gyroid0);
+  ManifoldMeshGL gyroidMeshGL = manifold_get_meshgl(&gyroid);
+  Manifold gyroidS = manifold_simplify(&gyroid, 0);
+
+  related_gl(&gyroidS, &gyroidMeshGL, 1, false);
+
+  manifold_free_meshgl(&gyroidMeshGL);
+  manifold_destroy(&gyroid0);
+  manifold_destroy(&gyroid);
+  manifold_destroy(&gyroidS);
+}
+
 static void test_Manifold_MeshRelationTransform(void) {
   // Just test that transform preserves manifold validity
   Manifold cube = manifold_cube((ManifoldVec3){1,1,1}, false);
@@ -5262,6 +5280,7 @@ int main(void) {
   RUN_TEST(Manifold_InvalidInput4);
   RUN_TEST(Manifold_InvalidInput6);
   RUN_TEST(Manifold_Warp);
+  RUN_TEST(Manifold_MeshRelation);
   RUN_TEST(Manifold_MeshRelationTransform);
   RUN_TEST(Manifold_GetMeshGL);
   RUN_TEST(Manifold_MeshGLRoundTrip);
