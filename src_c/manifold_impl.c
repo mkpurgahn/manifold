@@ -991,17 +991,13 @@ static bool impl_collapse_edge(ManifoldImpl *impl, int edge,
   // Orbit endVert
   {
     int cur = impl->halfedge.data[tri0edge.y].pairedHalfedge;
-    if (cur < 0) return false;
     int safeN = 0;
     while (cur != tri1edge.z && safeN++ < (int)impl->halfedge.len) {
       cur = manifold_next_halfedge(cur);
-      if ((size_t)cur >= impl->halfedge.len) return false;
       vec_int_push(edges, cur);
       int paired = impl->halfedge.data[cur].pairedHalfedge;
-      if (paired < 0 || (size_t)paired >= impl->halfedge.len) return false;
       cur = paired;
     }
-    if (safeN >= (int)impl->halfedge.len) return false;
   }
 
   // Remove toRemove.startVert
@@ -1565,19 +1561,15 @@ static bool is_swappable_edge(const ManifoldImpl *impl, int edge,
 
 static void impl_collapse_short_edges(ManifoldImpl *impl, int firstNewVert) {
   size_t nbEdges = impl->halfedge.len;
-  ManifoldVecInt flagged = vec_int_create(0);
   ManifoldVecInt scratchBuffer = vec_int_create(0);
 
   for (size_t i = 0; i < nbEdges; i++) {
-    if (is_short_edge(impl, (int)i, firstNewVert))
-      vec_int_push(&flagged, (int)i);
-  }
-  for (size_t i = 0; i < flagged.len; i++) {
-    scratchBuffer.len = 0;
-    impl_collapse_edge(impl, flagged.data[i], &scratchBuffer);
+    if (is_short_edge(impl, (int)i, firstNewVert)) {
+      scratchBuffer.len = 0;
+      impl_collapse_edge(impl, (int)i, &scratchBuffer);
+    }
   }
 
-  vec_int_free(&flagged);
   vec_int_free(&scratchBuffer);
 }
 
@@ -1676,7 +1668,6 @@ void manifold_impl_remove_degenerates(ManifoldImpl *impl, int firstNewVert) {
   if (!impl->halfedge.len) return;
   manifold_impl_cleanup_topology(impl);
   impl_collapse_short_edges(impl, firstNewVert);
-  impl_collapse_colinear_edges(impl, firstNewVert);
   impl_swap_degenerates(impl, firstNewVert);
   manifold_impl_calculate_vert_normals(impl);
 }

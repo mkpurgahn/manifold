@@ -2233,13 +2233,25 @@ ManifoldError manifold_boolean_op(ManifoldImpl *result,
         vec_meshid_push(&result->meshRelation.meshIDtransform,
                         q->meshRelation.meshIDtransform.data[i]);
       manifold_impl_calculate_bbox(result);
-      manifold_impl_set_epsilon(result, fmax(p->epsilon, q->epsilon), false);
+      // Scale epsilon like C++ Compose: each node's epsilon is scaled by
+      // newBboxScale/oldBboxScale to match the combined bounding box
+      double pOldScale = manifold_box_scale(p->bBox);
+      double qOldScale = manifold_box_scale(q->bBox);
+      double newScale = manifold_box_scale(result->bBox);
+      double pScaledEps = p->epsilon * fmax(1.0, pOldScale > 0 ? newScale / pOldScale : 1.0);
+      pScaledEps = fmax(pScaledEps, MANIFOLD_PRECISION * newScale);
+      double qScaledEps = q->epsilon * fmax(1.0, qOldScale > 0 ? newScale / qOldScale : 1.0);
+      qScaledEps = fmax(qScaledEps, MANIFOLD_PRECISION * newScale);
+      double combinedEps = fmax(pScaledEps, qScaledEps);
+      manifold_impl_set_epsilon(result, combinedEps, false);
       result->tolerance = fmax(p->tolerance, q->tolerance);
       // Need face normals before remove_degenerates (it calls vert normals calc)
       manifold_impl_set_normals_and_coplanar(result);
       // Remove degenerate components (tiny meshes with edges < epsilon)
       // This matches C++ Compose behavior which calls RemoveDegenerates
       manifold_impl_remove_degenerates(result, 0);
+      // Sort to remove NaN vertices and clean up (matches C++ Compose)
+      manifold_impl_sort_geometry(result);
       return MANIFOLD_ERROR_NO_ERROR;
     }
     if (op == MANIFOLD_OP_SUBTRACT) {
