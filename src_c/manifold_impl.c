@@ -207,7 +207,7 @@ void manifold_impl_sort_verts(ManifoldImpl *impl) {
 void manifold_impl_reindex_verts(ManifoldImpl *impl,
                                   const ManifoldVecInt *vertNew2Old,
                                   size_t oldNumVert) {
-  ManifoldVecInt vertOld2New = vec_int_create_n(oldNumVert);
+  ManifoldVecInt vertOld2New = vec_int_create_fill(oldNumVert, -1);
   for (size_t i = 0; i < vertNew2Old->len; i++) {
     vertOld2New.data[vertNew2Old->data[i]] = (int)i;
   }
@@ -218,8 +218,15 @@ void manifold_impl_reindex_verts(ManifoldImpl *impl,
     if (edge->startVert < 0) continue;
     if ((size_t)edge->startVert >= oldNumVert ||
         (size_t)edge->endVert >= oldNumVert) continue;
-    edge->startVert = vertOld2New.data[edge->startVert];
-    edge->endVert = vertOld2New.data[edge->endVert];
+    int newStart = vertOld2New.data[edge->startVert];
+    int newEnd = vertOld2New.data[edge->endVert];
+    if (newStart < 0 || newEnd < 0) {
+      edge->startVert = -1;
+      edge->endVert = -1;
+      continue;
+    }
+    edge->startVert = newStart;
+    edge->endVert = newEnd;
     if (!hasProp) {
       edge->propVert = edge->startVert;
     }

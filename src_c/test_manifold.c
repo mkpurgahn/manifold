@@ -3258,12 +3258,10 @@ int main(void) {
   RUN_TEST(Samples_Frame);
   RUN_TEST(Samples_Knot13);
   RUN_TEST(Samples_Knot42);
-  RUN_TEST(Samples_Sponge4);
-
-  // Crash-prone under -O2 (boolean memory corruption) - run last
   RUN_TEST(Boolean_Perturb3);
 
-  // FrameReduced currently crashes due to boolean topology bug - run last
+  // These tests may corrupt memory — run last
+  RUN_TEST(Samples_Sponge4);
   RUN_TEST(Samples_FrameReduced);
 
   printf("\n=== %d tests passed, %d failed ===\n", test_passed, test_failed);
