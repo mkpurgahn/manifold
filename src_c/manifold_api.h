@@ -199,16 +199,41 @@ void manifold_get_mesh(const Manifold *m,
 // Free mesh data returned by manifold_get_mesh
 void manifold_free_mesh(float *vertProps, int *triVerts);
 
-// ---------- MeshGL-style Input ----------
-// Flat mesh representation for import/export
+// ---------- MeshGL-style Input/Output ----------
+// Flat mesh representation for import/export (mirrors C++ MeshGL)
 typedef struct ManifoldMeshGL {
-  int numProp;          // properties per vertex (>= 3 for xyz)
-  double *vertProperties; // flat: numProp * vertLen doubles
-  size_t vertLen;       // number of vertices
-  int *triVerts;        // flat: 3 * triLen ints (vertex indices)
-  size_t triLen;        // number of triangles
-  double tolerance;
+  int numProp;              // properties per vertex (>= 3 for xyz)
+  float *vertProperties;    // flat: numProp * vertLen floats
+  size_t vertLen;           // number of property vertices
+  int *triVerts;            // flat: 3 * triLen ints (vertex indices)
+  size_t triLen;            // number of triangles
+  int *mergeFromVert;       // merge source vertex indices
+  int *mergeToVert;         // merge target vertex indices
+  size_t mergeLen;          // length of merge vectors
+  uint32_t *runOriginalID;  // original ID per run
+  size_t runOriginalIDLen;
+  int *runIndex;            // triVerts index where each run starts
+  size_t runIndexLen;       // runOriginalIDLen + 1
+  float *runTransform;      // 12 floats per run (3x4 column-major)
+  size_t runTransformLen;
+  int *faceID;              // face ID per triangle
+  size_t faceIDLen;
+  float *halfedgeTangent;   // 4 floats per halfedge
+  size_t halfedgeTangentLen;
+  float tolerance;
 } ManifoldMeshGL;
+
+// Initialize a ManifoldMeshGL to zero
+static inline ManifoldMeshGL manifold_meshgl_empty(void) {
+  ManifoldMeshGL m;
+  memset(&m, 0, sizeof(m));
+  return m;
+}
+
+// Get full MeshGL output (caller must free with manifold_free_meshgl)
+ManifoldMeshGL manifold_get_meshgl(const Manifold *m);
+// Free all arrays in a ManifoldMeshGL returned by manifold_get_meshgl
+void manifold_free_meshgl(ManifoldMeshGL *mgl);
 
 // Create a manifold from a MeshGL-style flat structure
 Manifold manifold_from_meshgl(const ManifoldMeshGL *mesh);

@@ -171,6 +171,12 @@ Manifold manifold_translate(const Manifold *m, ManifoldVec3 v) {
   manifold_impl_calculate_bbox(&out.impl);
   manifold_impl_set_epsilon(&out.impl, out.impl.epsilon, false);
 
+  // Update meshRelation transforms: compose translation into each relation
+  for (size_t i = 0; i < out.impl.meshRelation.meshIDtransform.len; i++) {
+    ManifoldMat3x4 *t = &out.impl.meshRelation.meshIDtransform.data[i].value.transform;
+    t->cols[3] = vec3_add(t->cols[3], v);
+  }
+
   // Reuse collider from source with translated boxes (matches C++ LazyCollider
   // transform behavior for axis-aligned translations)
   if (m->impl.colliderBuilt && m->impl.collider.internalChildren.len > 0) {
@@ -223,6 +229,17 @@ Manifold manifold_scale(const Manifold *m, ManifoldVec3 v) {
   scaleMat.cols[0] = manifold_vec3(v.x, 0, 0);
   scaleMat.cols[1] = manifold_vec3(0, v.y, 0);
   scaleMat.cols[2] = manifold_vec3(0, 0, v.z);
+
+  // Update meshRelation transforms: compose scale into each relation
+  ManifoldMat3x4 scaleT;
+  scaleT.cols[0] = manifold_vec3(v.x, 0, 0);
+  scaleT.cols[1] = manifold_vec3(0, v.y, 0);
+  scaleT.cols[2] = manifold_vec3(0, 0, v.z);
+  scaleT.cols[3] = manifold_vec3(0, 0, 0);
+  for (size_t i = 0; i < out.impl.meshRelation.meshIDtransform.len; i++) {
+    ManifoldRelation *rel = &out.impl.meshRelation.meshIDtransform.data[i].value;
+    rel->transform = mat3x4_compose(scaleT, rel->transform);
+  }
 
   // Transform tangents BEFORE flipping (uses old halfedge for mapping)
   if (m->impl.halfedgeTangent.len > 0) {
@@ -282,8 +299,19 @@ Manifold manifold_rotate(const Manifold *m, double xDeg, double yDeg,
   rz.cols[2] = manifold_vec3(0, 0, 1);
   ManifoldMat3 rot = mat3_mul(rz, mat3_mul(ry, rx));
 
+  ManifoldMat3x4 rotT;
+  rotT.cols[0] = rot.cols[0]; rotT.cols[1] = rot.cols[1];
+  rotT.cols[2] = rot.cols[2]; rotT.cols[3] = manifold_vec3(0, 0, 0);
+
   Manifold out;
   manifold_copy(&out, m);
+
+  // Update meshRelation transforms
+  for (size_t i = 0; i < out.impl.meshRelation.meshIDtransform.len; i++) {
+    ManifoldRelation *rel = &out.impl.meshRelation.meshIDtransform.data[i].value;
+    rel->transform = mat3x4_compose(rotT, rel->transform);
+  }
+
   // Rotation has det=1, so no invert; tangent transform is just rotation
   if (m->impl.halfedgeTangent.len > 0) {
     transform_tangents(&out.impl, rot, false,
@@ -312,6 +340,12 @@ Manifold manifold_transform(const Manifold *m, ManifoldMat3x4 t) {
   manifold_copy(&out, m);
   for (size_t i = 0; i < out.impl.vertPos.len; i++) {
     out.impl.vertPos.data[i] = mat3x4_transform_point(t, out.impl.vertPos.data[i]);
+  }
+
+  // Update meshRelation transforms
+  for (size_t i = 0; i < out.impl.meshRelation.meshIDtransform.len; i++) {
+    ManifoldRelation *rel = &out.impl.meshRelation.meshIDtransform.data[i].value;
+    rel->transform = mat3x4_compose(t, rel->transform);
   }
 
   // Extract 3x3 rotation/scale part
@@ -1409,38 +1443,533 @@ Manifold manifold_from_meshgl(const ManifoldMeshGL *mesh) {
     manifold_impl_init(&m.impl);
     return m;
   }
-  // Check for NaN vertices
-  for (size_t i = 0; i < mesh->vertLen; i++) {
-    for (int p = 0; p < 3; p++) {
-      if (isnan(mesh->vertProperties[i * mesh->numProp + p]) ||
-          isinf(mesh->vertProperties[i * mesh->numProp + p])) {
-        Manifold m;
-        manifold_impl_init(&m.impl);
-        return m;
-      }
+  // Check for NaN/Inf vertices
+  for (size_t i = 0; i < mesh->vertLen * (size_t)mesh->numProp; i++) {
+    if (!isfinite(mesh->vertProperties[i])) {
+      Manifold m;
+      manifold_impl_init(&m.impl);
+      return m;
     }
   }
-  // Extract positions
-  ManifoldVec3 *verts = (ManifoldVec3 *)malloc(mesh->vertLen * sizeof(ManifoldVec3));
-  for (size_t i = 0; i < mesh->vertLen; i++) {
-    verts[i].x = mesh->vertProperties[i * mesh->numProp + 0];
-    verts[i].y = mesh->vertProperties[i * mesh->numProp + 1];
-    verts[i].z = mesh->vertProperties[i * mesh->numProp + 2];
+  // Check for NaN/Inf transforms
+  for (size_t i = 0; i < mesh->runTransformLen; i++) {
+    if (!isfinite(mesh->runTransform[i])) {
+      Manifold m;
+      manifold_impl_init(&m.impl);
+      m.impl.status = MANIFOLD_ERROR_INVALID_CONSTRUCTION;
+      return m;
+    }
   }
-  // Extract triangles
-  ManifoldIVec3 *tris = (ManifoldIVec3 *)malloc(mesh->triLen * sizeof(ManifoldIVec3));
-  for (size_t i = 0; i < mesh->triLen; i++) {
-    tris[i].x = mesh->triVerts[i * 3 + 0];
-    tris[i].y = mesh->triVerts[i * 3 + 1];
-    tris[i].z = mesh->triVerts[i * 3 + 2];
+
+  const size_t numVert = mesh->vertLen;
+  const size_t numTri = mesh->triLen;
+  const int numProp = mesh->numProp - 3;  // custom properties (excluding xyz)
+
+  // Build prop2vert merge map
+  int *prop2vert = NULL;
+  if (mesh->mergeLen > 0 && mesh->mergeFromVert && mesh->mergeToVert) {
+    prop2vert = (int *)malloc(numVert * sizeof(int));
+    for (size_t i = 0; i < numVert; i++) prop2vert[i] = (int)i;
+    for (size_t i = 0; i < mesh->mergeLen; i++) {
+      int from = mesh->mergeFromVert[i];
+      int to = mesh->mergeToVert[i];
+      if (from < 0 || (size_t)from >= numVert || to < 0 || (size_t)to >= numVert) {
+        free(prop2vert);
+        Manifold m;
+        manifold_impl_init(&m.impl);
+        m.impl.status = MANIFOLD_ERROR_MERGE_INDEX_OUT_OF_BOUNDS;
+        return m;
+      }
+      prop2vert[from] = to;
+    }
   }
-  Manifold result = manifold_from_mesh(verts, mesh->vertLen, tris, mesh->triLen);
-  if (mesh->tolerance > 0) {
-    Manifold tol = manifold_set_tolerance(&result, mesh->tolerance);
-    manifold_destroy(&result);
-    result = tol;
+
+  Manifold m;
+  manifold_impl_init(&m.impl);
+  m.impl.numProp = numProp;
+  m.impl.tolerance = (double)mesh->tolerance;
+
+  // Copy vertex positions and properties
+  vec_vec3_resize(&m.impl.vertPos, numVert);
+  for (size_t i = 0; i < numVert; i++) {
+    m.impl.vertPos.data[i].x = (double)mesh->vertProperties[i * mesh->numProp + 0];
+    m.impl.vertPos.data[i].y = (double)mesh->vertProperties[i * mesh->numProp + 1];
+    m.impl.vertPos.data[i].z = (double)mesh->vertProperties[i * mesh->numProp + 2];
   }
-  free(verts);
-  free(tris);
-  return result;
+  if (numProp > 0) {
+    vec_double_resize(&m.impl.properties, numVert * numProp);
+    for (size_t i = 0; i < numVert; i++)
+      for (int j = 0; j < numProp; j++)
+        m.impl.properties.data[i * numProp + j] =
+            (double)mesh->vertProperties[i * mesh->numProp + 3 + j];
+  }
+
+  // Copy halfedge tangents
+  if (mesh->halfedgeTangentLen > 0 && mesh->halfedgeTangent) {
+    size_t nht = mesh->halfedgeTangentLen / 4;
+    vec_vec4_resize(&m.impl.halfedgeTangent, nht);
+    for (size_t i = 0; i < nht; i++) {
+      m.impl.halfedgeTangent.data[i].x = (double)mesh->halfedgeTangent[4*i+0];
+      m.impl.halfedgeTangent.data[i].y = (double)mesh->halfedgeTangent[4*i+1];
+      m.impl.halfedgeTangent.data[i].z = (double)mesh->halfedgeTangent[4*i+2];
+      m.impl.halfedgeTangent.data[i].w = (double)mesh->halfedgeTangent[4*i+3];
+    }
+  }
+
+  // Build runIndex (ensure it has runOriginalIDLen + 1 entries)
+  size_t numRuns = mesh->runOriginalIDLen;
+  int *runIdx = NULL;
+  size_t runIdxLen = 0;
+  if (numRuns == 0) {
+    runIdxLen = 2;
+    runIdx = (int *)malloc(2 * sizeof(int));
+    runIdx[0] = 0;
+    runIdx[1] = (int)(numTri * 3);
+  } else if (mesh->runIndexLen == numRuns) {
+    runIdxLen = numRuns + 1;
+    runIdx = (int *)malloc(runIdxLen * sizeof(int));
+    memcpy(runIdx, mesh->runIndex, numRuns * sizeof(int));
+    runIdx[numRuns] = (int)(numTri * 3);
+  } else if (mesh->runIndexLen == numRuns + 1) {
+    runIdxLen = numRuns + 1;
+    runIdx = (int *)malloc(runIdxLen * sizeof(int));
+    memcpy(runIdx, mesh->runIndex, runIdxLen * sizeof(int));
+  } else {
+    runIdxLen = 2;
+    runIdx = (int *)malloc(2 * sizeof(int));
+    runIdx[0] = 0;
+    runIdx[1] = (int)(numTri * 3);
+  }
+  size_t actualRuns = runIdxLen - 1;
+
+  // Build runOriginalID
+  uint32_t startID = manifold_reserve_ids((uint32_t)(actualRuns > 0 ? actualRuns : 1));
+  uint32_t *runOrigID = (uint32_t *)malloc(actualRuns * sizeof(uint32_t));
+  if (numRuns == 0) {
+    runOrigID[0] = startID;
+    actualRuns = 1;
+  } else {
+    memcpy(runOrigID, mesh->runOriginalID, actualRuns * sizeof(uint32_t));
+  }
+
+  // Set up triRef and meshIDtransform
+  vec_triref_resize(&m.impl.meshRelation.triRef, numTri);
+  for (size_t r = 0; r < actualRuns; r++) {
+    int meshID = (int)(startID + r);
+    int origID = (int)runOrigID[r];
+    for (size_t tri = (size_t)runIdx[r] / 3; tri < (size_t)runIdx[r+1] / 3; tri++) {
+      if (tri >= numTri) break;
+      ManifoldTriRef *ref = &m.impl.meshRelation.triRef.data[tri];
+      ref->meshID = meshID;
+      ref->originalID = origID;
+      ref->faceID = (mesh->faceIDLen > 0 && mesh->faceID) ? mesh->faceID[tri] : -1;
+      ref->coplanarID = (int)tri;
+    }
+
+    ManifoldRelation rel;
+    rel.originalID = origID;
+    rel.backSide = false;
+    if (mesh->runTransformLen > 0 && mesh->runTransform) {
+      const float *mt = mesh->runTransform + 12 * r;
+      rel.transform.cols[0] = (ManifoldVec3){mt[0], mt[1], mt[2]};
+      rel.transform.cols[1] = (ManifoldVec3){mt[3], mt[4], mt[5]};
+      rel.transform.cols[2] = (ManifoldVec3){mt[6], mt[7], mt[8]};
+      rel.transform.cols[3] = (ManifoldVec3){mt[9], mt[10], mt[11]};
+    } else {
+      rel.transform = mat3x4_identity();
+    }
+    manifold_meshrelation_insert(&m.impl.meshRelation, meshID, rel);
+  }
+
+  // Build triangles, applying merge map
+  bool needsPropMap = (numProp > 0 && prop2vert != NULL);
+  ManifoldVecIVec3 triProp = {0};
+  ManifoldVecIVec3 triVert = {0};
+  ManifoldVecTriRef filteredTriRef = {0};
+
+  for (size_t i = 0; i < numTri; i++) {
+    ManifoldIVec3 tp, tv;
+    bool valid = true;
+    for (int j = 0; j < 3; j++) {
+      int vert = mesh->triVerts[3 * i + j];
+      if (vert < 0 || (size_t)vert >= numVert) {
+        valid = false;
+        break;
+      }
+      ((int*)&tp)[j] = vert;
+      ((int*)&tv)[j] = prop2vert ? prop2vert[vert] : vert;
+    }
+    if (!valid) continue;
+    // Skip degenerate triangles
+    if (tv.x == tv.y || tv.y == tv.z || tv.z == tv.x) continue;
+    if (needsPropMap) {
+      vec_ivec3_push(&triProp, tp);
+      vec_ivec3_push(&triVert, tv);
+    } else {
+      vec_ivec3_push(&triProp, tv);
+    }
+    vec_triref_push(&filteredTriRef, m.impl.meshRelation.triRef.data[i]);
+  }
+
+  // Replace triRef with filtered version
+  vec_triref_free(&m.impl.meshRelation.triRef);
+  m.impl.meshRelation.triRef = filteredTriRef;
+
+  ManifoldVecIVec3 emptyTriVert = {0};
+  manifold_impl_create_halfedges(&m.impl, &triProp, needsPropMap ? &triVert : &emptyTriVert);
+
+  if (!manifold_impl_is_manifold(&m.impl)) {
+    manifold_impl_make_empty(&m.impl, MANIFOLD_ERROR_NOT_MANIFOLD);
+    vec_ivec3_free(&emptyTriVert);
+    goto cleanup;
+  }
+
+  manifold_impl_calculate_bbox(&m.impl);
+  manifold_impl_set_epsilon(&m.impl, -1.0, true);  // float precision
+
+  manifold_impl_cleanup_topology(&m.impl);
+  manifold_impl_dedupe_prop_verts(&m.impl);
+  manifold_impl_set_normals_and_coplanar(&m.impl);
+  manifold_impl_remove_degenerates(&m.impl, 0);
+  manifold_impl_remove_unreferenced_verts(&m.impl);
+  manifold_impl_sort_geometry(&m.impl);
+
+  if (!manifold_impl_is_finite(&m.impl)) {
+    manifold_impl_make_empty(&m.impl, MANIFOLD_ERROR_NON_FINITE_VERTEX);
+    vec_ivec3_free(&emptyTriVert);
+    goto cleanup;
+  }
+
+  // A Manifold from input mesh is never an original
+  m.impl.meshRelation.originalID = -1;
+
+  vec_ivec3_free(&emptyTriVert);
+
+cleanup:
+  free(prop2vert);
+  free(runIdx);
+  free(runOrigID);
+  vec_ivec3_free(&triProp);
+  vec_ivec3_free(&triVert);
+  return m;
+}
+
+// ============== GetMeshGL (mirrors C++ GetMeshGLImpl<float>) ==============
+
+ManifoldMeshGL manifold_get_meshgl(const Manifold *m) {
+  ManifoldMeshGL out = manifold_meshgl_empty();
+  const ManifoldImpl *impl = &m->impl;
+  const int numProp = impl->numProp;
+  const int numVert = (int)manifold_impl_num_prop_vert(impl);
+  const int numTri = (int)manifold_impl_num_tri(impl);
+
+  if (numTri == 0) return out;
+
+  const bool isOriginal = impl->meshRelation.originalID >= 0;
+
+  out.numProp = 3 + numProp;
+  out.tolerance = (float)impl->tolerance;
+  // Ensure float-level tolerance
+  {
+    double bboxScale = 0;
+    ManifoldVec3 sz = {impl->bBox.max.x - impl->bBox.min.x,
+                       impl->bBox.max.y - impl->bBox.min.y,
+                       impl->bBox.max.z - impl->bBox.min.z};
+    if (sz.x > bboxScale) bboxScale = sz.x;
+    if (sz.y > bboxScale) bboxScale = sz.y;
+    if (sz.z > bboxScale) bboxScale = sz.z;
+    double floatTol = (double)FLT_EPSILON * bboxScale;
+    if (floatTol > out.tolerance) out.tolerance = (float)floatTol;
+  }
+
+  out.triVerts = (int *)malloc(3 * numTri * sizeof(int));
+  out.triLen = numTri;
+
+  // Copy halfedge tangents
+  const int numHalfedge = (int)impl->halfedgeTangent.len;
+  if (numHalfedge > 0) {
+    out.halfedgeTangentLen = 4 * numHalfedge;
+    out.halfedgeTangent = (float *)malloc(out.halfedgeTangentLen * sizeof(float));
+    for (int i = 0; i < numHalfedge; i++) {
+      ManifoldVec4 t = impl->halfedgeTangent.data[i];
+      out.halfedgeTangent[4*i+0] = (float)t.x;
+      out.halfedgeTangent[4*i+1] = (float)t.y;
+      out.halfedgeTangent[4*i+2] = (float)t.z;
+      out.halfedgeTangent[4*i+3] = (float)t.w;
+    }
+  }
+
+  // Sort triangles into runs by originalID/meshID
+  out.faceIDLen = numTri;
+  out.faceID = (int *)malloc(numTri * sizeof(int));
+
+  int *triNew2Old = (int *)malloc(numTri * sizeof(int));
+  for (int i = 0; i < numTri; i++) triNew2Old[i] = i;
+
+  const ManifoldTriRef *triRef = impl->meshRelation.triRef.data;
+
+  if (!isOriginal && numTri > 0 && impl->meshRelation.triRef.len > 0) {
+    // Stable sort by originalID, then meshID
+    // Simple insertion sort (stable)
+    for (int i = 1; i < numTri; i++) {
+      int key = triNew2Old[i];
+      const ManifoldTriRef *refKey = &triRef[key];
+      int j = i - 1;
+      while (j >= 0) {
+        const ManifoldTriRef *refJ = &triRef[triNew2Old[j]];
+        bool shouldSwap = (refJ->originalID > refKey->originalID) ||
+                          (refJ->originalID == refKey->originalID &&
+                           refJ->meshID > refKey->meshID);
+        if (!shouldSwap) break;
+        triNew2Old[j + 1] = triNew2Old[j];
+        j--;
+      }
+      triNew2Old[j + 1] = key;
+    }
+  }
+
+  // Build runs, faceID, triVerts
+  // Temporary dynamic arrays for runs
+  size_t runCap = 16;
+  size_t runCount = 0;
+  int *runIdxArr = (int *)malloc(runCap * sizeof(int));
+  uint32_t *runOrigArr = (uint32_t *)malloc(runCap * sizeof(uint32_t));
+  float *runTransArr = NULL;
+  size_t runTransCap = 0;
+  if (!isOriginal) {
+    runTransCap = runCap * 12;
+    runTransArr = (float *)malloc(runTransCap * sizeof(float));
+  }
+
+  // Track which meshIDtransform entries are used
+  bool *meshIDused = (bool *)calloc(impl->meshRelation.meshIDtransform.len, sizeof(bool));
+
+  int lastMeshID = -1;
+  for (int tri = 0; tri < numTri; tri++) {
+    int oldTri = triNew2Old[tri];
+    const ManifoldTriRef *ref = &triRef[oldTri];
+    int meshID = ref->meshID;
+
+    out.faceID[tri] = (ref->faceID >= 0) ? ref->faceID : ref->coplanarID;
+    for (int i = 0; i < 3; i++)
+      out.triVerts[3 * tri + i] = impl->halfedge.data[3 * oldTri + i].startVert;
+
+    if (meshID != lastMeshID) {
+      if (runCount >= runCap) {
+        runCap *= 2;
+        runIdxArr = (int *)realloc(runIdxArr, runCap * sizeof(int));
+        runOrigArr = (uint32_t *)realloc(runOrigArr, runCap * sizeof(uint32_t));
+        if (!isOriginal) {
+          runTransCap = runCap * 12;
+          runTransArr = (float *)realloc(runTransArr, runTransCap * sizeof(float));
+        }
+      }
+      runIdxArr[runCount] = 3 * tri;
+
+      ManifoldRelation rel = {0, mat3x4_identity(), false};
+      for (size_t k = 0; k < impl->meshRelation.meshIDtransform.len; k++) {
+        if (impl->meshRelation.meshIDtransform.data[k].key == meshID) {
+          rel = impl->meshRelation.meshIDtransform.data[k].value;
+          meshIDused[k] = true;
+          break;
+        }
+      }
+
+      runOrigArr[runCount] = (uint32_t)rel.originalID;
+
+      if (!isOriginal) {
+        float *mt = runTransArr + 12 * runCount;
+        mt[0] = (float)rel.transform.cols[0].x;
+        mt[1] = (float)rel.transform.cols[0].y;
+        mt[2] = (float)rel.transform.cols[0].z;
+        mt[3] = (float)rel.transform.cols[1].x;
+        mt[4] = (float)rel.transform.cols[1].y;
+        mt[5] = (float)rel.transform.cols[1].z;
+        mt[6] = (float)rel.transform.cols[2].x;
+        mt[7] = (float)rel.transform.cols[2].y;
+        mt[8] = (float)rel.transform.cols[2].z;
+        mt[9] = (float)rel.transform.cols[3].x;
+        mt[10] = (float)rel.transform.cols[3].y;
+        mt[11] = (float)rel.transform.cols[3].z;
+      }
+      runCount++;
+      lastMeshID = meshID;
+    }
+  }
+
+  // Add runs for originals that did not contribute any faces
+  for (size_t k = 0; k < impl->meshRelation.meshIDtransform.len; k++) {
+    if (!meshIDused[k]) {
+      if (runCount >= runCap) {
+        runCap *= 2;
+        runIdxArr = (int *)realloc(runIdxArr, runCap * sizeof(int));
+        runOrigArr = (uint32_t *)realloc(runOrigArr, runCap * sizeof(uint32_t));
+        if (!isOriginal) {
+          runTransCap = runCap * 12;
+          runTransArr = (float *)realloc(runTransArr, runTransCap * sizeof(float));
+        }
+      }
+      ManifoldRelation *rel = &impl->meshRelation.meshIDtransform.data[k].value;
+      runIdxArr[runCount] = 3 * numTri;
+      runOrigArr[runCount] = (uint32_t)rel->originalID;
+      if (!isOriginal) {
+        float *mt = runTransArr + 12 * runCount;
+        mt[0] = (float)rel->transform.cols[0].x;
+        mt[1] = (float)rel->transform.cols[0].y;
+        mt[2] = (float)rel->transform.cols[0].z;
+        mt[3] = (float)rel->transform.cols[1].x;
+        mt[4] = (float)rel->transform.cols[1].y;
+        mt[5] = (float)rel->transform.cols[1].z;
+        mt[6] = (float)rel->transform.cols[2].x;
+        mt[7] = (float)rel->transform.cols[2].y;
+        mt[8] = (float)rel->transform.cols[2].z;
+        mt[9] = (float)rel->transform.cols[3].x;
+        mt[10] = (float)rel->transform.cols[3].y;
+        mt[11] = (float)rel->transform.cols[3].z;
+      }
+      runCount++;
+    }
+  }
+  free(meshIDused);
+
+  // Final runIndex: runCount + 1 entries
+  out.runOriginalIDLen = runCount;
+  out.runOriginalID = (uint32_t *)malloc(runCount * sizeof(uint32_t));
+  memcpy(out.runOriginalID, runOrigArr, runCount * sizeof(uint32_t));
+
+  out.runIndexLen = runCount + 1;
+  out.runIndex = (int *)malloc((runCount + 1) * sizeof(int));
+  memcpy(out.runIndex, runIdxArr, runCount * sizeof(int));
+  out.runIndex[runCount] = 3 * numTri;
+
+  if (!isOriginal && runTransArr) {
+    out.runTransformLen = 12 * runCount;
+    out.runTransform = (float *)malloc(out.runTransformLen * sizeof(float));
+    memcpy(out.runTransform, runTransArr, out.runTransformLen * sizeof(float));
+  }
+
+  free(runIdxArr);
+  free(runOrigArr);
+  free(runTransArr);
+
+  // Build vertex properties with deduplication for properties
+  if (numProp == 0) {
+    // No custom properties - simple case
+    out.vertLen = impl->vertPos.len;
+    out.vertProperties = (float *)malloc(3 * out.vertLen * sizeof(float));
+    for (size_t i = 0; i < out.vertLen; i++) {
+      ManifoldVec3 v = impl->vertPos.data[i];
+      out.vertProperties[3*i+0] = (float)v.x;
+      out.vertProperties[3*i+1] = (float)v.y;
+      out.vertProperties[3*i+2] = (float)v.z;
+    }
+  } else {
+    // Duplicate verts with different property indices
+    int *vert2idx = (int *)malloc(impl->vertPos.len * sizeof(int));
+    for (size_t i = 0; i < impl->vertPos.len; i++) vert2idx[i] = -1;
+
+    // vertPropPair: for each geometric vertex, list of (propVert, outputIdx) pairs
+    typedef struct { int prop; int idx; } PropPair;
+    typedef struct { PropPair *data; size_t len; size_t cap; } PropPairVec;
+    PropPairVec *vertPropPair = (PropPairVec *)calloc(impl->vertPos.len, sizeof(PropPairVec));
+
+    // Dynamic array for output vert properties
+    size_t vpCap = (size_t)numVert * out.numProp;
+    size_t vpLen = 0;
+    float *vpData = (float *)malloc(vpCap * sizeof(float));
+
+    // Dynamic arrays for merge verts
+    size_t mergeCap = 64;
+    size_t mergeCount = 0;
+    int *mergeFrom = (int *)malloc(mergeCap * sizeof(int));
+    int *mergeTo = (int *)malloc(mergeCap * sizeof(int));
+
+    for (size_t run = 0; run < out.runOriginalIDLen; run++) {
+      for (size_t tri = (size_t)out.runIndex[run] / 3;
+           tri < (size_t)out.runIndex[run + 1] / 3; tri++) {
+        for (int i = 0; i < 3; i++) {
+          int prop = impl->halfedge.data[3 * triNew2Old[tri] + i].propVert;
+          int vert = out.triVerts[3 * tri + i];
+
+          PropPairVec *bin = &vertPropPair[vert];
+          bool found = false;
+          for (size_t b = 0; b < bin->len; b++) {
+            if (bin->data[b].prop == prop) {
+              out.triVerts[3 * tri + i] = bin->data[b].idx;
+              found = true;
+              break;
+            }
+          }
+          if (found) continue;
+
+          int idx = (int)(vpLen / out.numProp);
+          out.triVerts[3 * tri + i] = idx;
+
+          if (bin->len >= bin->cap) {
+            bin->cap = bin->cap ? bin->cap * 2 : 4;
+            bin->data = (PropPair *)realloc(bin->data, bin->cap * sizeof(PropPair));
+          }
+          bin->data[bin->len++] = (PropPair){prop, idx};
+
+          if (vpLen + out.numProp > vpCap) {
+            vpCap *= 2;
+            vpData = (float *)realloc(vpData, vpCap * sizeof(float));
+          }
+          ManifoldVec3 v = impl->vertPos.data[vert];
+          vpData[vpLen++] = (float)v.x;
+          vpData[vpLen++] = (float)v.y;
+          vpData[vpLen++] = (float)v.z;
+          for (int p = 0; p < numProp; p++) {
+            vpData[vpLen++] = (float)impl->properties.data[prop * numProp + p];
+          }
+
+          if (vert2idx[vert] == -1) {
+            vert2idx[vert] = idx;
+          } else {
+            if (mergeCount >= mergeCap) {
+              mergeCap *= 2;
+              mergeFrom = (int *)realloc(mergeFrom, mergeCap * sizeof(int));
+              mergeTo = (int *)realloc(mergeTo, mergeCap * sizeof(int));
+            }
+            mergeFrom[mergeCount] = idx;
+            mergeTo[mergeCount] = vert2idx[vert];
+            mergeCount++;
+          }
+        }
+      }
+    }
+
+    out.vertLen = vpLen / out.numProp;
+    out.vertProperties = (float *)realloc(vpData, vpLen * sizeof(float));
+
+    if (mergeCount > 0) {
+      out.mergeLen = mergeCount;
+      out.mergeFromVert = (int *)realloc(mergeFrom, mergeCount * sizeof(int));
+      out.mergeToVert = (int *)realloc(mergeTo, mergeCount * sizeof(int));
+    } else {
+      free(mergeFrom);
+      free(mergeTo);
+    }
+
+    for (size_t i = 0; i < impl->vertPos.len; i++) free(vertPropPair[i].data);
+    free(vertPropPair);
+    free(vert2idx);
+  }
+
+  free(triNew2Old);
+  return out;
+}
+
+void manifold_free_meshgl(ManifoldMeshGL *mgl) {
+  if (!mgl) return;
+  free(mgl->vertProperties);
+  free(mgl->triVerts);
+  free(mgl->mergeFromVert);
+  free(mgl->mergeToVert);
+  free(mgl->runOriginalID);
+  free(mgl->runIndex);
+  free(mgl->runTransform);
+  free(mgl->faceID);
+  free(mgl->halfedgeTangent);
+  *mgl = manifold_meshgl_empty();
 }

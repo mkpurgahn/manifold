@@ -276,6 +276,20 @@ static inline ManifoldMat3 mat3x4_to_mat3(ManifoldMat3x4 m) {
   return r;
 }
 
+// mat3x4 compose: a * Mat4(b) → mat3x4 (treating b as affine with [0,0,0,1] row)
+static inline ManifoldMat3x4 mat3x4_compose(ManifoldMat3x4 a, ManifoldMat3x4 b) {
+  ManifoldMat3x4 r;
+  for (int c = 0; c < 4; c++) {
+    ManifoldVec4 bCol;
+    bCol.x = ((double*)&b.cols[c])[0];
+    bCol.y = ((double*)&b.cols[c])[1];
+    bCol.z = ((double*)&b.cols[c])[2];
+    bCol.w = (c == 3) ? 1.0 : 0.0;
+    r.cols[c] = mat3x4_mul_vec4(a, bCol);
+  }
+  return r;
+}
+
 // mat3 transpose
 static inline ManifoldMat3 mat3_transpose(ManifoldMat3 m) {
   ManifoldMat3 r;

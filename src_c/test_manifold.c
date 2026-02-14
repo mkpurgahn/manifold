@@ -478,7 +478,166 @@ static void test_Manifold_MirrorUnion2(void) {
   manifold_destroy(&result);
 }
 
+// ==================== MeshGL Helpers ====================
+
+// ExpectMeshes: decompose manifold, check component vert/tri counts
+// meshSizes is array of {numVert, numTri} pairs
+static void expect_meshes(const Manifold *manifold,
+                           const int (*meshSizes)[2], size_t nSizes) {
+  EXPECT_FALSE(manifold_is_empty(manifold));
+  EXPECT_TRUE(manifold_matches_tri_normals(manifold));
+
+  Manifold *comps = (Manifold*)malloc(32 * sizeof(Manifold));
+  int nComp = manifold_decompose(manifold, &comps, 32);
+  ASSERT_EQ((size_t)nComp, nSizes);
+
+  // Sort by numVert desc, then numTri desc
+  for (int i = 0; i < nComp - 1; i++) {
+    for (int j = i + 1; j < nComp; j++) {
+      size_t vi = manifold_num_vert(&comps[i]);
+      size_t vj = manifold_num_vert(&comps[j]);
+      size_t ti = manifold_num_tri(&comps[i]);
+      size_t tj = manifold_num_tri(&comps[j]);
+      if (vj > vi || (vj == vi && tj > ti)) {
+        Manifold tmp = comps[i]; comps[i] = comps[j]; comps[j] = tmp;
+      }
+    }
+  }
+
+  for (size_t i = 0; i < nSizes; i++) {
+    EXPECT_EQ(manifold_num_vert(&comps[i]), (size_t)meshSizes[i][0]);
+    EXPECT_EQ(manifold_num_tri(&comps[i]), (size_t)meshSizes[i][1]);
+    ManifoldMeshGL meshGL = manifold_get_meshgl(&comps[i]);
+    EXPECT_EQ(meshGL.mergeLen, meshGL.mergeLen);  // mergeFrom == mergeTo len
+    EXPECT_EQ(meshGL.vertLen - manifold_num_vert(&comps[i]), meshGL.mergeLen);
+    manifold_free_meshgl(&meshGL);
+  }
+
+  for (int i = 0; i < nComp; i++) manifold_destroy(&comps[i]);
+  free(comps);
+}
+
+// RelatedGL: verify output mesh can be traced back to originals
+static void related_gl(const Manifold *out,
+                        const ManifoldMeshGL *originals, size_t nOriginals) {
+  ASSERT_FALSE(manifold_is_empty(out));
+  ManifoldMeshGL output = manifold_get_meshgl(out);
+
+  for (size_t run = 0; run < output.runOriginalIDLen; run++) {
+    float mt[12];
+    bool hasTransform = (output.runTransformLen > 0 && output.runTransform);
+    if (hasTransform) {
+      memcpy(mt, output.runTransform + 12 * run, 12 * sizeof(float));
+    } else {
+      // Identity: cols = {1,0,0}, {0,1,0}, {0,0,1}, {0,0,0}
+      mt[0]=1; mt[1]=0; mt[2]=0; mt[3]=0; mt[4]=1; mt[5]=0;
+      mt[6]=0; mt[7]=0; mt[8]=1; mt[9]=0; mt[10]=0; mt[11]=0;
+    }
+
+    // Find matching original
+    size_t oi = 0;
+    for (; oi < nOriginals; oi++) {
+      ASSERT_EQ(originals[oi].runOriginalIDLen, (size_t)1);
+      if (originals[oi].runOriginalID[0] == output.runOriginalID[run]) break;
+    }
+    ASSERT_LT(oi, nOriginals);
+    const ManifoldMeshGL *inMesh = &originals[oi];
+    float tolerance = 3.0f * ((float)manifold_get_tolerance(out) > inMesh->tolerance
+                               ? (float)manifold_get_tolerance(out) : inMesh->tolerance);
+
+    for (size_t tri = (size_t)output.runIndex[run] / 3;
+         tri < (size_t)output.runIndex[run + 1] / 3; tri++) {
+      int inTri = (output.faceIDLen > 0 && output.faceID) ? output.faceID[tri] : (int)tri;
+      ASSERT_LT(inTri, (int)(inMesh->triLen));
+      int inTriangle[3] = {
+        inMesh->triVerts[3*inTri+0],
+        inMesh->triVerts[3*inTri+1],
+        inMesh->triVerts[3*inTri+2]
+      };
+      for (int k = 0; k < 3; k++) inTriangle[k] *= inMesh->numProp;
+
+      double inTriPos[3][3], outTriPos[3][3];
+      for (int j = 0; j < 3; j++) {
+        int vert = output.triVerts[3*tri+j];
+        double pos[4];
+        for (int k = 0; k < 3; k++) {
+          pos[k] = (double)inMesh->vertProperties[inTriangle[j] + k];
+          outTriPos[j][k] = (double)output.vertProperties[vert * output.numProp + k];
+        }
+        pos[3] = 1.0;
+        // transform * pos (mat3x4, column-major: cols[0]={mt0,mt1,mt2}, ...)
+        inTriPos[j][0] = mt[0]*pos[0] + mt[3]*pos[1] + mt[6]*pos[2] + mt[9]*pos[3];
+        inTriPos[j][1] = mt[1]*pos[0] + mt[4]*pos[1] + mt[7]*pos[2] + mt[10]*pos[3];
+        inTriPos[j][2] = mt[2]*pos[0] + mt[5]*pos[1] + mt[8]*pos[2] + mt[11]*pos[3];
+      }
+
+      // inNormal = cross(inTriPos[1]-inTriPos[0], inTriPos[2]-inTriPos[0])
+      double e1[3], e2[3], inNormal[3];
+      for (int k=0;k<3;k++) { e1[k]=inTriPos[1][k]-inTriPos[0][k]; e2[k]=inTriPos[2][k]-inTriPos[0][k]; }
+      inNormal[0]=e1[1]*e2[2]-e1[2]*e2[1];
+      inNormal[1]=e1[2]*e2[0]-e1[0]*e2[2];
+      inNormal[2]=e1[0]*e2[1]-e1[1]*e2[0];
+      double area = sqrt(inNormal[0]*inNormal[0]+inNormal[1]*inNormal[1]+inNormal[2]*inNormal[2]);
+      if (area == 0) continue;
+
+      for (int j = 0; j < 3; j++) {
+        double edges[3][3];
+        for (int k=0;k<3;k++) {
+          edges[0][k] = inTriPos[0][k] - outTriPos[j][k];
+          edges[1][k] = inTriPos[1][k] - outTriPos[j][k];
+          edges[2][k] = inTriPos[2][k] - outTriPos[j][k];
+        }
+        // volume = dot(edges[0], cross(edges[1], edges[2]))
+        double cx = edges[1][1]*edges[2][2] - edges[1][2]*edges[2][1];
+        double cy = edges[1][2]*edges[2][0] - edges[1][0]*edges[2][2];
+        double cz = edges[1][0]*edges[2][1] - edges[1][1]*edges[2][0];
+        double volume = edges[0][0]*cx + edges[0][1]*cy + edges[0][2]*cz;
+        ASSERT_LE(volume, area * (double)tolerance);
+      }
+    }
+  }
+  manifold_free_meshgl(&output);
+}
+
 // ==================== Boolean Tests ====================
+
+static void test_Boolean_MeshGLRoundTrip(void) {
+  Manifold cube = manifold_cube((ManifoldVec3){2, 2, 2}, false);
+  ASSERT_GE(manifold_original_id(&cube), 0);
+  ManifoldMeshGL original = manifold_get_meshgl(&cube);
+
+  Manifold cubeT = manifold_translate(&cube, (ManifoldVec3){1, 1, 0});
+  Manifold result = manifold_union(&cube, &cubeT);
+
+  ASSERT_LT(manifold_original_id(&result), 0);
+  {
+    const int sizes[][2] = {{18, 32}};
+    expect_meshes(&result, sizes, 1);
+  }
+  related_gl(&result, &original, 1);
+
+  ManifoldMeshGL inGL = manifold_get_meshgl(&result);
+  ASSERT_EQ(inGL.runOriginalIDLen, (size_t)2);
+  Manifold result2 = manifold_from_meshgl(&inGL);
+
+  ASSERT_LT(manifold_original_id(&result2), 0);
+  {
+    const int sizes[][2] = {{18, 32}};
+    expect_meshes(&result2, sizes, 1);
+  }
+  related_gl(&result2, &original, 1);
+
+  ManifoldMeshGL outGL = manifold_get_meshgl(&result2);
+  ASSERT_EQ(outGL.runOriginalIDLen, (size_t)2);
+
+  manifold_free_meshgl(&outGL);
+  manifold_free_meshgl(&inGL);
+  manifold_free_meshgl(&original);
+  manifold_destroy(&cube);
+  manifold_destroy(&cubeT);
+  manifold_destroy(&result);
+  manifold_destroy(&result2);
+}
 
 static void test_Boolean_SelfSubtract(void) {
   Manifold cube = manifold_cube((ManifoldVec3){1, 1, 1}, false);
@@ -2528,9 +2687,15 @@ static void test_Manifold_InvalidInput1(void) {
   // NaN vertex should produce empty manifold with NonFiniteVertex error
   ManifoldVec3 verts[] = {{0,0,0}, {1,0,0}, {0,NAN,0}, {0,0,1}};
   ManifoldIVec3 tris[] = {{2,0,1}, {0,3,1}, {2,3,0}, {3,2,1}};
-  ManifoldMeshGL mgl;
+  float fverts[12];
+  for (int i = 0; i < 4; i++) {
+    fverts[i*3+0] = (float)((double*)&verts[i])[0];
+    fverts[i*3+1] = (float)((double*)&verts[i])[1];
+    fverts[i*3+2] = (float)((double*)&verts[i])[2];
+  }
+  ManifoldMeshGL mgl = manifold_meshgl_empty();
   mgl.numProp = 3;
-  mgl.vertProperties = (double*)verts;
+  mgl.vertProperties = fverts;
   mgl.vertLen = 4;
   mgl.triVerts = (int*)tris;
   mgl.triLen = 4;
@@ -3628,6 +3793,7 @@ int main(void) {
 
   // Boolean tests
   printf("--- Boolean ---\n");
+  RUN_TEST(Boolean_MeshGLRoundTrip);
   RUN_TEST(Boolean_SelfSubtract);
   RUN_TEST(Boolean_Mirrored);
   RUN_TEST(Boolean_Cubes);
