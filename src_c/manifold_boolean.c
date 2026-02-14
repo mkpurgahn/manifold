@@ -2235,7 +2235,11 @@ ManifoldError manifold_boolean_op(ManifoldImpl *result,
       manifold_impl_calculate_bbox(result);
       manifold_impl_set_epsilon(result, fmax(p->epsilon, q->epsilon), false);
       result->tolerance = fmax(p->tolerance, q->tolerance);
+      // Need face normals before remove_degenerates (it calls vert normals calc)
       manifold_impl_set_normals_and_coplanar(result);
+      // Remove degenerate components (tiny meshes with edges < epsilon)
+      // This matches C++ Compose behavior which calls RemoveDegenerates
+      manifold_impl_remove_degenerates(result, 0);
       return MANIFOLD_ERROR_NO_ERROR;
     }
     if (op == MANIFOLD_OP_SUBTRACT) {
