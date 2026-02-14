@@ -166,6 +166,11 @@ Manifold manifold_smooth_out(const Manifold *m, double minSharpAngle,
 Manifold manifold_smooth(const Manifold *m,
                           const ManifoldSmoothness *sharpenedEdges,
                           int numSharpened);
+// Smooth from raw mesh data (halfedge indices refer to original triangle order)
+Manifold manifold_smooth_from_mesh(const ManifoldVec3 *vertPos, size_t numVert,
+                                    const ManifoldIVec3 *triVerts, size_t numTri,
+                                    const ManifoldSmoothness *sharpenedEdges,
+                                    int numSharpened);
 
 // ---------- Minkowski ----------
 Manifold manifold_minkowski_sum(const Manifold *a, const Manifold *b);

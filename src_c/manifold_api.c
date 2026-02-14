@@ -7,6 +7,7 @@
 #include "manifold_boolean.h"
 #include "manifold_hull.h"
 #include <string.h>
+#include <stdio.h>
 
 // Quality settings (global)
 static ManifoldQuality g_quality = {0, 10.0, 1.0};
@@ -570,7 +571,7 @@ void manifold_get_mesh(const Manifold *m,
                        int **triVerts, size_t *numTri) {
   size_t nv = m->impl.vertPos.len;
   size_t nt = manifold_impl_num_tri(&m->impl);
-  size_t np = 3; // just positions for now
+  size_t np = 3 + m->impl.numProp; // xyz + custom properties
 
   if (numVert) *numVert = nv;
   if (numProp) *numProp = np;
@@ -582,6 +583,14 @@ void manifold_get_mesh(const Manifold *m,
       (*vertProps)[i * np + 0] = (float)m->impl.vertPos.data[i].x;
       (*vertProps)[i * np + 1] = (float)m->impl.vertPos.data[i].y;
       (*vertProps)[i * np + 2] = (float)m->impl.vertPos.data[i].z;
+      for (size_t p = 0; p < m->impl.numProp; p++) {
+        size_t propIdx = i * m->impl.numProp + p;
+        if (propIdx < m->impl.properties.len) {
+          (*vertProps)[i * np + 3 + p] = (float)m->impl.properties.data[propIdx];
+        } else {
+          (*vertProps)[i * np + 3 + p] = 0.0f;
+        }
+      }
     }
   }
 
@@ -826,6 +835,15 @@ Manifold manifold_batch_boolean(const Manifold *manifolds, int count,
   if (count == 2) {
     return manifold_boolean(&manifolds[0], &manifolds[1], op);
   }
+  // For Subtract: result = first - union(rest), matching C++ CSG tree semantics
+  if (op == MANIFOLD_OP_SUBTRACT) {
+    Manifold negUnion = manifold_batch_boolean(manifolds + 1, count - 1,
+                                                MANIFOLD_OP_ADD);
+    Manifold result = manifold_boolean(&manifolds[0], &negUnion,
+                                        MANIFOLD_OP_SUBTRACT);
+    manifold_destroy(&negUnion);
+    return result;
+  }
   // Heap-based batch boolean matching C++ behavior:
   // Always pair the two largest meshes (by vertex count) first.
   int n = count;
@@ -1068,31 +1086,97 @@ Manifold manifold_smooth_out(const Manifold *m, double minSharpAngle,
 Manifold manifold_smooth(const Manifold *m,
                           const ManifoldSmoothness *sharpenedEdges,
                           int numSharpened) {
+  // For smooth with sharpened edges, we need the original triangle ordering.
+  // When called from the API with an already-constructed Manifold, the original
+  // ordering is the current halfedge ordering (since the input was already
+  // a valid manifold). We set faceID=identity and go.
   Manifold out;
   manifold_copy(&out, m);
-  if (!manifold_is_empty(&out)) {
-    // Add faceID mapping for UpdateSharpenedEdges
-    size_t numTri = manifold_impl_num_tri(&out.impl);
-    for (size_t i = 0; i < numTri; i++) {
-      out.impl.meshRelation.triRef.data[i].faceID = (int)i;
-    }
-    // Re-create from mesh to get proper sorting
-    // Then create tangents with mapped sharpened edges
-    if (numSharpened > 0 && sharpenedEdges != NULL) {
-      ManifoldVecSmoothness updated = manifold_impl_update_sharpened_edges(
-          &out.impl, sharpenedEdges, numSharpened);
-      manifold_impl_create_tangents_smooth(&out.impl,
-          updated.data, (int)updated.len);
-      vec_smooth_free(&updated);
-    } else {
-      manifold_impl_create_tangents_smooth(&out.impl, NULL, 0);
-    }
-    // Restore faceID
-    for (size_t i = 0; i < numTri; i++) {
-      out.impl.meshRelation.triRef.data[i].faceID = -1;
-    }
+  if (manifold_is_empty(&out)) return out;
+
+  size_t numTri = manifold_impl_num_tri(&out.impl);
+  // Set faceID to identity mapping (current order IS the original order)
+  for (size_t i = 0; i < numTri; i++) {
+    out.impl.meshRelation.triRef.data[i].faceID = (int)i;
+  }
+
+  if (numSharpened > 0 && sharpenedEdges != NULL) {
+    ManifoldVecSmoothness updated = manifold_impl_update_sharpened_edges(
+        &out.impl, sharpenedEdges, numSharpened);
+    manifold_impl_create_tangents_smooth(&out.impl,
+        updated.data, (int)updated.len);
+    vec_smooth_free(&updated);
+  } else {
+    manifold_impl_create_tangents_smooth(&out.impl, NULL, 0);
+  }
+
+  // Restore faceID
+  numTri = manifold_impl_num_tri(&out.impl);
+  for (size_t i = 0; i < numTri; i++) {
+    out.impl.meshRelation.triRef.data[i].faceID = -1;
   }
   return out;
+}
+
+// Smooth from raw mesh data — matching C++ Manifold::Smooth(MeshGL64, edges)
+// The sharpened edge halfedge indices refer to the original triangle ordering.
+Manifold manifold_smooth_from_mesh(const ManifoldVec3 *vertPos, size_t numVert,
+                                    const ManifoldIVec3 *triVerts, size_t numTri,
+                                    const ManifoldSmoothness *sharpenedEdges,
+                                    int numSharpened) {
+  Manifold m;
+  manifold_impl_init(&m.impl);
+  if (numVert == 0 || numTri == 0) return m;
+
+  fprintf(stderr, "smooth_from_mesh: numVert=%zu numTri=%zu\n", numVert, numTri);
+
+  m.impl.vertPos = vec_vec3_create_n(numVert);
+  for (size_t i = 0; i < numVert; i++)
+    m.impl.vertPos.data[i] = vertPos[i];
+
+  ManifoldVecIVec3 tris = {0};
+  for (size_t i = 0; i < numTri; i++)
+    vec_ivec3_push(&tris, triVerts[i]);
+
+  ManifoldVecIVec3 emptyTriVert = {0};
+  manifold_impl_create_halfedges(&m.impl, &tris, &emptyTriVert);
+  vec_ivec3_free(&tris);
+  vec_ivec3_free(&emptyTriVert);
+
+  manifold_impl_initialize_original(&m.impl);
+
+  // Set faceID BEFORE sorting (matching C++ SmoothImpl)
+  // Must be after initialize_original which creates triRef entries
+  size_t nTri = manifold_impl_num_tri(&m.impl);
+  for (size_t i = 0; i < nTri; i++)
+    m.impl.meshRelation.triRef.data[i].faceID = (int)i;
+
+  manifold_impl_calculate_bbox(&m.impl);
+  manifold_impl_set_epsilon(&m.impl, -1.0, false);
+  if (manifold_impl_is_manifold(&m.impl)) {
+    manifold_impl_cleanup_topology(&m.impl);
+    manifold_impl_remove_unreferenced_verts(&m.impl);
+  }
+  manifold_impl_sort_geometry(&m.impl);
+  manifold_impl_set_normals_and_coplanar(&m.impl);
+
+  // Now UpdateSharpenedEdges maps original->sorted halfedge indices
+  if (numSharpened > 0 && sharpenedEdges != NULL) {
+    ManifoldVecSmoothness updated = manifold_impl_update_sharpened_edges(
+        &m.impl, sharpenedEdges, numSharpened);
+    manifold_impl_create_tangents_smooth(&m.impl,
+        updated.data, (int)updated.len);
+    vec_smooth_free(&updated);
+  } else {
+    manifold_impl_create_tangents_smooth(&m.impl, NULL, 0);
+  }
+
+  // Restore faceID to -1
+  nTri = manifold_impl_num_tri(&m.impl);
+  for (size_t i = 0; i < nTri; i++)
+    m.impl.meshRelation.triRef.data[i].faceID = -1;
+
+  return m;
 }
 
 bool manifold_is_convex(const Manifold *m) {

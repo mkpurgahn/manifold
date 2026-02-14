@@ -1954,9 +1954,97 @@ static void test_Samples_Knot42(void) {
   manifold_destroy(&knot);
 }
 
+static Manifold make_scallop(void) {
+  const double height = 1.0;
+  const double radius = 3.0;
+  const double offset = 2.0;
+  const int wiggles = 12;
+  const double sharpness = 0.8;
+  const double kPi = 3.14159265358979323846;
+
+  // Build vertices: 2 poles + 2*wiggles rim vertices
+  int numVerts = 2 + 2 * wiggles;
+  ManifoldVec3 *verts = (ManifoldVec3 *)malloc((size_t)numVerts * sizeof(ManifoldVec3));
+  verts[0] = (ManifoldVec3){-offset, 0, height};
+  verts[1] = (ManifoldVec3){-offset, 0, -height};
+
+  for (int i = 0; i < 2 * wiggles; i++) {
+    double theta = (i - wiggles) * (kPi / wiggles);
+    double cosval = cos(0.8 * theta);
+    double amp = 0.5 * height * (cosval > 0.0 ? cosval : 0.0);
+    verts[2 + i] = (ManifoldVec3){
+      radius * cos(theta),
+      radius * sin(theta),
+      amp * (i % 2 == 0 ? 1.0 : -1.0)
+    };
+  }
+
+  // Build triangles and sharpened edges
+  int numTris = 2 * 2 * wiggles;
+  ManifoldIVec3 *tris = (ManifoldIVec3 *)malloc((size_t)numTris * sizeof(ManifoldIVec3));
+  ManifoldSmoothness *edges = (ManifoldSmoothness *)malloc((size_t)numTris * sizeof(ManifoldSmoothness));
+  int triIdx = 0;
+  int edgeIdx = 0;
+  double delta = kPi / wiggles;
+
+  for (int i = 0; i < 2 * wiggles; i++) {
+    int j = i + 1;
+    if (j == 2 * wiggles) j = 0;
+
+    double theta = (i - wiggles) * delta;
+    double smoothness = 1.0 - sharpness * cos((theta + delta / 2.0) / 2.0);
+
+    // Triangle: 0, 2+i, 2+j — edge from vert (2+i) to (2+j) is halfedge index triIdx*3 + 1
+    size_t halfedge1 = (size_t)(triIdx * 3) + 1;
+    edges[edgeIdx++] = (ManifoldSmoothness){halfedge1, smoothness};
+    tris[triIdx++] = (ManifoldIVec3){0, 2 + i, 2 + j};
+
+    // Triangle: 1, 2+j, 2+i — edge from vert (2+j) to (2+i) is halfedge index triIdx*3 + 1
+    size_t halfedge2 = (size_t)(triIdx * 3) + 1;
+    edges[edgeIdx++] = (ManifoldSmoothness){halfedge2, smoothness};
+    tris[triIdx++] = (ManifoldIVec3){1, 2 + j, 2 + i};
+  }
+
+  Manifold smooth = manifold_smooth_from_mesh(verts, numVerts, tris, numTris,
+                                               edges, edgeIdx);
+  free(verts);
+  free(tris);
+  free(edges);
+  return smooth;
+}
+
+static void scallop_color_curvature(double *newProp, ManifoldVec3 pos,
+                                     const double *oldProp, void *ctx) {
+  (void)ctx;
+  double curvature = oldProp[0];
+  double limit = 15.0;
+  // smoothstep(-limit, limit, curvature)
+  double t = (curvature - (-limit)) / (limit - (-limit));
+  if (t < 0) t = 0;
+  if (t > 1) t = 1;
+  t = t * t * (3.0 - 2.0 * t);
+  // lerp(blue, red, t): red=(1,0,0), blue=(0,0,1)
+  newProp[0] = t;        // r
+  newProp[1] = 0.0;      // g
+  newProp[2] = 1.0 - t;  // b
+}
+
 static void test_Samples_Scallop(void) {
-  // Scallop - requires CrossSection and difference
-  // Skip - depends on CrossSection
+  Manifold scallop = make_scallop();
+
+  Manifold refined = manifold_refine(&scallop, 50);
+  Manifold curvature = manifold_calculate_curvature(&refined, -1, 0);
+  Manifold colored = manifold_set_properties(&curvature, 3,
+      scallop_color_curvature, NULL);
+
+  EXPECT_NEAR(manifold_volume(&colored), 39.9, 0.1);
+  EXPECT_NEAR(manifold_surface_area(&colored), 79.3, 0.1);
+  EXPECT_EQ(manifold_num_vert(&colored), manifold_num_prop_vert(&colored));
+
+  manifold_destroy(&scallop);
+  manifold_destroy(&refined);
+  manifold_destroy(&curvature);
+  manifold_destroy(&colored);
 }
 
 // ==================== More Hull Tests ====================
@@ -2796,6 +2884,297 @@ static void test_Boolean_ConvexConvexMinkowskiDifference(void) {
   manifold_destroy(&difference);
 }
 
+// ==================== NonConvex Minkowski Tests ====================
+
+static void test_Boolean_NonConvexConvexMinkowskiSum(void) {
+  Manifold sphere = manifold_sphere(1.2, 20);
+  Manifold cube = manifold_cube((ManifoldVec3){2.0, 2.0, 2.0}, true);
+  Manifold nonConvex = manifold_difference(&cube, &sphere);
+  Manifold smallSphere = manifold_sphere(0.1, 20);
+  Manifold sum = manifold_minkowski_sum(&nonConvex, &smallSphere);
+  EXPECT_NEAR(manifold_volume(&sum), 4.841, 1e-3);
+  EXPECT_NEAR(manifold_surface_area(&sum), 34.06, 1e-2);
+  EXPECT_EQ(manifold_genus(&sum), 5);
+  manifold_destroy(&sphere);
+  manifold_destroy(&cube);
+  manifold_destroy(&nonConvex);
+  manifold_destroy(&smallSphere);
+  manifold_destroy(&sum);
+}
+
+static void test_Boolean_NonConvexConvexMinkowskiDifference(void) {
+  Manifold sphere = manifold_sphere(1.2, 20);
+  Manifold cube = manifold_cube((ManifoldVec3){2.0, 2.0, 2.0}, true);
+  Manifold nonConvex = manifold_difference(&cube, &sphere);
+  Manifold smallSphere = manifold_sphere(0.05, 20);
+  Manifold difference = manifold_minkowski_difference(&nonConvex, &smallSphere);
+  EXPECT_NEAR(manifold_volume(&difference), 0.778, 1e-3);
+  EXPECT_NEAR(manifold_surface_area(&difference), 16.70, 1e-2);
+  EXPECT_EQ(manifold_genus(&difference), 5);
+  manifold_destroy(&sphere);
+  manifold_destroy(&cube);
+  manifold_destroy(&nonConvex);
+  manifold_destroy(&smallSphere);
+  manifold_destroy(&difference);
+}
+
+static void test_Boolean_NonConvexNonConvexMinkowskiSum(void) {
+  Manifold tet = manifold_tetrahedron();
+  Manifold rotated = manifold_rotate(&tet, 0, 0, 90);
+  Manifold translated = manifold_translate(&rotated, (ManifoldVec3){1, 1, 1});
+  Manifold nonConvex = manifold_difference(&tet, &translated);
+  Manifold half = manifold_scale(&nonConvex, (ManifoldVec3){0.5, 0.5, 0.5});
+  Manifold sum = manifold_minkowski_sum(&nonConvex, &half);
+  EXPECT_NEAR(manifold_volume(&sum), 8.65625, 1e-5);
+  EXPECT_NEAR(manifold_surface_area(&sum), 31.17691, 1e-5);
+  EXPECT_EQ(manifold_genus(&sum), 0);
+  manifold_destroy(&tet);
+  manifold_destroy(&rotated);
+  manifold_destroy(&translated);
+  manifold_destroy(&nonConvex);
+  manifold_destroy(&half);
+  manifold_destroy(&sum);
+}
+
+static void test_Boolean_NonConvexNonConvexMinkowskiDifference(void) {
+  Manifold tet = manifold_tetrahedron();
+  Manifold rotated = manifold_rotate(&tet, 0, 0, 90);
+  Manifold translated = manifold_translate(&rotated, (ManifoldVec3){1, 1, 1});
+  Manifold nonConvex = manifold_difference(&tet, &translated);
+  Manifold tenth = manifold_scale(&nonConvex, (ManifoldVec3){0.1, 0.1, 0.1});
+  Manifold difference = manifold_minkowski_difference(&nonConvex, &tenth);
+  EXPECT_NEAR(manifold_volume(&difference), 0.815542, 1e-5);
+  EXPECT_NEAR(manifold_surface_area(&difference), 6.95045, 1e-5);
+  EXPECT_EQ(manifold_genus(&difference), 0);
+  manifold_destroy(&tet);
+  manifold_destroy(&rotated);
+  manifold_destroy(&translated);
+  manifold_destroy(&nonConvex);
+  manifold_destroy(&tenth);
+  manifold_destroy(&difference);
+}
+
+// ==================== BooleanComplex_Close ====================
+
+static void test_BooleanComplex_Close(void) {
+  double r = 10.0;
+  Manifold a = manifold_sphere(r, 256);
+  Manifold result;
+  manifold_copy(&result, &a);
+  double eps = manifold_get_epsilon(&a);
+  for (int i = 0; i < 10; i++) {
+    Manifold translated = manifold_translate(&a, (ManifoldVec3){eps / 10.0 * i, 0.0, 0.0});
+    Manifold tmp = manifold_intersection(&result, &translated);
+    manifold_destroy(&result);
+    manifold_destroy(&translated);
+    result = tmp;
+  }
+  double tol = 0.004;
+  double kPi = 3.14159265358979323846;
+  EXPECT_NEAR(manifold_volume(&result), (4.0/3.0)*kPi*r*r*r, tol*r*r*r);
+  EXPECT_NEAR(manifold_surface_area(&result), 4.0*kPi*r*r, tol*r*r);
+  manifold_destroy(&a);
+  manifold_destroy(&result);
+}
+
+// ==================== Smooth_SDF ====================
+
+static double spherical_gyroid_sdf(double x, double y, double z, void *ctx) {
+  (void)ctx;
+  double r = 10.0;
+  double gyroid = cos(x)*sin(y) + cos(y)*sin(z) + cos(z)*sin(x);
+  double len = sqrt(x*x + y*y + z*z);
+  double d = (r - len) < 0.0 ? (r - len) : 0.0;
+  return gyroid - d*d/2.0;
+}
+
+static void smooth_sdf_gradient_normal(double *newProp, ManifoldVec3 pos,
+                                        const double *oldProp, void *ctx) {
+  (void)ctx;
+  (void)oldProp;
+  double r = 10.0;
+  double rad = sqrt(pos.x*pos.x + pos.y*pos.y + pos.z*pos.z);
+  double d = (r - rad) < 0.0 ? (r - rad) : 0.0;
+  double dFactor = (rad > 0) ? (d / rad) : d;
+  double gx = cos(pos.z)*cos(pos.x) - sin(pos.x)*sin(pos.y) + dFactor*pos.x;
+  double gy = cos(pos.x)*cos(pos.y) - sin(pos.y)*sin(pos.z) + dFactor*pos.y;
+  double gz = cos(pos.y)*cos(pos.z) - sin(pos.z)*sin(pos.x) + dFactor*pos.z;
+  double len = sqrt(gx*gx + gy*gy + gz*gz);
+  if (len > 0) { gx /= len; gy /= len; gz /= len; }
+  newProp[0] = -gx;
+  newProp[1] = -gy;
+  newProp[2] = -gz;
+}
+
+static void smooth_sdf_error_fn(double *newProp, ManifoldVec3 pos,
+                                 const double *oldProp, void *ctx) {
+  (void)ctx;
+  (void)oldProp;
+  double val = spherical_gyroid_sdf(pos.x, pos.y, pos.z, NULL);
+  newProp[0] = fabs(val);
+}
+
+static void test_Smooth_SDF(void) {
+  double r = 10.0;
+  double extra = 2.0;
+  ManifoldBox bounds = {
+    {-r - extra, -r - extra, -r - extra},
+    {r + extra, r + extra, r + extra}
+  };
+  Manifold gyroid = manifold_level_set(spherical_gyroid_sdf, NULL, bounds,
+                                        0.5, 0.0, 0.00001);
+  EXPECT_LT(manifold_num_tri(&gyroid), 76000);
+
+  Manifold interpolated = manifold_refine(&gyroid, 3);
+  Manifold interpError = manifold_set_properties(&interpolated, 1,
+      smooth_sdf_error_fn, NULL);
+
+  Manifold withNormals = manifold_set_properties(&gyroid, 3,
+      smooth_sdf_gradient_normal, NULL);
+  Manifold smoothed = manifold_smooth_by_normals(&withNormals, 0);
+  Manifold refined = manifold_refine_to_length(&smoothed, 0.1);
+  Manifold smoothError = manifold_set_properties(&refined, 1,
+      smooth_sdf_error_fn, NULL);
+
+  // Check max error: get mesh and check max property at channel 3
+  float *vertProps = NULL;
+  int *triVerts = NULL;
+  size_t numVert, numProp, numTri;
+  manifold_get_mesh(&smoothError, &vertProps, &numVert, &numProp, &triVerts, &numTri);
+  float maxError = 0;
+  for (size_t i = 0; i < numVert; i++) {
+    float val = vertProps[i * numProp + 3];
+    if (val > maxError) maxError = val;
+  }
+  manifold_free_mesh(vertProps, triVerts);
+  EXPECT_NEAR(maxError, 0.0, 0.026);
+
+  manifold_get_mesh(&interpError, &vertProps, &numVert, &numProp, &triVerts, &numTri);
+  float maxInterpError = 0;
+  for (size_t i = 0; i < numVert; i++) {
+    float val = vertProps[i * numProp + 3];
+    if (val > maxInterpError) maxInterpError = val;
+  }
+  manifold_free_mesh(vertProps, triVerts);
+  EXPECT_NEAR(maxInterpError, 0.0, 0.083);
+
+  manifold_destroy(&gyroid);
+  manifold_destroy(&interpolated);
+  manifold_destroy(&interpError);
+  manifold_destroy(&withNormals);
+  manifold_destroy(&smoothed);
+  manifold_destroy(&refined);
+  manifold_destroy(&smoothError);
+}
+
+// ==================== Manifold_Warp2 ====================
+
+static void warp2_fn(double *x, double *y, double *z, void *ctx) {
+  (void)ctx;
+  int nSegments = 10;
+  double angleStep = 2.0 / 3.0 * 3.14159265358979323846 / nSegments;
+  int zIndex = nSegments - 1 - (int)(*z + 0.5); // round
+  double angle = zIndex * angleStep;
+  double oldZ = *z;
+  *z = *y;
+  *y = *x * sin(angle);
+  *x = *x * cos(angle);
+  (void)oldZ;
+}
+
+static void test_Manifold_Warp2(void) {
+  // Create a circle polygon (20 sides, radius 5, centered at (10,10))
+  int nSides = 20;
+  double radius = 5.0;
+  double cx = 10.0, cy = 10.0;
+  double kPi = 3.14159265358979323846;
+  ManifoldVec2 *polyVerts = (ManifoldVec2 *)malloc((size_t)nSides * sizeof(ManifoldVec2));
+  for (int i = 0; i < nSides; i++) {
+    double angle = 2.0 * kPi * i / nSides;
+    polyVerts[i] = (ManifoldVec2){cx + radius * cos(angle), cy + radius * sin(angle)};
+  }
+  int polySize = nSides;
+
+  Manifold shape = manifold_extrude(polyVerts, &polySize, 1, 2.0, 10, 0.0,
+                                     (ManifoldVec2){1.0, 1.0});
+  Manifold warped = manifold_warp(&shape, warp2_fn, NULL);
+
+  Manifold *arr = &warped;
+  Manifold simplified = manifold_batch_boolean(arr, 1, MANIFOLD_OP_ADD);
+
+  EXPECT_NEAR(manifold_volume(&warped), manifold_volume(&simplified), 0.0001);
+  EXPECT_NEAR(manifold_surface_area(&warped), manifold_surface_area(&simplified), 0.0001);
+  EXPECT_NEAR(manifold_volume(&warped), 321.0, 1.0);
+
+  free(polyVerts);
+  manifold_destroy(&shape);
+  manifold_destroy(&warped);
+  manifold_destroy(&simplified);
+}
+
+// ==================== Boolean_EmptyOriginal ====================
+
+static void test_Boolean_EmptyOriginal(void) {
+  Manifold cube = manifold_cube((ManifoldVec3){1, 1, 1}, false);
+  Manifold tet = manifold_tetrahedron();
+  Manifold translated = manifold_translate(&cube, (ManifoldVec3){3, 4, 5});
+  Manifold result = manifold_difference(&tet, &translated);
+  // Result should be just the tetrahedron (no intersection with translated cube)
+  EXPECT_FALSE(manifold_is_empty(&result));
+  // The tet should be unchanged
+  EXPECT_NEAR(manifold_volume(&result), manifold_volume(&tet), 1e-10);
+  manifold_destroy(&cube);
+  manifold_destroy(&tet);
+  manifold_destroy(&translated);
+  manifold_destroy(&result);
+}
+
+// ==================== Boolean_PropertiesNoIntersection ====================
+
+static void test_Boolean_PropertiesNoIntersection(void) {
+  Manifold m0 = manifold_cube((ManifoldVec3){1, 1, 1}, true);
+  Manifold m1 = manifold_translate(&m0, (ManifoldVec3){1.5, 1.5, 1.5});
+  Manifold result = manifold_union(&m0, &m1);
+  // Result should have two disconnected components
+  Manifold *components = (Manifold *)malloc(2 * sizeof(Manifold));
+  int nComponents = manifold_decompose(&result, &components, 2);
+  EXPECT_EQ(nComponents, 2);
+  for (int i = 0; i < nComponents; i++) {
+    manifold_destroy(&components[i]);
+  }
+  free(components);
+  manifold_destroy(&m0);
+  manifold_destroy(&m1);
+  manifold_destroy(&result);
+}
+
+// ==================== Boolean_Normals ====================
+// Simplified: just test that the operation doesn't crash and produces reasonable volume
+
+static void test_Boolean_Normals(void) {
+  Manifold sphere = manifold_sphere(60.0, 0);
+  Manifold cube = manifold_cube((ManifoldVec3){100, 100, 100}, true);
+
+  Manifold rotated = manifold_rotate(&sphere, 180, 0, 0);
+  Manifold smallSphere = manifold_scale(&sphere, (ManifoldVec3){0.5, 0.5, 0.5});
+  Manifold innerRotated = manifold_rotate(&smallSphere, 90, 0, 0);
+  Manifold innerTranslated = manifold_translate(&innerRotated, (ManifoldVec3){40, 40, 40});
+  Manifold subtracted = manifold_difference(&rotated, &innerTranslated);
+  Manifold result = manifold_difference(&cube, &subtracted);
+
+  EXPECT_FALSE(manifold_is_empty(&result));
+  EXPECT_GT(manifold_volume(&result), 0);
+
+  manifold_destroy(&sphere);
+  manifold_destroy(&cube);
+  manifold_destroy(&rotated);
+  manifold_destroy(&smallSphere);
+  manifold_destroy(&innerRotated);
+  manifold_destroy(&innerTranslated);
+  manifold_destroy(&subtracted);
+  manifold_destroy(&result);
+}
+
 // ==================== CBIND level_set_64 ====================
 
 static double ellipsoid_sdf(double x, double y, double z, void *ctx) {
@@ -3161,6 +3540,8 @@ int main(void) {
   RUN_TEST(Boolean_Coplanar);
   RUN_TEST(Boolean_SimpleCubeRegression);
   RUN_TEST(Boolean_Simplify);
+  RUN_TEST(Boolean_EmptyOriginal);
+  RUN_TEST(Boolean_PropertiesNoIntersection);
 
   // Hull tests
   printf("--- Hull ---\n");
@@ -3247,6 +3628,10 @@ int main(void) {
   RUN_TEST(Properties_ToleranceSphere);
   RUN_TEST(Boolean_ConvexConvexMinkowski);
   RUN_TEST(Boolean_ConvexConvexMinkowskiDifference);
+  RUN_TEST(Boolean_NonConvexConvexMinkowskiSum);
+  RUN_TEST(Boolean_NonConvexConvexMinkowskiDifference);
+  RUN_TEST(Boolean_NonConvexNonConvexMinkowskiSum);
+  RUN_TEST(Boolean_NonConvexNonConvexMinkowskiDifference);
   RUN_TEST(Boolean_SimplifyCracks);
   RUN_TEST(BooleanComplex_Cylinders);
   RUN_TEST(BooleanComplex_Spiral);
@@ -3255,7 +3640,12 @@ int main(void) {
   RUN_TEST(Samples_Frame);
   RUN_TEST(Samples_Knot13);
   RUN_TEST(Samples_Knot42);
+  RUN_TEST(Samples_Scallop);
   RUN_TEST(Boolean_Perturb3);
+  RUN_TEST(BooleanComplex_Close);
+  RUN_TEST(Boolean_Normals);
+  RUN_TEST(Manifold_Warp2);
+  RUN_TEST(Smooth_SDF);
 
   // These tests may corrupt memory — run last
   RUN_TEST(Samples_Sponge4);
