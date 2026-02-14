@@ -4092,6 +4092,14 @@ static void test_Manifold_Slice(void) {
   manifold_destroy(&cube);
 }
 
+static void test_Manifold_SliceEmptyObject(void) {
+  Manifold empty = manifold_empty();
+  EXPECT_TRUE(manifold_is_empty(&empty));
+  ManifoldPolygons2D bottom = manifold_slice(&empty, 0.0);
+  manifold_polygons2d_free(&bottom);
+  manifold_destroy(&empty);
+}
+
 static void test_Manifold_Warp2(void) {
   // Create a circle polygon (20 sides, radius 5, centered at (10,10))
   int nSides = 20;
@@ -6088,6 +6096,7 @@ int main(void) {
   RUN_TEST(Manifold_FaceIDRoundTrip);
   RUN_TEST(Manifold_Project);
   RUN_TEST(Manifold_Slice);
+  RUN_TEST(Manifold_SliceEmptyObject);
   RUN_TEST(Manifold_OpenscadCrash);
 
   // Boolean tests
