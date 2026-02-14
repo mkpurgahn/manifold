@@ -22,6 +22,7 @@ static const double kPrecision = 1e-12;  // matches C++ kPrecision in src/utils.
 static int test_passed = 0;
 static int test_failed = 0;
 static int _current_test_failed = 0;  // per-test failure flag
+static const char *_test_filter = NULL;  // TEST= env var filter
 
 #define TEST_FAIL_RETURN() do { _current_test_failed = 1; return; } while(0)
 
@@ -169,6 +170,7 @@ static int _current_test_failed = 0;  // per-test failure flag
 
 #define RUN_TEST(name) \
   do { \
+    if (_test_filter && strstr(#name, _test_filter) == NULL) break; \
     printf("  %-50s ", #name); \
     fflush(stdout); \
     _current_test_failed = 0; \
@@ -1137,7 +1139,7 @@ static void test_Smooth_Tetrahedron(void) {
 
 static void test_Smooth_TruncatedCone(void) {
   Manifold cone = manifold_cylinder(5, 10, 5, 12, false);
-  Manifold smooth = manifold_smooth_out(&cone, 0, 0);
+  Manifold smooth = manifold_smooth_out(&cone, 60, 0);
   Manifold refined = manifold_refine_to_length(&smooth, 0.5);
   EXPECT_NEAR(manifold_volume(&refined), 1158.61, 0.01);
   EXPECT_NEAR(manifold_surface_area(&refined), 768.12, 0.01);
@@ -1160,7 +1162,7 @@ static void test_Smooth_Precision(void) {
   double radius = 10;
   double height = 10;
   Manifold cylinder = manifold_cylinder(height, radius, radius, 8, false);
-  Manifold smoothed = manifold_smooth_out(&cylinder, 0, 0);
+  Manifold smoothed = manifold_smooth_out(&cylinder, 60, 0);
   Manifold refined = manifold_refine_to_tolerance(&smoothed, tolerance);
   EXPECT_EQ(manifold_num_tri(&refined), (size_t)7984);
   manifold_destroy(&cylinder);
@@ -1170,10 +1172,10 @@ static void test_Smooth_Precision(void) {
 
 static void test_Smooth_Normals(void) {
   Manifold cylinder = manifold_cylinder(10, 5, 5, 8, false);
-  Manifold out = manifold_smooth_out(&cylinder, 0, 0);
+  Manifold out = manifold_smooth_out(&cylinder, 60, 0);
   Manifold outRef = manifold_refine_to_length(&out, 0.1);
 
-  Manifold cn = manifold_calculate_normals(&cylinder, 0, 0);
+  Manifold cn = manifold_calculate_normals(&cylinder, 0, 60);
   Manifold byNormals = manifold_smooth_by_normals(&cn, 0);
   Manifold bnRef = manifold_refine_to_length(&byNormals, 0.1);
 
@@ -1300,7 +1302,8 @@ static void test_Properties_Tolerance(void) {
   double tol = sind(degrees);
   Manifold cube = manifold_cube((ManifoldVec3){1, 1, 1}, true);
   Manifold cr = manifold_rotate(&cube, degrees, 0, 0);
-  Manifold imperfect = manifold_intersection(&cube, &cr);
+  Manifold imperfect_raw = manifold_intersection(&cube, &cr);
+  Manifold imperfect = manifold_as_original(&imperfect_raw);
   EXPECT_EQ(manifold_num_tri(&imperfect), (size_t)28);
 
   Manifold imperfect2 = manifold_simplify(&imperfect, tol);
@@ -1311,6 +1314,7 @@ static void test_Properties_Tolerance(void) {
 
   manifold_destroy(&cube);
   manifold_destroy(&cr);
+  manifold_destroy(&imperfect_raw);
   manifold_destroy(&imperfect);
   manifold_destroy(&imperfect2);
 }
@@ -2006,12 +2010,20 @@ static void test_Boolean_SimpleCubeRegression(void) {
 static void test_Boolean_Simplify(void) {
   Manifold cube = manifold_cube((ManifoldVec3){1,1,1}, false);
   Manifold cube_r = manifold_refine(&cube, 10);
+  // Set unique faceIDs per triangle to prevent simplification during boolean
+  for (size_t i = 0; i < manifold_num_tri(&cube_r); i++) {
+    cube_r.impl.meshRelation.triRef.data[i].faceID = (int)i;
+  }
   Manifold cube_t = manifold_translate(&cube_r, (ManifoldVec3){1,0,0});
   int nExpected = 20 * 10 * 10;
   Manifold result = manifold_union(&cube_r, &cube_t);
   EXPECT_EQ(manifold_num_tri(&result), nExpected);
+  // simplify should still be nExpected since all faceIDs unique
+  Manifold simplified = manifold_simplify(&result, 0);
+  EXPECT_EQ(manifold_num_tri(&simplified), nExpected);
   manifold_destroy(&cube); manifold_destroy(&cube_r);
   manifold_destroy(&cube_t); manifold_destroy(&result);
+  manifold_destroy(&simplified);
 }
 
 // ==================== More BooleanComplex Tests ====================
@@ -2265,52 +2277,91 @@ static void test_Manifold_ValidInput(void) {
   manifold_destroy(&tet);
 }
 
+static void test_Manifold_InvalidInput1(void) {
+  // NaN vertex should produce empty manifold with NonFiniteVertex error
+  ManifoldVec3 verts[] = {{0,0,0}, {1,0,0}, {0,NAN,0}, {0,0,1}};
+  ManifoldIVec3 tris[] = {{2,0,1}, {0,3,1}, {2,3,0}, {3,2,1}};
+  ManifoldMeshGL mgl;
+  mgl.numProp = 3;
+  mgl.vertProperties = (double*)verts;
+  mgl.vertLen = 4;
+  mgl.triVerts = (int*)tris;
+  mgl.triLen = 4;
+  mgl.tolerance = 0;
+  Manifold tet = manifold_from_meshgl(&mgl);
+  EXPECT_TRUE(manifold_is_empty(&tet));
+  manifold_destroy(&tet);
+}
+
+static void test_Manifold_InvalidInput2(void) {
+  // Swapped triangle winding makes non-manifold
+  ManifoldVec3 verts[] = {{0,0,0}, {1,0,0}, {0,1,0}, {0,0,1}};
+  ManifoldIVec3 tris[] = {{2,0,1}, {0,3,1}, {2,0,3}, {3,2,1}};
+  Manifold tet = manifold_from_mesh(verts, 4, tris, 4);
+  EXPECT_EQ((int)manifold_status(&tet), (int)MANIFOLD_ERROR_NOT_MANIFOLD);
+  manifold_destroy(&tet);
+}
+
+static void test_Manifold_InvalidInput3(void) {
+  // Vertex index out of bounds (negative as unsigned)
+  ManifoldVec3 verts[] = {{0,0,0}, {1,0,0}, {0,1,0}, {0,0,1}};
+  ManifoldIVec3 tris[] = {{-2,0,1}, {0,3,1}, {-2,3,0}, {3,-2,1}};
+  Manifold tet = manifold_from_mesh(verts, 4, tris, 4);
+  EXPECT_TRUE(manifold_is_empty(&tet));
+  manifold_destroy(&tet);
+}
+
+static void test_Manifold_InvalidInput4(void) {
+  // Vertex index out of bounds (too large)
+  ManifoldVec3 verts[] = {{0,0,0}, {1,0,0}, {0,1,0}, {0,0,1}};
+  ManifoldIVec3 tris[] = {{4,0,1}, {0,3,1}, {4,3,0}, {3,4,1}};
+  Manifold tet = manifold_from_mesh(verts, 4, tris, 4);
+  EXPECT_TRUE(manifold_is_empty(&tet));
+  manifold_destroy(&tet);
+}
+
 // ==================== More Samples Tests ====================
 
 static Manifold make_rounded_frame(double edgeLength, double radius, int circSeg) {
-  // Simplified rounded frame: 3 perpendicular cylinders with spheres at corners
-  Manifold result = manifold_empty();
-  // X-axis cylinders
-  for (int i = 0; i < 2; i++) {
-    for (int j = 0; j < 2; j++) {
-      Manifold cyl = manifold_cylinder(edgeLength, radius, radius, circSeg, false);
-      Manifold rot = manifold_rotate(&cyl, 0, 90, 0);
-      Manifold trans = manifold_translate(&rot, (ManifoldVec3){0, i*(edgeLength-2*radius), j*(edgeLength-2*radius)});
-      Manifold tmp = manifold_union(&result, &trans);
-      manifold_destroy(&result);
-      manifold_destroy(&cyl); manifold_destroy(&rot); manifold_destroy(&trans);
-      result = tmp;
-    }
-  }
-  // Y-axis cylinders
-  for (int i = 0; i < 2; i++) {
-    for (int j = 0; j < 2; j++) {
-      Manifold cyl = manifold_cylinder(edgeLength, radius, radius, circSeg, false);
-      Manifold rot = manifold_rotate(&cyl, 90, 0, 0);
-      Manifold trans = manifold_translate(&rot, (ManifoldVec3){i*(edgeLength-2*radius), 0, j*(edgeLength-2*radius)});
-      Manifold tmp = manifold_union(&result, &trans);
-      manifold_destroy(&result);
-      manifold_destroy(&cyl); manifold_destroy(&rot); manifold_destroy(&trans);
-      result = tmp;
-    }
-  }
-  // Z-axis cylinders
-  for (int i = 0; i < 2; i++) {
-    for (int j = 0; j < 2; j++) {
-      Manifold cyl = manifold_cylinder(edgeLength, radius, radius, circSeg, false);
-      Manifold trans = manifold_translate(&cyl, (ManifoldVec3){i*(edgeLength-2*radius), j*(edgeLength-2*radius), 0});
-      Manifold tmp = manifold_union(&result, &trans);
-      manifold_destroy(&result);
-      manifold_destroy(&cyl); manifold_destroy(&trans);
-      result = tmp;
-    }
-  }
-  return result;
+  // Match C++ RoundedFrame exactly
+  Manifold edge = manifold_cylinder(edgeLength, radius, -1, circSeg, false);
+  Manifold corner = manifold_sphere(radius, circSeg);
+
+  // edge1 = corner + edge, then rotate -90 around X, translate
+  Manifold edge1a = manifold_union(&corner, &edge);
+  Manifold edge1b = manifold_rotate(&edge1a, -90, 0, 0);
+  Manifold edge1 = manifold_translate(&edge1b, (ManifoldVec3){-edgeLength / 2, -edgeLength / 2, 0});
+  manifold_destroy(&edge1a); manifold_destroy(&edge1b);
+
+  // edge2 = edge1.Rotate(0,0,180) + edge1 + edge.Translate(...)
+  Manifold edge2a = manifold_rotate(&edge1, 0, 0, 180);
+  Manifold edge2b = manifold_union(&edge2a, &edge1);
+  Manifold edge_t = manifold_translate(&edge, (ManifoldVec3){-edgeLength / 2, -edgeLength / 2, 0});
+  Manifold edge2 = manifold_union(&edge2b, &edge_t);
+  manifold_destroy(&edge2a); manifold_destroy(&edge2b); manifold_destroy(&edge_t);
+
+  // edge4 = edge2.Rotate(0,0,90) + edge2
+  Manifold edge4a = manifold_rotate(&edge2, 0, 0, 90);
+  Manifold edge4 = manifold_union(&edge4a, &edge2);
+  manifold_destroy(&edge4a);
+
+  // frame = edge4.Translate(0,0,-edgeLength/2) + same.Rotate(180)
+  Manifold frame_a = manifold_translate(&edge4, (ManifoldVec3){0, 0, -edgeLength / 2});
+  Manifold frame_b = manifold_rotate(&frame_a, 180, 0, 0);
+  Manifold frame = manifold_union(&frame_a, &frame_b);
+  manifold_destroy(&frame_a); manifold_destroy(&frame_b);
+
+  manifold_destroy(&edge); manifold_destroy(&corner);
+  manifold_destroy(&edge1); manifold_destroy(&edge2); manifold_destroy(&edge4);
+  return frame;
 }
 
 static void test_Samples_FrameReduced(void) {
   Manifold frame = make_rounded_frame(100, 10, 4);
+  EXPECT_EQ(manifold_num_degenerate_tris(&frame), 0);
   EXPECT_EQ(manifold_genus(&frame), 5);
+  EXPECT_NEAR(manifold_volume(&frame), 227333, 10);
+  EXPECT_NEAR(manifold_surface_area(&frame), 62635, 1);
   manifold_destroy(&frame);
 }
 
@@ -2851,6 +2902,7 @@ static void test_Samples_RoundedFrame(void) {
 // ==================== Main ====================
 
 int main(void) {
+  _test_filter = getenv("TEST");
   printf("\n=== Manifold C Port Test Suite ===\n\n");
 
   // Properties tests
@@ -2902,6 +2954,10 @@ int main(void) {
   RUN_TEST(Manifold_Invalid);
   RUN_TEST(Manifold_PinchedVert);
   RUN_TEST(Manifold_ValidInput);
+  RUN_TEST(Manifold_InvalidInput1);
+  RUN_TEST(Manifold_InvalidInput2);
+  RUN_TEST(Manifold_InvalidInput3);
+  RUN_TEST(Manifold_InvalidInput4);
   RUN_TEST(Manifold_Warp);
   RUN_TEST(Manifold_MeshRelationTransform);
   RUN_TEST(Manifold_MeshGLRoundTrip);
@@ -3003,6 +3059,8 @@ int main(void) {
   RUN_TEST(BooleanComplex_SelfIntersect);
   RUN_TEST(BooleanComplex_Subtract);
   RUN_TEST(BooleanComplex_BooleanVolumes);
+
+  // Additional Smooth tests already registered above
 
   // Quality tests
   printf("--- Quality ---\n");

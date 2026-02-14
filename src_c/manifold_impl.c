@@ -794,7 +794,7 @@ void manifold_impl_initialize_original(ManifoldImpl *impl) {
     ManifoldTriRef *ref = &impl->meshRelation.triRef.data[tri];
     ref->meshID = (int)meshID;
     ref->originalID = (int)meshID;
-    ref->faceID = (int)tri;
+    ref->faceID = -1;
     ref->coplanarID = (int)tri;
   }
 }

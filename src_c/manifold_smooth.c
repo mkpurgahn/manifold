@@ -1378,15 +1378,13 @@ static ManifoldVecInt vert_halfedge(const ManifoldImpl *impl) {
   int numVert = (int)manifold_impl_num_vert(impl);
   ManifoldVecInt result = MANIFOLD_VEC_INIT;
   vec_int_resize(&result, numVert);
-  bool *seen = (bool *)calloc(numVert, sizeof(bool));
+  // C++ overwrites, so last halfedge per vertex wins
   for (size_t i = 0; i < impl->halfedge.len; i++) {
     int v = impl->halfedge.data[i].startVert;
-    if (v >= 0 && v < numVert && !seen[v]) {
+    if (v >= 0 && v < numVert) {
       result.data[v] = (int)i;
-      seen[v] = true;
     }
   }
-  free(seen);
   return result;
 }
 
@@ -1739,6 +1737,8 @@ void manifold_impl_set_normals_smooth(ManifoldImpl *impl, int normalIdx,
       }
 
       // Phase 2: assign normals to halfedges, splitting properties as needed
+      // C++ ForVert advances before processing, so first halfedge processed
+      // is next(endEdge), not endEdge itself
       int lastGroup2 = 0;
       int lastProp = -1;
       int newProp = -1;
@@ -1746,6 +1746,7 @@ void manifold_impl_set_normals_smooth(ManifoldImpl *impl, int normalIdx,
       current = endEdge;
       iterations2 = 0;
       do {
+        current = manifold_next_halfedge(impl->halfedge.data[current].pairedHalfedge);
         int prop = oldHalfedgeProp[current];
 
         if (idx < groupCount && group[idx] != lastGroup2 && group[idx] != 0 && prop == lastProp) {
@@ -1777,7 +1778,6 @@ void manifold_impl_set_normals_smooth(ManifoldImpl *impl, int normalIdx,
         impl->halfedge.data[current].propVert = newProp;
         idx++;
 
-        current = manifold_next_halfedge(impl->halfedge.data[current].pairedHalfedge);
         if (++iterations2 > numEdge) break;
       } while (current != endEdge);
 

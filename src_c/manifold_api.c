@@ -65,6 +65,25 @@ Manifold manifold_from_mesh(const ManifoldVec3 *vertPos, size_t numVert,
   manifold_impl_init(&m.impl);
   if (numVert == 0 || numTri == 0) return m;
 
+  // Check for NaN/Inf vertices
+  for (size_t i = 0; i < numVert; i++) {
+    if (!isfinite(vertPos[i].x) || !isfinite(vertPos[i].y) ||
+        !isfinite(vertPos[i].z)) {
+      m.impl.status = MANIFOLD_ERROR_NON_FINITE_VERTEX;
+      return m;
+    }
+  }
+
+  // Check for out-of-bounds vertex indices
+  for (size_t i = 0; i < numTri; i++) {
+    if (triVerts[i].x < 0 || triVerts[i].x >= (int)numVert ||
+        triVerts[i].y < 0 || triVerts[i].y >= (int)numVert ||
+        triVerts[i].z < 0 || triVerts[i].z >= (int)numVert) {
+      m.impl.status = MANIFOLD_ERROR_VERTEX_OUT_OF_BOUNDS;
+      return m;
+    }
+  }
+
   m.impl.vertPos = vec_vec3_create_n(numVert);
   for (size_t i = 0; i < numVert; i++) {
     m.impl.vertPos.data[i] = vertPos[i];
@@ -84,6 +103,8 @@ Manifold manifold_from_mesh(const ManifoldVec3 *vertPos, size_t numVert,
   if (manifold_impl_is_manifold(&m.impl)) {
     manifold_impl_cleanup_topology(&m.impl);
     manifold_impl_remove_unreferenced_verts(&m.impl);
+  } else {
+    m.impl.status = MANIFOLD_ERROR_NOT_MANIFOLD;
   }
   manifold_impl_sort_geometry(&m.impl);
   manifold_impl_set_normals_and_coplanar(&m.impl);
@@ -152,31 +173,64 @@ Manifold manifold_translate(const Manifold *m, ManifoldVec3 v) {
   return out;
 }
 
+// Helper: FlipHalfedge remaps a halfedge index within its triangle (0↔2)
+static inline int flip_halfedge(int e) {
+  return 3 * (e / 3) + 2 - (e % 3);
+}
+
+// Transform tangent vectors by mat3. If invert, remap through flipped halfedges.
+static void transform_tangents(ManifoldImpl *impl, ManifoldMat3 m3, bool invert,
+                               const ManifoldVecVec4 *oldTangents,
+                               const ManifoldVecHalfedge *oldHalfedge) {
+  if (oldTangents->len == 0) return;
+  vec_vec4_free(&impl->halfedgeTangent);
+  vec_vec4_resize(&impl->halfedgeTangent, oldTangents->len);
+  for (size_t edgeOut = 0; edgeOut < oldTangents->len; edgeOut++) {
+    int edgeIn;
+    if (invert) {
+      edgeIn = oldHalfedge->data[flip_halfedge((int)edgeOut)].pairedHalfedge;
+    } else {
+      edgeIn = (int)edgeOut;
+    }
+    ManifoldVec3 t = vec4_to_vec3(oldTangents->data[edgeIn]);
+    ManifoldVec3 transformed = mat3_mul_vec3(m3, t);
+    impl->halfedgeTangent.data[edgeOut] =
+        vec3_to_vec4(transformed, oldTangents->data[edgeIn].w);
+  }
+}
+
 Manifold manifold_scale(const Manifold *m, ManifoldVec3 v) {
   Manifold out;
   manifold_copy(&out, m);
   for (size_t i = 0; i < out.impl.vertPos.len; i++) {
     out.impl.vertPos.data[i] = vec3_mul(out.impl.vertPos.data[i], v);
   }
-  // Negative determinant means we need to flip triangle winding
-  if (v.x * v.y * v.z < 0) {
+  bool invert = v.x * v.y * v.z < 0;
+  ManifoldMat3 scaleMat;
+  scaleMat.cols[0] = manifold_vec3(v.x, 0, 0);
+  scaleMat.cols[1] = manifold_vec3(0, v.y, 0);
+  scaleMat.cols[2] = manifold_vec3(0, 0, v.z);
+
+  // Transform tangents BEFORE flipping (uses old halfedge for mapping)
+  if (m->impl.halfedgeTangent.len > 0) {
+    transform_tangents(&out.impl, scaleMat, invert,
+                       &m->impl.halfedgeTangent, &m->impl.halfedge);
+  }
+
+  // Flip triangle winding if negative determinant
+  if (invert) {
     size_t numTri = out.impl.halfedge.len / 3;
     for (size_t tri = 0; tri < numTri; tri++) {
-      // Swap halfedges 0 and 2 within the triangle
       ManifoldHalfedge tmp = out.impl.halfedge.data[3 * tri];
       out.impl.halfedge.data[3 * tri] = out.impl.halfedge.data[3 * tri + 2];
       out.impl.halfedge.data[3 * tri + 2] = tmp;
-      // Swap startVert/endVert and fix pairedHalfedge indices
       for (int i = 0; i < 3; i++) {
         ManifoldHalfedge *he = &out.impl.halfedge.data[3 * tri + i];
         int sv = he->startVert;
         he->startVert = he->endVert;
         he->endVert = sv;
-        // FlipHalfedge: remap index within its triangle
         if (he->pairedHalfedge >= 0) {
-          int pTri = he->pairedHalfedge / 3;
-          int pVert = 2 - (he->pairedHalfedge - 3 * pTri);
-          he->pairedHalfedge = 3 * pTri + pVert;
+          he->pairedHalfedge = flip_halfedge(he->pairedHalfedge);
         }
       }
     }
@@ -193,11 +247,6 @@ Manifold manifold_scale(const Manifold *m, ManifoldVec3 v) {
         vec3_mul(out.impl.vertNormal.data[i], signV));
   }
   manifold_impl_calculate_bbox(&out.impl);
-  // Scale epsilon by the spectral norm of the 3x3 scale matrix (matches C++)
-  ManifoldMat3 scaleMat;
-  scaleMat.cols[0] = manifold_vec3(v.x, 0, 0);
-  scaleMat.cols[1] = manifold_vec3(0, v.y, 0);
-  scaleMat.cols[2] = manifold_vec3(0, 0, v.z);
   out.impl.epsilon *= manifold_spectral_norm(scaleMat);
   manifold_impl_set_epsilon(&out.impl, out.impl.epsilon, false);
   return out;
@@ -222,6 +271,11 @@ Manifold manifold_rotate(const Manifold *m, double xDeg, double yDeg,
 
   Manifold out;
   manifold_copy(&out, m);
+  // Rotation has det=1, so no invert; tangent transform is just rotation
+  if (m->impl.halfedgeTangent.len > 0) {
+    transform_tangents(&out.impl, rot, false,
+                       &m->impl.halfedgeTangent, &m->impl.halfedge);
+  }
   for (size_t i = 0; i < out.impl.vertPos.len; i++) {
     out.impl.vertPos.data[i] = mat3_mul_vec3(rot, out.impl.vertPos.data[i]);
   }
@@ -256,6 +310,13 @@ Manifold manifold_transform(const Manifold *m, ManifoldMat3x4 t) {
   // Normal transform = inverse(transpose(m3))
   ManifoldMat3 normalXf = mat3_inverse(mat3_transpose(m3));
 
+  bool invert = mat3_det(m3) < 0;
+  // Transform tangents BEFORE flipping (uses old halfedge for mapping)
+  if (m->impl.halfedgeTangent.len > 0) {
+    transform_tangents(&out.impl, m3, invert,
+                       &m->impl.halfedgeTangent, &m->impl.halfedge);
+  }
+
   for (size_t i = 0; i < out.impl.faceNormal.len; i++) {
     out.impl.faceNormal.data[i] = vec3_normalize(
         mat3_mul_vec3(normalXf, out.impl.faceNormal.data[i]));
@@ -266,8 +327,7 @@ Manifold manifold_transform(const Manifold *m, ManifoldMat3x4 t) {
   }
 
   // Flip triangle winding if negative determinant
-  double det = mat3_det(m3);
-  if (det < 0) {
+  if (invert) {
     size_t numTri = out.impl.halfedge.len / 3;
     for (size_t tri = 0; tri < numTri; tri++) {
       ManifoldHalfedge tmp = out.impl.halfedge.data[3 * tri];
@@ -279,9 +339,7 @@ Manifold manifold_transform(const Manifold *m, ManifoldMat3x4 t) {
         he->startVert = he->endVert;
         he->endVert = sv;
         if (he->pairedHalfedge >= 0) {
-          int pTri = he->pairedHalfedge / 3;
-          int pVert = 2 - (he->pairedHalfedge - 3 * pTri);
-          he->pairedHalfedge = 3 * pTri + pVert;
+          he->pairedHalfedge = flip_halfedge(he->pairedHalfedge);
         }
       }
     }
@@ -391,68 +449,31 @@ Manifold manifold_cylinder(double height, double radiusLow, double radiusHigh,
     return m;
   }
 
-  double rh = radiusHigh >= 0.0 ? radiusHigh : radiusLow;
-  double maxR = fmax(radiusLow, rh);
+  double scale = radiusHigh >= 0.0 ? radiusHigh / radiusLow : 1.0;
+  double radius = fmax(radiusLow, radiusHigh >= 0.0 ? radiusHigh : radiusLow);
   int n = circularSegments > 2 ? circularSegments :
-          manifold_get_circular_segments(maxR);
+          manifold_get_circular_segments(radius);
   if (n < 3) n = 3;
 
-  // Build cylinder from scratch: n verts on bottom, n on top, 2n triangles for sides, n-2 each for caps
-  manifold_impl_init(&m.impl);
-
-  // Bottom circle
+  // Build circle polygon (matching C++ Cylinder which uses Extrude)
+  ManifoldVec2 *circle = (ManifoldVec2 *)malloc(n * sizeof(ManifoldVec2));
+  double dPhi = 360.0 / n;
   for (int i = 0; i < n; i++) {
-    double angle = 360.0 * i / n;
-    ManifoldVec3 p = manifold_vec3(
-        radiusLow * manifold_cosd(angle),
-        radiusLow * manifold_sind(angle),
-        0.0);
-    vec_vec3_push(&m.impl.vertPos, p);
-  }
-  // Top circle
-  for (int i = 0; i < n; i++) {
-    double angle = 360.0 * i / n;
-    ManifoldVec3 p = manifold_vec3(
-        rh * manifold_cosd(angle),
-        rh * manifold_sind(angle),
-        height);
-    vec_vec3_push(&m.impl.vertPos, p);
+    circle[i].x = radiusLow * manifold_cosd(dPhi * i);
+    circle[i].y = radiusLow * manifold_sind(dPhi * i);
   }
 
-  ManifoldVecIVec3 triVerts = {0};
-  // Side triangles
-  for (int i = 0; i < n; i++) {
-    int i2 = (i + 1) % n;
-    vec_ivec3_push(&triVerts, manifold_ivec3(i, i2, n + i2));
-    vec_ivec3_push(&triVerts, manifold_ivec3(i, n + i2, n + i));
-  }
-  // Bottom cap (fan from vertex 0)
-  for (int i = 1; i < n - 1; i++) {
-    vec_ivec3_push(&triVerts, manifold_ivec3(0, i + 1, i));
-  }
-  // Top cap (fan from vertex n)
-  for (int i = 1; i < n - 1; i++) {
-    vec_ivec3_push(&triVerts, manifold_ivec3(n, n + i, n + i + 1));
-  }
-
-  ManifoldVecIVec3 emptyTriVert = {0};
-  manifold_impl_create_halfedges(&m.impl, &triVerts, &emptyTriVert);
-  manifold_impl_initialize_original(&m.impl);
-  manifold_impl_calculate_bbox(&m.impl);
-  manifold_impl_set_epsilon(&m.impl, -1.0, false);
-  manifold_impl_sort_geometry(&m.impl);
-  manifold_impl_set_normals_and_coplanar(&m.impl);
+  ManifoldVec2 scaleTop = {scale, scale};
+  m = manifold_extrude(circle, &n, 1, height, 0, 0.0, scaleTop);
+  free(circle);
 
   if (center) {
-    ManifoldVec3 offset = manifold_vec3(0, 0, -height / 2.0);
-    for (size_t i = 0; i < m.impl.vertPos.len; i++) {
-      m.impl.vertPos.data[i] = vec3_add(m.impl.vertPos.data[i], offset);
-    }
-    m.impl.bBox = manifold_box_shift(m.impl.bBox, offset);
+    Manifold translated = manifold_translate(&m, manifold_vec3(0, 0, -height / 2.0));
+    manifold_destroy(&m);
+    Manifold orig = manifold_as_original(&translated);
+    manifold_destroy(&translated);
+    return orig;
   }
-
-  vec_ivec3_free(&triVerts);
-  vec_ivec3_free(&emptyTriVert);
   return m;
 }
 
@@ -1024,48 +1045,17 @@ static Manifold manifold_minkowski_impl(const Manifold *a, const Manifold *b,
 
   // Convex-Convex Minkowski Sum (not inset): hull of all pairwise sums
   if (!inset && aConvex && bConvex) {
-    // Ensure the smaller mesh is the one we iterate (bImpl)
-    const ManifoldImpl *bigImpl = aImpl;
-    const ManifoldImpl *smallImpl = bImpl;
-    if (aImpl->vertPos.len < bImpl->vertPos.len) {
-      bigImpl = bImpl;
-      smallImpl = aImpl;
-    }
-    size_t numSmall = smallImpl->vertPos.len;
-    size_t numBig = bigImpl->vertPos.len;
-    if (numSmall * numBig <= 200) {
-      size_t total = numSmall * numBig;
-      ManifoldVec3 *pts = (ManifoldVec3 *)malloc(total * sizeof(ManifoldVec3));
-      size_t idx = 0;
-      for (size_t i = 0; i < numSmall; i++)
-        for (size_t j = 0; j < numBig; j++)
-          pts[idx++] = vec3_add(smallImpl->vertPos.data[i], bigImpl->vertPos.data[j]);
-      Manifold hullResult = manifold_hull_points(pts, total);
-      free(pts);
-      manifold_destroy(&base);
-      Manifold orig = manifold_as_original(&hullResult);
-      manifold_destroy(&hullResult);
-      return orig;
-    }
-    // Large point sets: per-face hulls + batch union
-    size_t numSmallTri = manifold_impl_num_tri(smallImpl);
-    Manifold *hulls = (Manifold *)malloc(numSmallTri * sizeof(Manifold));
-    for (size_t tri = 0; tri < numSmallTri; tri++) {
-      size_t numPts = 3 * numBig;
-      ManifoldVec3 *pts = (ManifoldVec3 *)malloc(numPts * sizeof(ManifoldVec3));
-      size_t pidx = 0;
-      for (int i = 0; i < 3; i++) {
-        ManifoldVec3 vert = smallImpl->vertPos.data[
-            smallImpl->halfedge.data[tri * 3 + i].startVert];
-        for (size_t j = 0; j < numBig; j++)
-          pts[pidx++] = vec3_add(vert, bigImpl->vertPos.data[j]);
-      }
-      hulls[tri] = manifold_hull_points(pts, numPts);
-      free(pts);
-    }
-    Manifold hullResult = manifold_batch_boolean(hulls, (int)numSmallTri, MANIFOLD_OP_ADD);
-    for (size_t i = 0; i < numSmallTri; i++) manifold_destroy(&hulls[i]);
-    free(hulls);
+    // Match C++: hull of all pairwise vertex sums
+    size_t numA = aImpl->vertPos.len;
+    size_t numB = bImpl->vertPos.len;
+    size_t total = numA * numB;
+    ManifoldVec3 *pts = (ManifoldVec3 *)malloc(total * sizeof(ManifoldVec3));
+    size_t idx = 0;
+    for (size_t i = 0; i < numA; i++)
+      for (size_t j = 0; j < numB; j++)
+        pts[idx++] = vec3_add(aImpl->vertPos.data[i], bImpl->vertPos.data[j]);
+    Manifold hullResult = manifold_hull_points(pts, total);
+    free(pts);
     manifold_destroy(&base);
     Manifold orig = manifold_as_original(&hullResult);
     manifold_destroy(&hullResult);
