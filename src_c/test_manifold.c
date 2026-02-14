@@ -5272,6 +5272,41 @@ static void test_Manifold_MeshID(void) {
   manifold_destroy(&cube2);
 }
 
+// Count unique values in an int array
+static int num_unique_int(const int *arr, size_t len) {
+  if (len == 0) return 0;
+  int count = 0;
+  for (size_t i = 0; i < len; i++) {
+    int found = 0;
+    for (size_t j = 0; j < i; j++) {
+      if (arr[j] == arr[i]) { found = 1; break; }
+    }
+    if (!found) count++;
+  }
+  return count;
+}
+
+static void test_Manifold_FaceIDRoundTrip(void) {
+  Manifold cube = manifold_cube((ManifoldVec3){1, 1, 1}, false);
+  EXPECT_GE(manifold_original_id(&cube), 0);
+  ManifoldMeshGL inGL = manifold_get_meshgl(&cube);
+  EXPECT_EQ(num_unique_int(inGL.faceID, inGL.faceIDLen), 6);
+
+  // Override faceID: {3,3,3,3,3,3, 5,5,5,5,5,5}
+  assert(inGL.faceIDLen == 12);
+  for (size_t i = 0; i < 6; i++) inGL.faceID[i] = 3;
+  for (size_t i = 6; i < 12; i++) inGL.faceID[i] = 5;
+
+  Manifold cube2 = manifold_from_meshgl(&inGL);
+  ManifoldMeshGL outGL = manifold_get_meshgl(&cube2);
+  EXPECT_EQ(num_unique_int(outGL.faceID, outGL.faceIDLen), 2);
+
+  manifold_free_meshgl(&outGL);
+  manifold_free_meshgl(&inGL);
+  manifold_destroy(&cube);
+  manifold_destroy(&cube2);
+}
+
 // ==================== Main ====================
 
 int main(void) {
@@ -5343,6 +5378,7 @@ int main(void) {
   RUN_TEST(Manifold_MeshRelationRefinePrecision);
   RUN_TEST(Manifold_DecomposeProps);
   RUN_TEST(Manifold_MeshID);
+  RUN_TEST(Manifold_FaceIDRoundTrip);
 
   // Boolean tests
   printf("--- Boolean ---\n");
