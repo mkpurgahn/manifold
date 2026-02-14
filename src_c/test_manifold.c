@@ -4764,6 +4764,17 @@ static void test_BooleanComplex_CraycloudBool(void) {
   manifold_destroy(&m1);
 }
 
+static void test_BooleanComplex_GenericTwinBooleanTest7081(void) {
+  Manifold m1 = read_test_glb("Generic_Twin_7081.1.t0_left.glb");
+  Manifold m2 = read_test_glb("Generic_Twin_7081.1.t0_right.glb");
+  Manifold res = manifold_union(&m1, &m2);
+  ManifoldMeshGL mgl = manifold_get_meshgl(&res);
+  manifold_free_meshgl(&mgl);
+  manifold_destroy(&res);
+  manifold_destroy(&m2);
+  manifold_destroy(&m1);
+}
+
 // --- BooleanComplex_Sweep helpers ---
 typedef struct {
   int nSegments;
@@ -5252,6 +5263,7 @@ int main(void) {
   RUN_TEST(BooleanComplex_OffsetSelfIntersect);
   RUN_TEST(BooleanComplex_OffsetTriangulationFailure);
   RUN_TEST(BooleanComplex_CraycloudBool);
+  RUN_TEST(BooleanComplex_GenericTwinBooleanTest7081);
   RUN_TEST(BooleanComplex_Sweep);
 
   // Additional Smooth tests already registered above
