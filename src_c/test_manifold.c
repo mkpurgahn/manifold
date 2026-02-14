@@ -2932,6 +2932,66 @@ static void test_Manifold_Merge(void) {
   free_cube_stl(&cubeSTL);
 }
 
+static void test_Manifold_MergeEmpty(void) {
+  ManifoldMeshGL shape = manifold_meshgl_empty();
+  shape.numProp = 7;
+  int triVerts[] = {0,  1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11,
+                    12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
+                    24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35};
+  shape.triVerts = triVerts;
+  shape.triLen = 12;
+  float vertProperties[] = {
+    0.0f,  0.5f,  0.434500008821487f, 0.0f, 0.0f, 0.0f, 0.0f,
+    0.0f,  -0.5f, -0.43450000882149f, 0.0f, 0.0f, 1.0f, 1.0f,
+    0.0f,  0.5f,  -0.43450000882149f, 0.0f, 0.0f, 0.0f, 1.0f,
+    0.0f,  -0.5f, -0.43450000882149f, 0.0f, 0.0f, 1.0f, 1.0f,
+    0.0f,  0.5f,  0.434500008821487f, 0.0f, 0.0f, 0.0f, 0.0f,
+    0.0f,  -0.5f, 0.434500008821487f, 0.0f, 0.0f, 1.0f, 0.0f,
+    0.0f,  0.5f,  0.434500008821487f, 0.0f, 0.0f, 0.0f, 0.0f,
+    -0.0f, 0.5f,  -0.43450000882149f, 0.0f, 0.0f, 1.0f, 1.0f,
+    -0.0f, 0.5f,  0.434500008821487f, 0.0f, 0.0f, 0.0f, 1.0f,
+    -0.0f, 0.5f,  -0.43450000882149f, 0.0f, 0.0f, 1.0f, 1.0f,
+    0.0f,  0.5f,  0.434500008821487f, 0.0f, 0.0f, 0.0f, 0.0f,
+    0.0f,  0.5f,  -0.43450000882149f, 0.0f, 0.0f, 1.0f, 0.0f,
+    0.0f,  0.5f,  0.434500008821487f, 0.0f, 0.0f, 0.0f, 0.0f,
+    -0.0f, -0.5f, 0.434500008821487f, 0.0f, 0.0f, 1.0f, 1.0f,
+    0.0f,  -0.5f, 0.434500008821487f, 0.0f, 0.0f, 0.0f, 1.0f,
+    -0.0f, -0.5f, 0.434500008821487f, 0.0f, 0.0f, 1.0f, 1.0f,
+    0.0f,  0.5f,  0.434500008821487f, 0.0f, 0.0f, 0.0f, 0.0f,
+    -0.0f, 0.5f,  0.434500008821487f, 0.0f, 0.0f, 1.0f, 0.0f,
+    -0.0f, 0.5f,  -0.43450000882149f, 0.0f, 0.0f, 0.0f, 0.0f,
+    -0.0f, -0.5f, 0.434500008821487f, 0.0f, 0.0f, 1.0f, 1.0f,
+    -0.0f, 0.5f,  0.434500008821487f, 0.0f, 0.0f, 0.0f, 1.0f,
+    -0.0f, -0.5f, 0.434500008821487f, 0.0f, 0.0f, 1.0f, 1.0f,
+    -0.0f, 0.5f,  -0.43450000882149f, 0.0f, 0.0f, 0.0f, 0.0f,
+    -0.0f, -0.5f, -0.43450000882149f, 0.0f, 0.0f, 1.0f, 0.0f,
+    -0.0f, -0.5f, 0.434500008821487f, 0.0f, 0.0f, 0.0f, 0.0f,
+    0.0f,  -0.5f, -0.43450000882149f, 0.0f, 0.0f, 1.0f, 1.0f,
+    0.0f,  -0.5f, 0.434500008821487f, 0.0f, 0.0f, 0.0f, 1.0f,
+    0.0f,  -0.5f, -0.43450000882149f, 0.0f, 0.0f, 1.0f, 1.0f,
+    -0.0f, -0.5f, 0.434500008821487f, 0.0f, 0.0f, 0.0f, 0.0f,
+    -0.0f, -0.5f, -0.43450000882149f, 0.0f, 0.0f, 1.0f, 0.0f,
+    0.0f,  -0.5f, -0.43450000882149f, 0.0f, 0.0f, 0.0f, 0.0f,
+    -0.0f, 0.5f,  -0.43450000882149f, 0.0f, 0.0f, 1.0f, 1.0f,
+    0.0f,  0.5f,  -0.43450000882149f, 0.0f, 0.0f, 0.0f, 1.0f,
+    -0.0f, 0.5f,  -0.43450000882149f, 0.0f, 0.0f, 1.0f, 1.0f,
+    0.0f,  -0.5f, -0.43450000882149f, 0.0f, 0.0f, 0.0f, 0.0f,
+    -0.0f, -0.5f, -0.43450000882149f, 0.0f, 0.0f, 1.0f, 0.0f
+  };
+  shape.vertProperties = vertProperties;
+  shape.vertLen = 36;
+
+  EXPECT_TRUE(manifold_meshgl_merge(&shape));
+  Manifold man = manifold_from_meshgl(&shape);
+  EXPECT_EQ((int)manifold_status(&man), (int)MANIFOLD_ERROR_NO_ERROR);
+  EXPECT_TRUE(manifold_is_empty(&man));
+
+  // Free merge vectors allocated by manifold_meshgl_merge
+  free(shape.mergeFromVert);
+  free(shape.mergeToVert);
+  manifold_destroy(&man);
+}
+
 static void test_Manifold_ValidInput(void) {
   // Build a tetrahedron from raw mesh
   ManifoldVec3 verts[] = {{0,0,0}, {1,0,0}, {0,1,0}, {0,0,1}};
@@ -5483,6 +5543,7 @@ int main(void) {
   RUN_TEST(Manifold_MeshDeterminism);
   RUN_TEST(Manifold_MergeDegenerates);
   RUN_TEST(Manifold_Merge);
+  RUN_TEST(Manifold_MergeEmpty);
   RUN_TEST(Manifold_MeshRelationRefine);
   RUN_TEST(Manifold_MeshRelationRefinePrecision);
   RUN_TEST(Manifold_DecomposeProps);
