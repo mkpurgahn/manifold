@@ -2271,6 +2271,113 @@ void manifold_polygons2d_free(ManifoldPolygons2D *p) {
   p->numPolys = 0;
 }
 
+// Port of Manifold::Impl::Slice(double height)
+// Slices the manifold at the given z-height, returning 2D cross-section polygons.
+ManifoldPolygons2D manifold_slice(const Manifold *m, double height) {
+  ManifoldPolygons2D result = {NULL, NULL, 0};
+  const ManifoldImpl *impl = &m->impl;
+
+  if (impl->halfedge.len == 0) return result;
+
+  const size_t numTri = impl->halfedge.len / 3;
+  const ManifoldHalfedge *he = impl->halfedge.data;
+  const ManifoldVec3 *vp = impl->vertPos.data;
+
+  // Find triangles that cross the slice plane: min z <= height && max z > height
+  bool *inSet = (bool *)calloc(numTri, sizeof(bool));
+  int numInSet = 0;
+  for (size_t tri = 0; tri < numTri; tri++) {
+    double zmin = 1e308, zmax = -1e308;
+    for (int j = 0; j < 3; j++) {
+      double z = vp[he[3 * tri + j].startVert].z;
+      if (z < zmin) zmin = z;
+      if (z > zmax) zmax = z;
+    }
+    if (zmin <= height && zmax > height) {
+      inSet[tri] = true;
+      numInSet++;
+    }
+  }
+
+  if (numInSet == 0) {
+    free(inSet);
+    return result;
+  }
+
+  // Trace polygon loops
+  int maxPolys = numInSet;
+  ManifoldVec2 *polyBuf = (ManifoldVec2 *)malloc(numInSet * sizeof(ManifoldVec2));
+  int *polySizes = (int *)malloc(maxPolys * sizeof(int));
+  int numPolys = 0;
+  int totalVerts = 0;
+
+  while (numInSet > 0) {
+    // Find first triangle still in set
+    int startTri = -1;
+    for (size_t tri = 0; tri < numTri; tri++) {
+      if (inSet[tri]) { startTri = (int)tri; break; }
+    }
+    if (startTri < 0) break;
+
+    // Find starting halfedge k: the one where startVert is above and endVert is at/below
+    int k = 0;
+    for (int j = 0; j < 3; j++) {
+      int next = (j + 1) % 3;
+      if (vp[he[3 * startTri + j].startVert].z > height &&
+          vp[he[3 * startTri + next].startVert].z <= height) {
+        k = next;
+        break;
+      }
+    }
+
+    int polyStart = totalVerts;
+    int tri = startTri;
+    do {
+      inSet[tri] = false;
+      numInSet--;
+
+      // If endVert of current halfedge is at/below height, advance k
+      if (vp[he[3 * tri + k].endVert].z <= height) {
+        k = (k + 1) % 3;
+      }
+
+      // Halfedge k goes from below to above (crosses the plane upward)
+      ManifoldHalfedge up = he[3 * tri + k];
+      ManifoldVec3 below = vp[up.startVert];
+      ManifoldVec3 above = vp[up.endVert];
+      double a = (height - below.z) / (above.z - below.z);
+
+      // Grow buffer if needed
+      if (totalVerts >= numInSet + totalVerts + 100) {
+        // shouldn't happen, but safe
+      }
+      polyBuf[totalVerts].x = below.x + a * (above.x - below.x);
+      polyBuf[totalVerts].y = below.y + a * (above.y - below.y);
+      totalVerts++;
+
+      // Follow paired halfedge to next triangle
+      int pair = up.pairedHalfedge;
+      tri = pair / 3;
+      k = (pair % 3 + 1) % 3;
+    } while (tri != startTri);
+
+    polySizes[numPolys] = totalVerts - polyStart;
+    numPolys++;
+  }
+
+  // Build result
+  result.numPolys = numPolys;
+  result.polySizes = (int *)malloc(numPolys * sizeof(int));
+  memcpy(result.polySizes, polySizes, numPolys * sizeof(int));
+  result.polys = (ManifoldVec2 *)malloc(totalVerts * sizeof(ManifoldVec2));
+  memcpy(result.polys, polyBuf, totalVerts * sizeof(ManifoldVec2));
+
+  free(inSet);
+  free(polyBuf);
+  free(polySizes);
+  return result;
+}
+
 ManifoldPolygons2D manifold_project(const Manifold *m) {
   ManifoldPolygons2D result = {NULL, NULL, 0};
   const ManifoldImpl *impl = &m->impl;
@@ -2409,6 +2516,7 @@ static int winding_number_at_point(double px, double py,
 }
 
 // Compute area under positive fill rule using rasterization.
+// Handles self-intersecting polygons correctly via winding number.
 // Equivalent to CrossSection(polys, FillRule::Positive).Area() in C++.
 double manifold_cross_section_area(const ManifoldPolygons2D *polys) {
   if (!polys || polys->numPolys == 0) return 0.0;
@@ -2418,7 +2526,6 @@ double manifold_cross_section_area(const ManifoldPolygons2D *polys) {
     totalVerts += polys->polySizes[i];
   if (totalVerts == 0) return 0.0;
 
-  // Find bounding box
   double minX = polys->polys[0].x, maxX = minX;
   double minY = polys->polys[0].y, maxY = minY;
   for (int i = 1; i < totalVerts; i++) {
@@ -2431,7 +2538,6 @@ double manifold_cross_section_area(const ManifoldPolygons2D *polys) {
   double rangeX = maxX - minX, rangeY = maxY - minY;
   if (rangeX < 1e-15 || rangeY < 1e-15) return 0.0;
 
-  // Use grid-based sampling for area computation
   int gridN = 1000;
   double dx = rangeX / gridN;
   double dy = rangeY / gridN;
@@ -2448,6 +2554,29 @@ double manifold_cross_section_area(const ManifoldPolygons2D *polys) {
   }
 
   return inside * dx * dy;
+}
+
+// Compute area of simple (non-self-intersecting) polygons using shoelace formula.
+// Returns the exact area for simple polygon contours (e.g. from manifold_slice).
+double manifold_polygons2d_area(const ManifoldPolygons2D *polys) {
+  if (!polys || polys->numPolys == 0) return 0.0;
+
+  double totalArea = 0.0;
+  int offset = 0;
+  for (int p = 0; p < polys->numPolys; p++) {
+    int n = polys->polySizes[p];
+    if (n < 3) { offset += n; continue; }
+    double area = 0.0;
+    for (int i = 0; i < n; i++) {
+      int j = (i + 1) % n;
+      area += polys->polys[offset + i].x * polys->polys[offset + j].y;
+      area -= polys->polys[offset + j].x * polys->polys[offset + i].y;
+    }
+    totalArea += area;
+    offset += n;
+  }
+
+  return fabs(totalArea) * 0.5;
 }
 
 Manifold manifold_read_obj(const char *path) {

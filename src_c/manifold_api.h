@@ -198,6 +198,10 @@ typedef struct {
   int numPolys;
 } ManifoldPolygons2D;
 
+// Slice the manifold at the given z-height, returning 2D cross-section polygons.
+// Returns polygon contours. Caller must free with manifold_polygons2d_free().
+ManifoldPolygons2D manifold_slice(const Manifold *m, double height);
+
 // Project the manifold silhouette onto the XY plane.
 // Returns polygon contours. Caller must free with manifold_polygons2d_free().
 ManifoldPolygons2D manifold_project(const Manifold *m);
@@ -205,6 +209,10 @@ ManifoldPolygons2D manifold_project(const Manifold *m);
 // Compute the area of 2D polygons under positive fill rule.
 // This is equivalent to C++ CrossSection(polys, Positive).Area().
 double manifold_cross_section_area(const ManifoldPolygons2D *polys);
+
+// Compute area of simple (non-self-intersecting) 2D polygons using shoelace formula.
+// Exact for contours from manifold_slice(). C++ equivalent: CrossSection(polys).Area().
+double manifold_polygons2d_area(const ManifoldPolygons2D *polys);
 
 // Free a ManifoldPolygons2D returned by manifold_project().
 void manifold_polygons2d_free(ManifoldPolygons2D *p);
