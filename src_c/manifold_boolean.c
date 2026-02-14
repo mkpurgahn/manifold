@@ -974,13 +974,22 @@ skip_face:
     }
   }
 
-  // Remove degenerate face pairs: two triangles with same 3 verts in reversed
-  // winding order. Two triangles sharing identical vertices in opposite winding
-  // occupy the same space and create non-manifold edges.
+  // Remove degenerate triangles and opposite face pairs.
   {
     size_t nTri = triVerts.len;
     bool *remove = (bool *)calloc(nTri, sizeof(bool));
     if (remove) {
+      // Remove degenerate triangles (any two vertices identical)
+      for (size_t i = 0; i < nTri; i++) {
+        int a0 = triVerts.data[i].x, a1 = triVerts.data[i].y, a2 = triVerts.data[i].z;
+        if (a0 == a1 || a1 == a2 || a0 == a2) {
+          remove[i] = true;
+          continue;
+        }
+      }
+      // Remove degenerate face pairs: two triangles with same 3 verts in reversed
+      // winding order. These are also removed by create_halfedges, but removing
+      // them here first ensures an even triangle count.
       for (size_t i = 0; i < nTri; i++) {
         if (remove[i]) continue;
         int a0 = triVerts.data[i].x, a1 = triVerts.data[i].y, a2 = triVerts.data[i].z;
