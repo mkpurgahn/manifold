@@ -286,20 +286,25 @@ static Manifold menger_sponge_impl(int n) {
   for (int i = 0; i < numHoles; i++) manifold_destroy(&holesArr[i]);
   free(holesArr);
 
-  // Subtract along all 3 axes
+  // Subtract along all 3 axes, matching C++:
+  // result -= hole;
+  // hole = hole.Rotate(90);  // X-rotate
+  // result -= hole;
+  // hole = hole.Rotate(0, 0, 90);  // Z-rotate the already X-rotated hole
+  // result -= hole;
   Manifold r1 = manifold_difference(&result, &hole);
   manifold_destroy(&result);
 
   Manifold holeR1 = manifold_rotate(&hole, 90, 0, 0);
+  manifold_destroy(&hole);
   Manifold r2 = manifold_difference(&r1, &holeR1);
   manifold_destroy(&r1);
-  manifold_destroy(&holeR1);
 
-  Manifold holeR2 = manifold_rotate(&hole, 0, 0, 90);
+  Manifold holeR2 = manifold_rotate(&holeR1, 0, 0, 90);
+  manifold_destroy(&holeR1);
   Manifold r3 = manifold_difference(&r2, &holeR2);
   manifold_destroy(&r2);
   manifold_destroy(&holeR2);
-  manifold_destroy(&hole);
 
   return r3;
 }

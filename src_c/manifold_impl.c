@@ -1005,8 +1005,6 @@ static bool impl_collapse_edge(ManifoldImpl *impl, int edge,
 
   int start = impl->halfedge.data[tri1edge.y].pairedHalfedge;
   if (start < 0 || (size_t)start >= impl->halfedge.len) return false;
-  // Verify tri1edge.y's pairing is consistent
-  if (impl->halfedge.data[start].pairedHalfedge != tri1edge.y) return false;
   int current = tri1edge.z;
   if (!shortEdge) {
     current = start;
@@ -1057,21 +1055,6 @@ static bool impl_collapse_edge(ManifoldImpl *impl, int edge,
     if (safeN >= (int)impl->halfedge.len) return false;
   }
 
-  // Verify endVert fan: from pair(tri0edge.y) to tri1edge.z
-  {
-    int cur = impl->halfedge.data[tri0edge.y].pairedHalfedge;
-    if (cur < 0 || (size_t)cur >= impl->halfedge.len) return false;
-    int safeN = 0;
-    while (cur != tri1edge.z && safeN++ < (int)impl->halfedge.len) {
-      cur = manifold_next_halfedge(cur);
-      if ((size_t)cur >= impl->halfedge.len) break;
-      int p = impl->halfedge.data[cur].pairedHalfedge;
-      if (p < 0 || (size_t)p >= impl->halfedge.len) break;
-      cur = p;
-    }
-    if (cur != tri1edge.z) return false;
-  }
-
   // Orbit endVert
   {
     int cur = impl->halfedge.data[tri0edge.y].pairedHalfedge;
@@ -1088,25 +1071,6 @@ static bool impl_collapse_edge(ManifoldImpl *impl, int edge,
       cur = paired;
     }
     if (safeN >= (int)impl->halfedge.len) {
-      edges->len = 0;
-      return false;
-    }
-  }
-
-  // Verify startVert fan: from start to tri0edge.z
-  {
-    int cur = start;
-    int safeN = 0;
-    int safeLimit = 2 * (int)impl->halfedge.len;
-    while (cur != tri0edge.z && safeN++ < safeLimit) {
-      cur = manifold_next_halfedge(cur);
-      if ((size_t)cur >= impl->halfedge.len) break;
-      if (impl->halfedge.data[cur].startVert < 0) break;
-      int nxt = impl->halfedge.data[cur].pairedHalfedge;
-      if (nxt < 0 || (size_t)nxt >= impl->halfedge.len) break;
-      cur = nxt;
-    }
-    if (cur != tri0edge.z) {
       edges->len = 0;
       return false;
     }
@@ -1673,13 +1637,19 @@ static void impl_collapse_short_edges(ManifoldImpl *impl, int firstNewVert) {
   size_t nbEdges = impl->halfedge.len;
   ManifoldVecInt scratchBuffer = vec_int_create(0);
 
+  // Collect all flagged short edges first, then process them
+  // (matching C++ FlagStore::run_seq pattern)
+  ManifoldVecInt flagged = vec_int_create(0);
   for (size_t i = 0; i < nbEdges; i++) {
-    if (is_short_edge(impl, (int)i, firstNewVert)) {
-      scratchBuffer.len = 0;
-      impl_collapse_edge(impl, (int)i, &scratchBuffer);
-    }
+    if (is_short_edge(impl, (int)i, firstNewVert))
+      vec_int_push(&flagged, (int)i);
+  }
+  for (size_t i = 0; i < flagged.len; i++) {
+    scratchBuffer.len = 0;
+    impl_collapse_edge(impl, flagged.data[i], &scratchBuffer);
   }
 
+  vec_int_free(&flagged);
   vec_int_free(&scratchBuffer);
 }
 
