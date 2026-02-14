@@ -2521,6 +2521,79 @@ static void test_Boolean_SimpleCubeRegression(void) {
   manifold_destroy(&r3); manifold_destroy(&sum); manifold_destroy(&result);
 }
 
+static void test_ManifoldFuzz_SimpleCube(void) {
+  // Deterministic port of the C++ fuzz test SimpleCube.
+  // Exercises translate/rotate + union/subtract on unit cubes,
+  // asserting no errors after each boolean operation.
+  ManifoldExecutionParams *params = manifold_get_params();
+  bool oldIntermediate = params->intermediateChecks;
+  bool oldOverlaps = params->processOverlaps;
+  params->intermediateChecks = true;
+  params->processOverlaps = false;
+
+  // Each "op" is: transforms[] + isUnion flag
+  typedef struct { int ty; double v[3]; } Xform;  // ty: 0=translate, 1=rotate
+  typedef struct { Xform xforms[4]; int nxforms; int isUnion; } CubeOp;
+
+  // Sequence of operations (5-10 ops covering various combos)
+  CubeOp ops[] = {
+    // Op 0: translate + union
+    { .xforms = {{0, {2.0, 0.0, 0.0}}}, .nxforms = 1, .isUnion = 1 },
+    // Op 1: rotate + subtract
+    { .xforms = {{1, {-0.1, 0.1, -1.0}}}, .nxforms = 1, .isUnion = 0 },
+    // Op 2: translate + rotate + union
+    { .xforms = {{0, {1.0, 1.0, 0.0}}, {1, {45.0, 0.0, 0.0}}}, .nxforms = 2, .isUnion = 1 },
+    // Op 3: multiple rotations + subtract
+    { .xforms = {{1, {10.0, -5.0, 3.0}}, {1, {0.0, 90.0, 0.0}}}, .nxforms = 2, .isUnion = 0 },
+    // Op 4: identity (no transforms) + union
+    { .xforms = {{0}}, .nxforms = 0, .isUnion = 1 },
+    // Op 5: translate far away + subtract (should not affect much)
+    { .xforms = {{0, {5.0, 5.0, 5.0}}}, .nxforms = 1, .isUnion = 0 },
+    // Op 6: chained translate+rotate+translate + union
+    { .xforms = {{0, {0.5, 0.0, 0.0}}, {1, {0.0, 0.0, 30.0}}, {0, {-0.5, 0.5, 0.0}}}, .nxforms = 3, .isUnion = 1 },
+    // Op 7: rotate + union (same axis as Op 1, different angle)
+    { .xforms = {{1, {-0.1, -0.10000000000066571, -1.0}}}, .nxforms = 1, .isUnion = 1 },
+    // Op 8: translate negative + subtract
+    { .xforms = {{0, {-1.0, -1.0, -1.0}}}, .nxforms = 1, .isUnion = 0 },
+    // Op 9: rotate large angle + union
+    { .xforms = {{1, {90.0, 90.0, 90.0}}}, .nxforms = 1, .isUnion = 1 },
+  };
+  int nops = sizeof(ops) / sizeof(ops[0]);
+
+  Manifold result = manifold_empty();
+  for (int i = 0; i < nops; i++) {
+    Manifold cube = manifold_cube((ManifoldVec3){1, 1, 1}, false);
+    Manifold cur = cube;
+    int transformed = 0;
+    for (int j = 0; j < ops[i].nxforms; j++) {
+      Xform *xf = &ops[i].xforms[j];
+      Manifold tmp;
+      if (xf->ty == 0) {
+        tmp = manifold_translate(&cur, (ManifoldVec3){xf->v[0], xf->v[1], xf->v[2]});
+      } else {
+        tmp = manifold_rotate(&cur, xf->v[0], xf->v[1], xf->v[2]);
+      }
+      if (transformed) manifold_destroy(&cur);
+      cur = tmp;
+      transformed = 1;
+    }
+    Manifold prev = result;
+    if (ops[i].isUnion) {
+      result = manifold_union(&prev, &cur);
+    } else {
+      result = manifold_difference(&prev, &cur);
+    }
+    EXPECT_EQ((int)manifold_status(&result), (int)MANIFOLD_ERROR_NO_ERROR);
+    manifold_destroy(&prev);
+    if (transformed) manifold_destroy(&cur);
+    manifold_destroy(&cube);
+  }
+  manifold_destroy(&result);
+
+  params->intermediateChecks = oldIntermediate;
+  params->processOverlaps = oldOverlaps;
+}
+
 static void test_Boolean_Simplify(void) {
   Manifold cube = manifold_cube((ManifoldVec3){1,1,1}, false);
   Manifold cube_r_tmp = manifold_refine(&cube, 10);
@@ -6133,6 +6206,7 @@ int main(void) {
   RUN_TEST(Boolean_Perturb);
   RUN_TEST(Boolean_Coplanar);
   RUN_TEST(Boolean_SimpleCubeRegression);
+  RUN_TEST(ManifoldFuzz_SimpleCube);
   RUN_TEST(Boolean_Simplify);
   RUN_TEST(Boolean_EmptyOriginal);
   RUN_TEST(Boolean_PropertiesNoIntersection);
