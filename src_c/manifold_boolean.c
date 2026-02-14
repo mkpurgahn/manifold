@@ -383,50 +383,8 @@ static ManifoldIntersections intersect12(const ManifoldImpl *inP,
   Intersect12Ctx ctx = {inP, inQ, a, b, expandP, forward, &result};
 
   // Query each edge of A against B's face collider
-  for (size_t qi = 0; qi < edgeBoxes.len; qi++) {
-    if (!manifold_halfedge_is_forward(&a->halfedge.data[qi])) continue;
-    ManifoldBox qbox = edgeBoxes.data[qi];
-    if (qbox.min.x > qbox.max.x) continue;  // empty
-
-    // Walk the BVH
-    if (b->collider.internalChildren.len == 0) continue;
-    int stack[64];
-    int top = -1;
-    int node = MANIFOLD_COLLIDER_ROOT;
-
-    while (1) {
-      int internal = collider_node2internal(node);
-      int child1 = b->collider.internalChildren.data[internal].first;
-      int child2 = b->collider.internalChildren.data[internal].second;
-
-      bool overlap1 = manifold_box_overlaps(b->collider.nodeBBox.data[child1], qbox);
-      bool overlap2 = manifold_box_overlaps(b->collider.nodeBBox.data[child2], qbox);
-
-      bool traverse1 = false, traverse2 = false;
-      if (overlap1 && collider_is_leaf(child1)) {
-        int leafIdx = collider_node2leaf(child1);
-        intersect12_callback((int)qi, leafIdx, &ctx);
-      } else {
-        traverse1 = overlap1 && collider_is_internal(child1);
-      }
-      if (overlap2 && collider_is_leaf(child2)) {
-        int leafIdx = collider_node2leaf(child2);
-        intersect12_callback((int)qi, leafIdx, &ctx);
-      } else {
-        traverse2 = overlap2 && collider_is_internal(child2);
-      }
-
-      if (!traverse1 && !traverse2) {
-        if (top < 0) break;
-        node = stack[top--];
-      } else {
-        node = traverse1 ? child1 : child2;
-        if (traverse1 && traverse2) {
-          if (top < 63) stack[++top] = child2;
-        }
-      }
-    }
-  }
+  manifold_collider_collisions(&b->collider, edgeBoxes.data, edgeBoxes.len,
+                                intersect12_callback, &ctx, false);
 
   vec_box_free(&edgeBoxes);
 
@@ -2087,28 +2045,25 @@ static ManifoldError boolean3_result(const ManifoldBoolean3 *b3,
 
 
   // Merge coincident vertices connected by zero-length edges within faces.
-  // This only merges vertices that share an edge within
-  // the same face and are at the same 3D position.
+  // The boolean can create separate vertices at the same 3D position from
+  // different intersection computations. These must be unified.
   {
     int nv = (int)outR->vertPos.len;
     int *vertMap = (int *)malloc((size_t)nv * sizeof(int));
     for (int i = 0; i < nv; i++) vertMap[i] = i;
     double eps = fmax(outR->epsilon, 1e-12);
 
-    // Only merge vertices connected by a halfedge where both endpoints
-    // are at the same position
+    // Merge edge-connected coincident vertices
     for (size_t i = 0; i < outR->halfedge.len; i++) {
       int sv = outR->halfedge.data[i].startVert;
       int ev = outR->halfedge.data[i].endVert;
       if (sv < 0 || ev < 0 || sv >= nv || ev >= nv) continue;
       if (sv == ev) continue;
-      // Follow the mapping chain
       while (vertMap[sv] != sv) sv = vertMap[sv];
       while (vertMap[ev] != ev) ev = vertMap[ev];
       if (sv == ev) continue;
       ManifoldVec3 d = vec3_sub(outR->vertPos.data[sv], outR->vertPos.data[ev]);
       if (fabs(d.x) <= eps && fabs(d.y) <= eps && fabs(d.z) <= eps) {
-        // Map higher index to lower
         if (ev > sv) vertMap[ev] = sv;
         else vertMap[sv] = ev;
       }
@@ -2478,22 +2433,6 @@ ManifoldError manifold_boolean_op(ManifoldImpl *result,
     b3.w03 = winding03(p, q, &b3.xv12, b3.expandP, true);
     b3.w30 = winding03(p, q, &b3.xv21, b3.expandP, false);
   }
-
-#ifdef MANIFOLD_BOOLEAN_DEBUG
-  fprintf(stderr, "BOOL: P=%zu verts %zu tris, Q=%zu verts %zu tris\n",
-          p->vertPos.len, p->halfedge.len/3, q->vertPos.len, q->halfedge.len/3);
-  fprintf(stderr, "BOOL: xv12=%zu intersections, xv21=%zu intersections\n",
-          b3.xv12.v12.len, b3.xv21.v12.len);
-  fprintf(stderr, "BOOL: w03 (P verts in Q):");
-  for (size_t i = 0; i < b3.w03.len; i++) fprintf(stderr, " %d", b3.w03.data[i]);
-  fprintf(stderr, "\nBOOL: w30 (Q verts in P):");
-  for (size_t i = 0; i < b3.w30.len; i++) fprintf(stderr, " %d", b3.w30.data[i]);
-  fprintf(stderr, "\nBOOL: x12 (P edges x Q faces):");
-  for (size_t i = 0; i < b3.xv12.x12.len; i++) fprintf(stderr, " %d", b3.xv12.x12.data[i]);
-  fprintf(stderr, "\nBOOL: x21 (Q edges x P faces):");
-  for (size_t i = 0; i < b3.xv21.x12.len; i++) fprintf(stderr, " %d", b3.xv21.x12.data[i]);
-  fprintf(stderr, "\n");
-#endif
 
   ManifoldError err = boolean3_result(&b3, result, op);
 

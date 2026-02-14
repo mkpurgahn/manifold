@@ -168,8 +168,20 @@ Manifold manifold_translate(const Manifold *m, ManifoldVec3 v) {
     out.impl.vertPos.data[i] = vec3_add(out.impl.vertPos.data[i], v);
   }
   manifold_impl_calculate_bbox(&out.impl);
-  // Preserve inherited epsilon; bbox may grow so use max of inherited and bbox-based
   manifold_impl_set_epsilon(&out.impl, out.impl.epsilon, false);
+
+  // Reuse collider from source with translated boxes (matches C++ LazyCollider
+  // transform behavior for axis-aligned translations)
+  if (m->impl.colliderBuilt && m->impl.collider.internalChildren.len > 0) {
+    out.impl.collider = manifold_collider_copy(&m->impl.collider);
+    for (size_t i = 0; i < out.impl.collider.nodeBBox.len; i++) {
+      out.impl.collider.nodeBBox.data[i].min =
+          vec3_add(out.impl.collider.nodeBBox.data[i].min, v);
+      out.impl.collider.nodeBBox.data[i].max =
+          vec3_add(out.impl.collider.nodeBBox.data[i].max, v);
+    }
+    out.impl.colliderBuilt = true;
+  }
   return out;
 }
 

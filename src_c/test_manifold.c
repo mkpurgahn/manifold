@@ -2133,7 +2133,22 @@ static void test_Boolean_SimpleCubeRegression(void) {
 
 static void test_Boolean_Simplify(void) {
   Manifold cube = manifold_cube((ManifoldVec3){1,1,1}, false);
-  Manifold cube_r = manifold_refine(&cube, 10);
+  Manifold cube_r_tmp = manifold_refine(&cube, 10);
+  // Round-trip through float to match C++ MeshGL behavior
+  float *fVerts; int *fTris; size_t nv, np, nt;
+  manifold_get_mesh(&cube_r_tmp, &fVerts, &nv, &np, &fTris, &nt);
+  ManifoldVec3 *dverts = (ManifoldVec3 *)malloc(nv * sizeof(ManifoldVec3));
+  ManifoldIVec3 *dtris = (ManifoldIVec3 *)malloc(nt * sizeof(ManifoldIVec3));
+  for (size_t i = 0; i < nv; i++) {
+    dverts[i] = (ManifoldVec3){(double)fVerts[i*3], (double)fVerts[i*3+1], (double)fVerts[i*3+2]};
+  }
+  for (size_t i = 0; i < nt; i++) {
+    dtris[i] = (ManifoldIVec3){fTris[i*3], fTris[i*3+1], fTris[i*3+2]};
+  }
+  manifold_free_mesh(fVerts, fTris);
+  Manifold cube_r = manifold_from_mesh(dverts, nv, dtris, nt);
+  free(dverts); free(dtris);
+  manifold_destroy(&cube_r_tmp);
   // Set unique faceIDs per triangle to prevent simplification during boolean
   for (size_t i = 0; i < manifold_num_tri(&cube_r); i++) {
     cube_r.impl.meshRelation.triRef.data[i].faceID = (int)i;

@@ -181,6 +181,16 @@ static inline void manifold_collider_free(ManifoldCollider *c) {
   vec_intpair_free(&c->internalChildren);
 }
 
+// Deep copy a collider
+static inline ManifoldCollider manifold_collider_copy(
+    const ManifoldCollider *src) {
+  ManifoldCollider c;
+  c.nodeBBox = vec_box_copy(&src->nodeBBox);
+  c.nodeParent = vec_int_copy(&src->nodeParent);
+  c.internalChildren = vec_intpair_copy(&src->internalChildren);
+  return c;
+}
+
 // Collision query callback type: called with (queryIdx, leafIdx, userdata)
 typedef void (*ManifoldCollisionCallback)(int queryIdx, int leafIdx, void *ctx);
 
