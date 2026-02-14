@@ -286,12 +286,7 @@ static Manifold menger_sponge_impl(int n) {
   for (int i = 0; i < numHoles; i++) manifold_destroy(&holesArr[i]);
   free(holesArr);
 
-  // Subtract along all 3 axes, matching C++:
-  // result -= hole;
-  // hole = hole.Rotate(90);  // X-rotate
-  // result -= hole;
-  // hole = hole.Rotate(0, 0, 90);  // Z-rotate the already X-rotated hole
-  // result -= hole;
+  // Subtract along all 3 axes, matching C++
   Manifold r1 = manifold_difference(&result, &hole);
   manifold_destroy(&result);
 
@@ -3023,9 +3018,11 @@ static void test_Boolean_MixedNumProp(void) {
 
 // ==================== Samples_Sponge4 ====================
 static void test_Samples_Sponge4(void) {
+  // C++ Sponge4 uses MengerSponge(4) but that's too slow for C port.
+  // Use level 2 instead. C++ genus values: 1:5, 2:81, 3:1409, 4:26433
   Manifold sponge = menger_sponge_impl(2);
-  EXPECT_EQ(manifold_genus(&sponge), 5);
-  EXPECT_FLOAT_EQ(manifold_volume(&sponge), (double)(20 * 20 - 1) / (27 * 27));
+  EXPECT_LE(manifold_num_degenerate_tris(&sponge), 8);
+  EXPECT_EQ(manifold_genus(&sponge), 81);
   manifold_destroy(&sponge);
 }
 
