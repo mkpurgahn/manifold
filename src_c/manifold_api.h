@@ -255,6 +255,10 @@ ManifoldMeshGL manifold_get_meshgl(const Manifold *m);
 // Free all arrays in a ManifoldMeshGL returned by manifold_get_meshgl
 void manifold_free_meshgl(ManifoldMeshGL *mgl);
 
+// Merge coincident vertices in a MeshGL, populating merge vectors.
+// Returns true if new merges were found, false if already fully merged.
+bool manifold_meshgl_merge(ManifoldMeshGL *mesh);
+
 // Create a manifold from a MeshGL-style flat structure
 Manifold manifold_from_meshgl(const ManifoldMeshGL *mesh);
 // Smooth from MeshGL (equivalent to C++ Manifold::Smooth(MeshGL))

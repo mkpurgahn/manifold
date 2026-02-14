@@ -6,8 +6,11 @@
 #include "manifold_api.h"
 #include "manifold_boolean.h"
 #include "manifold_hull.h"
+#include "manifold_collider.h"
+#include "manifold_disjoint_sets.h"
 #include <string.h>
 #include <stdio.h>
+#include <float.h>
 
 // Quality settings (global)
 static ManifoldQuality g_quality = {0, 10.0, 1.0};
@@ -1484,6 +1487,210 @@ Manifold manifold_calculate_normals(const Manifold *m, int normalIdx,
   manifold_copy(&result, m);
   manifold_impl_calculate_normals(&result.impl, normalIdx, minSharpAngle);
   return result;
+}
+
+// ---------- MeshGL Merge ----------
+// Port of C++ MeshGL::Merge() from sort.cpp
+
+// Edge pair for open-edge tracking (simulates std::multiset<pair<int,int>>)
+typedef struct { int first, second; } MergeEdgePair;
+
+// Collision callback context for merge
+typedef struct {
+  ManifoldDisjointSets *uf;
+  int *openVerts;
+} MergeCollisionCtx;
+
+static void merge_collision_callback(int a, int b, void *ctx) {
+  MergeCollisionCtx *mc = (MergeCollisionCtx *)ctx;
+  manifold_disjoint_sets_unite(mc->uf, (uint32_t)mc->openVerts[a],
+                               (uint32_t)mc->openVerts[b]);
+}
+
+// Morton sort comparator context
+typedef struct {
+  const uint32_t *morton;
+} MergeMortonCtx;
+
+static MergeMortonCtx g_merge_morton_ctx;
+
+static int merge_morton_compare(const void *a, const void *b) {
+  int ia = *(const int *)a;
+  int ib = *(const int *)b;
+  uint32_t ma = g_merge_morton_ctx.morton[ia];
+  uint32_t mb = g_merge_morton_ctx.morton[ib];
+  if (ma != mb) return ma < mb ? -1 : 1;
+  // stable sort tie-breaking by index
+  return ia < ib ? -1 : (ia > ib ? 1 : 0);
+}
+
+bool manifold_meshgl_merge(ManifoldMeshGL *mesh) {
+  if (!mesh || mesh->vertLen == 0 || mesh->triLen == 0) return false;
+
+  const size_t numVert = mesh->vertLen;
+  const size_t numTri = mesh->triLen;
+
+  // Build merge identity map, applying existing merge pairs
+  int *merge = (int *)malloc(numVert * sizeof(int));
+  for (size_t i = 0; i < numVert; i++) merge[i] = (int)i;
+  for (size_t i = 0; i < mesh->mergeLen; i++) {
+    merge[mesh->mergeFromVert[i]] = mesh->mergeToVert[i];
+  }
+
+  // Find open edges using sorted array (simulating multiset)
+  // Each triangle has 3 edges; allocate worst case
+  size_t maxEdges = numTri * 3;
+  MergeEdgePair *edges = (MergeEdgePair *)malloc(maxEdges * sizeof(MergeEdgePair));
+  size_t numEdges = 0;
+
+  static const int next3[3] = {1, 2, 0};
+  for (size_t tri = 0; tri < numTri; tri++) {
+    for (int i = 0; i < 3; i++) {
+      MergeEdgePair edge;
+      edge.first = merge[mesh->triVerts[3 * tri + next3[i]]];
+      edge.second = merge[mesh->triVerts[3 * tri + i]];
+      // Search for this edge in openEdges (C++ does: find(edge))
+      bool found = false;
+      for (size_t j = 0; j < numEdges; j++) {
+        if (edges[j].first == edge.first && edges[j].second == edge.second) {
+          // Erase this entry by shifting
+          memmove(&edges[j], &edges[j + 1], (numEdges - j - 1) * sizeof(MergeEdgePair));
+          numEdges--;
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        // Swap and insert (C++: swap(edge.first, edge.second); insert(edge))
+        MergeEdgePair swapped = {edge.second, edge.first};
+        edges[numEdges++] = swapped;
+      }
+    }
+  }
+
+  if (numEdges == 0) {
+    free(merge);
+    free(edges);
+    return false;
+  }
+
+  // Collect open vertex indices
+  int *openVerts = (int *)malloc(numEdges * sizeof(int));
+  for (size_t i = 0; i < numEdges; i++) {
+    openVerts[i] = edges[i].first;
+  }
+  free(edges);
+
+  // Compute bounding box from all vertex positions
+  ManifoldBox bBox = manifold_box_empty();
+  for (size_t i = 0; i < numVert; i++) {
+    ManifoldVec3 p = {
+      (double)mesh->vertProperties[mesh->numProp * i + 0],
+      (double)mesh->vertProperties[mesh->numProp * i + 1],
+      (double)mesh->vertProperties[mesh->numProp * i + 2]
+    };
+    manifold_box_union_point(&bBox, p);
+  }
+
+  // Compute tolerance (float precision: use FLT_EPSILON)
+  double tolerance = fmax((double)mesh->tolerance,
+                          (double)FLT_EPSILON * manifold_box_scale(bBox));
+
+  // Build vertex boxes and Morton codes for open vertices
+  size_t numOpen = numEdges;
+  ManifoldBox *vertBox = (ManifoldBox *)malloc(numOpen * sizeof(ManifoldBox));
+  uint32_t *vertMorton = (uint32_t *)malloc(numOpen * sizeof(uint32_t));
+
+  for (size_t i = 0; i < numOpen; i++) {
+    int vert = openVerts[i];
+    ManifoldVec3 center = {
+      (double)mesh->vertProperties[mesh->numProp * vert + 0],
+      (double)mesh->vertProperties[mesh->numProp * vert + 1],
+      (double)mesh->vertProperties[mesh->numProp * vert + 2]
+    };
+    vertBox[i].min = vec3_sub(center, manifold_vec3_splat(tolerance / 2.0));
+    vertBox[i].max = vec3_add(center, manifold_vec3_splat(tolerance / 2.0));
+    vertMorton[i] = manifold_morton_code(center, bBox);
+  }
+
+  // Sort by Morton code (stable sort via qsort with index comparison)
+  int *vertNew2Old = (int *)malloc(numOpen * sizeof(int));
+  for (size_t i = 0; i < numOpen; i++) vertNew2Old[i] = (int)i;
+
+  g_merge_morton_ctx.morton = vertMorton;
+  qsort(vertNew2Old, numOpen, sizeof(int), merge_morton_compare);
+
+  // Permute vertMorton, vertBox, openVerts by vertNew2Old
+  {
+    uint32_t *tmpMorton = (uint32_t *)malloc(numOpen * sizeof(uint32_t));
+    ManifoldBox *tmpBox = (ManifoldBox *)malloc(numOpen * sizeof(ManifoldBox));
+    int *tmpVerts = (int *)malloc(numOpen * sizeof(int));
+    for (size_t i = 0; i < numOpen; i++) {
+      tmpMorton[i] = vertMorton[vertNew2Old[i]];
+      tmpBox[i] = vertBox[vertNew2Old[i]];
+      tmpVerts[i] = openVerts[vertNew2Old[i]];
+    }
+    memcpy(vertMorton, tmpMorton, numOpen * sizeof(uint32_t));
+    memcpy(vertBox, tmpBox, numOpen * sizeof(ManifoldBox));
+    memcpy(openVerts, tmpVerts, numOpen * sizeof(int));
+    free(tmpMorton);
+    free(tmpBox);
+    free(tmpVerts);
+  }
+  free(vertNew2Old);
+
+  // Build collider and find collisions
+  ManifoldCollider collider = manifold_collider_create(vertBox, vertMorton, numOpen);
+  ManifoldDisjointSets uf = manifold_disjoint_sets_create((uint32_t)numVert);
+
+  MergeCollisionCtx ctx = {&uf, openVerts};
+  manifold_collider_collisions(&collider, vertBox, numOpen,
+                               merge_collision_callback, &ctx, false);
+
+  // Also unite existing merge pairs
+  for (size_t i = 0; i < mesh->mergeLen; i++) {
+    manifold_disjoint_sets_unite(&uf, (uint32_t)mesh->mergeFromVert[i],
+                                 (uint32_t)mesh->mergeToVert[i]);
+  }
+
+  // Rebuild merge vectors
+  free(mesh->mergeFromVert);
+  free(mesh->mergeToVert);
+  mesh->mergeFromVert = NULL;
+  mesh->mergeToVert = NULL;
+  mesh->mergeLen = 0;
+
+  // Count first
+  size_t mergeCount = 0;
+  for (size_t v = 0; v < numVert; v++) {
+    size_t mergeTo = manifold_disjoint_sets_find(&uf, (uint32_t)v);
+    if (mergeTo != v) mergeCount++;
+  }
+
+  if (mergeCount > 0) {
+    mesh->mergeFromVert = (int *)malloc(mergeCount * sizeof(int));
+    mesh->mergeToVert = (int *)malloc(mergeCount * sizeof(int));
+    mesh->mergeLen = mergeCount;
+    size_t idx = 0;
+    for (size_t v = 0; v < numVert; v++) {
+      size_t mergeTo = manifold_disjoint_sets_find(&uf, (uint32_t)v);
+      if (mergeTo != v) {
+        mesh->mergeFromVert[idx] = (int)v;
+        mesh->mergeToVert[idx] = (int)mergeTo;
+        idx++;
+      }
+    }
+  }
+
+  // Cleanup
+  manifold_disjoint_sets_free(&uf);
+  manifold_collider_free(&collider);
+  free(vertBox);
+  free(vertMorton);
+  free(openVerts);
+  free(merge);
+
+  return true;
 }
 
 Manifold manifold_from_meshgl(const ManifoldMeshGL *mesh) {

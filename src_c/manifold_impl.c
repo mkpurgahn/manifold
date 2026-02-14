@@ -4,6 +4,7 @@
 // Core implementation for the C11 Manifold port.
 
 #include "manifold_impl.h"
+#include "manifold_disjoint_sets.h"
 #include <stdio.h>
 #include <limits.h>
 
@@ -910,9 +911,67 @@ void manifold_impl_remove_unreferenced_verts(ManifoldImpl *impl) {
 }
 
 void manifold_impl_dedupe_prop_verts(ManifoldImpl *impl) {
-  // Simple version: just ensure consistency
-  if (impl->numProp == 0) return;
-  // More sophisticated deduplication can be added later
+  const int numProp = impl->numProp;
+  if (numProp == 0) return;
+
+  const size_t numHalfedge = impl->halfedge.len;
+  const size_t numPropVert = impl->properties.len / numProp;
+  if (numHalfedge == 0 || numPropVert == 0) return;
+
+  // Use disjoint sets to group property vertices with equal properties
+  // that share the same geometric vertex across an edge
+  ManifoldDisjointSets uf = manifold_disjoint_sets_create((uint32_t)numPropVert);
+
+  for (size_t edgeIdx = 0; edgeIdx < numHalfedge; edgeIdx++) {
+    const ManifoldHalfedge *edge = &impl->halfedge.data[edgeIdx];
+    if (edge->pairedHalfedge < 0) continue;
+
+    int edgeFace = (int)edgeIdx / 3;
+    int pairFace = edge->pairedHalfedge / 3;
+
+    // Only merge within same meshID
+    if (impl->meshRelation.triRef.data[edgeFace].meshID !=
+        impl->meshRelation.triRef.data[pairFace].meshID)
+      continue;
+
+    int prop0 = impl->halfedge.data[edgeIdx].propVert;
+    int prop1 = impl->halfedge.data[
+        manifold_next_halfedge(edge->pairedHalfedge)].propVert;
+
+    bool propEqual = true;
+    for (int p = 0; p < numProp; p++) {
+      if (impl->properties.data[numProp * prop0 + p] !=
+          impl->properties.data[numProp * prop1 + p]) {
+        propEqual = false;
+        break;
+      }
+    }
+    if (propEqual) {
+      manifold_disjoint_sets_unite(&uf, (uint32_t)prop0, (uint32_t)prop1);
+    }
+  }
+
+  // Build label2vert: for each label (root), pick the canonical vertex
+  int *vertLabels = (int *)malloc(numPropVert * sizeof(int));
+  // Find connected components
+  int numLabels = manifold_disjoint_sets_connected_components(&uf, vertLabels);
+
+  int *label2vert = (int *)malloc((size_t)numLabels * sizeof(int));
+  for (size_t v = 0; v < numPropVert; v++) {
+    label2vert[vertLabels[v]] = (int)v;
+  }
+
+  // Remap halfedge propVert
+  for (size_t i = 0; i < numHalfedge; i++) {
+    int pv = impl->halfedge.data[i].propVert;
+    if (pv >= 0 && (size_t)pv < numPropVert) {
+      impl->halfedge.data[i].propVert = label2vert[vertLabels[pv]];
+    }
+  }
+
+  free(vertLabels);
+  free(label2vert);
+  manifold_disjoint_sets_free(&uf);
 }
 
 void manifold_impl_initialize_original(ManifoldImpl *impl) {

@@ -2824,6 +2824,114 @@ static void test_Manifold_MergeDegenerates(void) {
   manifold_destroy(&cube); manifold_destroy(&squashed);
 }
 
+// Helper: Create a cube as STL-like MeshGL (no vertex sharing, with normals)
+// Matches C++ CubeSTL() from test/test_main.cpp
+static ManifoldMeshGL cube_stl(void) {
+  Manifold cube = manifold_cube((ManifoldVec3){1, 1, 1}, true);
+  ManifoldMeshGL cubeIn = manifold_get_meshgl(&cube);
+  manifold_destroy(&cube);
+
+  ManifoldMeshGL out = manifold_meshgl_empty();
+  out.numProp = 6;  // xyz + normal xyz
+
+  size_t numTri = cubeIn.triLen;
+  out.triLen = numTri;
+  out.vertLen = numTri * 3;
+  out.triVerts = (int *)malloc(numTri * 3 * sizeof(int));
+  out.vertProperties = (float *)malloc(out.vertLen * out.numProp * sizeof(float));
+
+  size_t vert = 0;
+  for (size_t tri = 0; tri < numTri; tri++) {
+    float triPos[3][3];
+    for (int i = 0; i < 3; i++) {
+      out.triVerts[3 * tri + i] = (int)vert++;
+      for (int j = 0; j < 3; j++) {
+        triPos[i][j] = cubeIn.vertProperties[cubeIn.numProp * cubeIn.triVerts[3 * tri + i] + j];
+      }
+    }
+    // Compute face normal
+    float e1[3] = {triPos[1][0] - triPos[0][0], triPos[1][1] - triPos[0][1], triPos[1][2] - triPos[0][2]};
+    float e2[3] = {triPos[2][0] - triPos[0][0], triPos[2][1] - triPos[0][1], triPos[2][2] - triPos[0][2]};
+    float nx = e1[1]*e2[2] - e1[2]*e2[1];
+    float ny = e1[2]*e2[0] - e1[0]*e2[2];
+    float nz = e1[0]*e2[1] - e1[1]*e2[0];
+    float len = sqrtf(nx*nx + ny*ny + nz*nz);
+    if (len > 0) { nx /= len; ny /= len; nz /= len; }
+    for (int i = 0; i < 3; i++) {
+      size_t v = 3 * tri + (size_t)i;
+      out.vertProperties[out.numProp * v + 0] = triPos[i][0];
+      out.vertProperties[out.numProp * v + 1] = triPos[i][1];
+      out.vertProperties[out.numProp * v + 2] = triPos[i][2];
+      out.vertProperties[out.numProp * v + 3] = nx;
+      out.vertProperties[out.numProp * v + 4] = ny;
+      out.vertProperties[out.numProp * v + 5] = nz;
+    }
+  }
+
+  out.runOriginalIDLen = 1;
+  out.runOriginalID = (uint32_t *)malloc(sizeof(uint32_t));
+  out.runOriginalID[0] = manifold_reserve_ids_api(1);
+
+  manifold_free_meshgl(&cubeIn);
+  return out;
+}
+
+// Helper: Check that a MeshGL with merge info creates a valid cube
+// Matches C++ CheckCube() from test/manifold_test.cpp
+static void check_cube(const ManifoldMeshGL *cubeSTL) {
+  Manifold cube = manifold_from_meshgl(cubeSTL);
+  Manifold orig = manifold_as_original(&cube);
+  manifold_destroy(&cube);
+  cube = orig;
+
+  EXPECT_EQ(manifold_num_tri(&cube), 12);
+  EXPECT_EQ(manifold_num_vert(&cube), 8);
+  EXPECT_EQ(manifold_num_prop_vert(&cube), 24);
+  EXPECT_FLOAT_EQ(manifold_volume(&cube), 1.0);
+  EXPECT_FLOAT_EQ(manifold_surface_area(&cube), 6.0);
+  manifold_destroy(&cube);
+}
+
+// Free a MeshGL that was manually built (not from manifold_get_meshgl)
+static void free_cube_stl(ManifoldMeshGL *m) {
+  free(m->vertProperties);
+  free(m->triVerts);
+  free(m->mergeFromVert);
+  free(m->mergeToVert);
+  free(m->runOriginalID);
+  free(m->runIndex);
+  free(m->runTransform);
+  free(m->faceID);
+  free(m->halfedgeTangent);
+}
+
+static void test_Manifold_Merge(void) {
+  ManifoldMeshGL cubeSTL = cube_stl();
+  EXPECT_EQ(cubeSTL.triLen, 12);
+  EXPECT_EQ(cubeSTL.vertLen, 36);
+
+  Manifold cubeBad = manifold_from_meshgl(&cubeSTL);
+  EXPECT_TRUE(manifold_is_empty(&cubeBad));
+  EXPECT_EQ(manifold_status(&cubeBad), MANIFOLD_ERROR_NOT_MANIFOLD);
+  manifold_destroy(&cubeBad);
+
+  EXPECT_TRUE(manifold_meshgl_merge(&cubeSTL));
+  EXPECT_EQ(cubeSTL.mergeLen, 28);
+  check_cube(&cubeSTL);
+
+  EXPECT_FALSE(manifold_meshgl_merge(&cubeSTL));
+  EXPECT_EQ(cubeSTL.mergeLen, 28);
+
+  // Truncate merge vectors to 14
+  cubeSTL.mergeLen = 14;
+
+  EXPECT_TRUE(manifold_meshgl_merge(&cubeSTL));
+  EXPECT_EQ(cubeSTL.mergeLen, 28);
+  check_cube(&cubeSTL);
+
+  free_cube_stl(&cubeSTL);
+}
+
 static void test_Manifold_ValidInput(void) {
   // Build a tetrahedron from raw mesh
   ManifoldVec3 verts[] = {{0,0,0}, {1,0,0}, {0,1,0}, {0,0,1}};
@@ -5374,6 +5482,7 @@ int main(void) {
   RUN_TEST(Manifold_MeshGLRoundTrip);
   RUN_TEST(Manifold_MeshDeterminism);
   RUN_TEST(Manifold_MergeDegenerates);
+  RUN_TEST(Manifold_Merge);
   RUN_TEST(Manifold_MeshRelationRefine);
   RUN_TEST(Manifold_MeshRelationRefinePrecision);
   RUN_TEST(Manifold_DecomposeProps);
