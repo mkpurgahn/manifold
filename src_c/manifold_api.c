@@ -31,6 +31,11 @@ void manifold_quality_reset(void) {
   g_quality.minCircularEdgeLength = 1.0;
 }
 
+// Global execution params
+static ManifoldExecutionParams g_params = {false, false, true, false, 0};
+
+ManifoldExecutionParams *manifold_get_params(void) { return &g_params; }
+
 void manifold_create(Manifold *m) {
   manifold_impl_init(&m->impl);
 }
@@ -1972,4 +1977,88 @@ void manifold_free_meshgl(ManifoldMeshGL *mgl) {
   free(mgl->faceID);
   free(mgl->halfedgeTangent);
   *mgl = manifold_meshgl_empty();
+}
+
+// ---------- OBJ Import ----------
+Manifold manifold_read_obj(const char *path) {
+  FILE *f = fopen(path, "r");
+  if (!f) return manifold_invalid();
+
+  // Dynamic arrays for vertex coords and face indices
+  size_t vertCap = 256, vertLen = 0;
+  double *verts = (double *)malloc(vertCap * sizeof(double));
+  size_t triCap = 256, triLen = 0;
+  int *tris = (int *)malloc(triCap * sizeof(int));
+  double tolerance = 0.0;
+  double epsilon = -1.0;
+
+  char line[1024];
+  while (fgets(line, sizeof(line), f)) {
+    if (line[0] == '#') {
+      // Check for "# tolerance = X" or "# epsilon = X"
+      double val;
+      if (sscanf(line, "# tolerance = %lf", &val) == 1) {
+        tolerance = val;
+      } else if (sscanf(line, "# epsilon = %lf", &val) == 1) {
+        epsilon = val;
+      }
+    } else if (line[0] == 'v' && line[1] == ' ') {
+      double x, y, z;
+      if (sscanf(line + 2, "%lf %lf %lf", &x, &y, &z) == 3) {
+        if (vertLen + 3 > vertCap) {
+          vertCap *= 2;
+          verts = (double *)realloc(verts, vertCap * sizeof(double));
+        }
+        verts[vertLen++] = x;
+        verts[vertLen++] = y;
+        verts[vertLen++] = z;
+      }
+    } else if (line[0] == 'f' && line[1] == ' ') {
+      int a, b, c;
+      if (sscanf(line + 2, "%d %d %d", &a, &b, &c) == 3) {
+        if (triLen + 3 > triCap) {
+          triCap *= 2;
+          tris = (int *)realloc(tris, triCap * sizeof(int));
+        }
+        tris[triLen++] = a - 1;  // OBJ is 1-based
+        tris[triLen++] = b - 1;
+        tris[triLen++] = c - 1;
+      }
+    }
+  }
+  fclose(f);
+
+  size_t numVert = vertLen / 3;
+  size_t numTri = triLen / 3;
+
+  // Build ManifoldVec3 array
+  ManifoldVec3 *vertPos = (ManifoldVec3 *)malloc(numVert * sizeof(ManifoldVec3));
+  for (size_t i = 0; i < numVert; i++) {
+    vertPos[i].x = verts[3 * i + 0];
+    vertPos[i].y = verts[3 * i + 1];
+    vertPos[i].z = verts[3 * i + 2];
+  }
+  ManifoldIVec3 *triVerts = (ManifoldIVec3 *)malloc(numTri * sizeof(ManifoldIVec3));
+  for (size_t i = 0; i < numTri; i++) {
+    triVerts[i].x = tris[3 * i + 0];
+    triVerts[i].y = tris[3 * i + 1];
+    triVerts[i].z = tris[3 * i + 2];
+  }
+
+  Manifold result = manifold_from_mesh(vertPos, numVert, triVerts, numTri);
+
+  // Apply tolerance if specified in OBJ comment
+  if (tolerance > 0.0) {
+    result.impl.tolerance = tolerance;
+  }
+  // Apply epsilon if specified in OBJ comment
+  if (epsilon >= 0.0) {
+    result.impl.epsilon = epsilon;
+  }
+
+  free(verts);
+  free(tris);
+  free(vertPos);
+  free(triVerts);
+  return result;
 }

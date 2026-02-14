@@ -187,6 +187,21 @@ double manifold_min_gap(const Manifold *a, const Manifold *b,
 Manifold manifold_calculate_normals(const Manifold *m, int normalIdx,
                                      double minSharpAngle);
 
+// ---------- OBJ Import ----------
+// Read a Manifold from a Wavefront OBJ file (matching C++ ReadOBJ).
+Manifold manifold_read_obj(const char *path);
+
+// ---------- Execution Params ----------
+typedef struct {
+  bool intermediateChecks;
+  bool selfIntersectionChecks;
+  bool processOverlaps;
+  bool suppressErrors;
+  int verbose;
+} ManifoldExecutionParams;
+
+ManifoldExecutionParams *manifold_get_params(void);
+
 // ---------- Mesh Data Access ----------
 // Get raw vertex positions (read-only)
 const ManifoldVec3 *manifold_get_vert_positions(const Manifold *m, size_t *count);

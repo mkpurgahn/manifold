@@ -4682,6 +4682,39 @@ static void test_BooleanComplex_SimpleOffset(void) {
   manifold_destroy(&c);
 }
 
+// ==================== BooleanComplex_OffsetSelfIntersect ====================
+
+static Manifold read_test_obj(const char *filename) {
+  // Build path relative to this source file: src_c/test_manifold.c -> test/models/
+  const char *file = __FILE__;
+  // Find last '/'
+  const char *sep = strrchr(file, '/');
+  char path[512];
+  if (sep) {
+    int dirlen = (int)(sep - file);
+    snprintf(path, sizeof(path), "%.*s/../test/models/%s", dirlen, file, filename);
+  } else {
+    snprintf(path, sizeof(path), "../test/models/%s", filename);
+  }
+  return manifold_read_obj(path);
+}
+
+static void test_BooleanComplex_OffsetSelfIntersect(void) {
+  ManifoldExecutionParams *params = manifold_get_params();
+  bool old_self_intersection = params->selfIntersectionChecks;
+  params->selfIntersectionChecks = true;
+
+  Manifold a = read_test_obj("Offset3.obj");
+  Manifold b = read_test_obj("Offset4.obj");
+  Manifold result = manifold_union(&a, &b);
+  EXPECT_EQ((int)manifold_status(&result), (int)MANIFOLD_ERROR_NO_ERROR);
+
+  params->selfIntersectionChecks = old_self_intersection;
+  manifold_destroy(&a);
+  manifold_destroy(&b);
+  manifold_destroy(&result);
+}
+
 static void test_Manifold_DecomposeProps(void) {
   Manifold tet0 = manifold_tetrahedron();
   Manifold tet = with_position_colors(&tet0);
@@ -4935,6 +4968,7 @@ int main(void) {
   RUN_TEST(BooleanComplex_Ring);
   RUN_TEST(BooleanComplex_InterpolatedNormals);
   RUN_TEST(BooleanComplex_HullMask);
+  RUN_TEST(BooleanComplex_OffsetSelfIntersect);
 
   // Additional Smooth tests already registered above
 
