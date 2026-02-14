@@ -6,6 +6,7 @@
 
 #include "manifold_boolean.h"
 #include "manifold_polygon.h"
+#include "manifold_earclip.h"
 #include <string.h>
 #include <limits.h>
 #include <stdio.h>
@@ -930,53 +931,9 @@ static void face2tri(ManifoldImpl *impl, const ManifoldVecInt *faceEdge,
       ManifoldVecIVec3 tris = {0};
       if (numLoops == 1) {
         int polyLen = polySizes[0];
-        // Check for pinch points (vertex appears twice in the loop)
-        int pinchI = -1, pinchJ = -1;
-        for (int pi = 0; pi < polyLen && pinchI < 0; pi++) {
-          int svI = impl->halfedge.data[firstEdge + heMap[pi]].startVert;
-          for (int pj = pi + 1; pj < polyLen; pj++) {
-            int svJ = impl->halfedge.data[firstEdge + heMap[pj]].startVert;
-            if (svI == svJ) { pinchI = pi; pinchJ = pj; break; }
-          }
-        }
-        if (pinchI >= 0) {
-          // Split at pinch point into two sub-polygons and triangulate each
-          // Sub1: positions [pinchI .. pinchJ)
-          int len1 = pinchJ - pinchI;
-          if (len1 >= 3) {
-            ManifoldVecIVec3 sub = manifold_triangulate_polygon(
-                allPts + pinchI, NULL, (size_t)len1);
-            for (size_t k = 0; k < sub.len; k++) {
-              sub.data[k].x += pinchI;
-              sub.data[k].y += pinchI;
-              sub.data[k].z += pinchI;
-              vec_ivec3_push(&tris, sub.data[k]);
-            }
-            free(sub.data);
-          }
-          // Sub2: positions [pinchJ .. polyLen) + [0 .. pinchI]
-          int len2 = polyLen - pinchJ + pinchI;
-          if (len2 >= 3) {
-            ManifoldVec2 *pts2 = (ManifoldVec2 *)malloc((size_t)len2 * sizeof(ManifoldVec2));
-            int *posMap = (int *)malloc((size_t)len2 * sizeof(int));
-            int k2 = 0;
-            for (int pi = pinchJ; pi < polyLen; pi++) {
-              pts2[k2] = allPts[pi]; posMap[k2] = pi; k2++;
-            }
-            for (int pi = 0; pi < pinchI; pi++) {
-              pts2[k2] = allPts[pi]; posMap[k2] = pi; k2++;
-            }
-            ManifoldVecIVec3 sub = manifold_triangulate_polygon(pts2, NULL, (size_t)len2);
-            for (size_t k = 0; k < sub.len; k++) {
-              ManifoldIVec3 t = sub.data[k];
-              t.x = posMap[t.x]; t.y = posMap[t.y]; t.z = posMap[t.z];
-              vec_ivec3_push(&tris, t);
-            }
-            free(sub.data); free(pts2); free(posMap);
-          }
-        } else {
-          tris = manifold_triangulate_polygon(allPts, NULL, (size_t)polyLen);
-        }
+        // Use ported C++ EarClip for single-loop polygon
+        tris = ec_triangulate(allPts, polySizes, 1, NULL,
+                              impl->epsilon, allowConvex);
       } else {
         // Multiple loops: fall through to proper polygon-with-holes handling
         // Check if any loops share vertices (pinch points) OR if any
