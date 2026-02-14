@@ -29,104 +29,111 @@ Note: slow tests (hull, sponge, scallop, minkowski) need **240+ seconds**. Don't
 
 ---
 
-## Unported Tests — Port These (58 remaining)
+## Unported Tests — Port ONE at a Time (58 remaining)
 
-### Priority 1: Boolean & BooleanComplex (15 tests)
-These exercise the core boolean engine which is already ported. Most should just need test scaffolding.
+**⚠️ FOCUS: Pick the NEXT unported test from the list below. Read its individual prompt file in `prompts/tests/`. Port it completely. If it needs a new C API function, port that function. If it needs CrossSection, port CrossSection. If it needs MeshGL, port MeshGL. Nothing is "blocked" — everything is achievable. Do not skip tests. Do not categorize tests as "not achievable." Port them in order.**
 
-| Test | C++ File | Notes |
-|------|----------|-------|
-| `Boolean_MeshGLRoundTrip` | `test/boolean_test.cpp` | MeshGL serialization round-trip |
-| `Boolean_MixedProperties` | `test/boolean_test.cpp` | Property handling across booleans |
-| `BooleanComplex_CraycloudBool` | `test/boolean_complex_test.cpp` | External mesh boolean |
-| `BooleanComplex_GenericTwinBooleanTest7081` | `test/boolean_complex_test.cpp` | Regression test |
-| `BooleanComplex_GenericTwinBooleanTest7863` | `test/boolean_complex_test.cpp` | Regression test |
-| `BooleanComplex_Havocglass8Bool` | `test/boolean_complex_test.cpp` | External mesh boolean |
-| `BooleanComplex_HullMask` | `test/boolean_complex_test.cpp` | Hull with mask |
-| `BooleanComplex_InterpolatedNormals` | `test/boolean_complex_test.cpp` | Normal interpolation |
-| `BooleanComplex_MeshRelation` | `test/boolean_complex_test.cpp` | Mesh relation tracking |
-| `BooleanComplex_OffsetSelfIntersect` | `test/boolean_complex_test.cpp` | Offset self-intersection |
-| `BooleanComplex_OffsetTriangulationFailure` | `test/boolean_complex_test.cpp` | Edge case |
-| `BooleanComplex_Ring` | `test/boolean_complex_test.cpp` | Ring topology |
-| `BooleanComplex_SimpleOffset` | `test/boolean_complex_test.cpp` | Simple offset |
-| `BooleanComplex_Sphere` | `test/boolean_complex_test.cpp` | Sphere boolean |
-| `BooleanComplex_Sweep` | `test/boolean_complex_test.cpp` | Sweep operation |
+### Workflow: Ralph Loop Per Test
 
-### Priority 2: Manifold Core (14 tests)
-Core manifold operations — merge, slice, project, mesh relations.
+Each test has its own prompt file in `prompts/tests/NN-test-name.md`. The workflow is:
 
-| Test | C++ File | Notes |
-|------|----------|-------|
-| `Manifold_DecomposeProps` | `test/manifold_test.cpp` | Decompose with properties |
-| `Manifold_FaceIDRoundTrip` | `test/manifold_test.cpp` | Face ID preservation |
-| `Manifold_GetMeshGL` | `test/manifold_test.cpp` | MeshGL extraction |
-| `Manifold_InvalidInput5` | `test/manifold_test.cpp` | Invalid input handling |
-| `Manifold_InvalidInput7` | `test/manifold_test.cpp` | Invalid input handling |
-| `Manifold_Merge` | `test/manifold_test.cpp` | Vertex merging |
-| `Manifold_MergeEmpty` | `test/manifold_test.cpp` | Merge empty manifold |
-| `Manifold_MergeRefine` | `test/manifold_test.cpp` | Merge + refine |
-| `Manifold_MeshID` | `test/manifold_test.cpp` | Mesh ID tracking |
-| `Manifold_MeshRelation` | `test/manifold_test.cpp` | Mesh relation |
-| `Manifold_MeshRelationRefinePrecision` | `test/manifold_test.cpp` | Precision of mesh relation after refine |
-| `Manifold_OpenscadCrash` | `test/manifold_test.cpp` | Regression crash fix |
-| `Manifold_Project` | `test/manifold_test.cpp` | 2D projection |
-| `Manifold_Slice` | `test/manifold_test.cpp` | Cross-section slicing |
-| `Manifold_SliceEmptyObject` | `test/manifold_test.cpp` | Slice of empty |
-| `Manifold_ValidInputOneRunIndex` | `test/manifold_test.cpp` | Edge case |
-| `Manifold_WarpBatch` | `test/manifold_test.cpp` | Batch warp |
-| `ManifoldFuzz_SimpleCube` | `test/manifold_test.cpp` | Fuzz regression |
+1. Start a ralph loop with the next test's prompt file (e.g., `prompts/tests/01-boolean-meshglroundtrip.md`).
+2. The loop ports the test, makes it pass, and commits.
+3. Once both the main loop and adversary agree the test passes with no regressions — move to the next test.
+4. Kick off a new loop with the next prompt file (e.g., `prompts/tests/02-boolean-mixedproperties.md`).
+5. Repeat until all 58 are done.
 
-### Priority 3: CrossSection (15 tests)
-2D cross-section operations. May require `manifold_cross_section.c` if not yet ported.
+### Per-test prompt files
 
-| Test | C++ File | Notes |
-|------|----------|-------|
-| `CrossSection_BatchBoolean` | `test/cross_section_test.cpp` | 2D batch boolean |
-| `CrossSection_BevelOffset` | `test/cross_section_test.cpp` | Bevel offset |
-| `CrossSection_Decompose` | `test/cross_section_test.cpp` | Decompose |
-| `CrossSection_Empty` | `test/cross_section_test.cpp` | Empty input |
-| `CrossSection_FillRule` | `test/cross_section_test.cpp` | Fill rule |
-| `CrossSection_Hull` | `test/cross_section_test.cpp` | 2D hull |
-| `CrossSection_HullError` | `test/cross_section_test.cpp` | Hull error handling |
-| `CrossSection_MirrorCheckAxis` | `test/cross_section_test.cpp` | Mirror axis check |
-| `CrossSection_MirrorUnion` | `test/cross_section_test.cpp` | Mirror + union |
-| `CrossSection_NegativeOffset` | `test/cross_section_test.cpp` | Negative offset |
-| `CrossSection_Rect` | `test/cross_section_test.cpp` | Rectangle |
-| `CrossSection_RoundOffset` | `test/cross_section_test.cpp` | Round offset |
-| `CrossSection_Square` | `test/cross_section_test.cpp` | Square |
-| `CrossSection_Transform` | `test/cross_section_test.cpp` | 2D transforms |
-| `CrossSection_Warp` | `test/cross_section_test.cpp` | 2D warp |
+Each file contains: the exact C++ source code, any helper dependencies, step-by-step porting instructions, and build/run commands. Read the prompt file BEFORE starting work on that test.
 
-### Priority 4: Smooth, Samples, Properties, Polygon (10 tests)
+```
+prompts/tests/
+├── 01-boolean-meshglroundtrip.md
+├── 02-boolean-mixedproperties.md
+├── 03-booleancomplex-sphere.md
+├── ...
+├── 56-samples-gyroidmodule.md
+├── 57-polygonfuzz-triangulationnocrash.md
+└── 58-polygonfuzz-triangulationnocrashrounded.md
+```
 
-| Test | C++ File | Notes |
-|------|----------|-------|
-| `Smooth_Manual` | `test/smooth_test.cpp` | Manual smooth |
-| `Smooth_Torus` | `test/smooth_test.cpp` | Torus smooth |
-| `Samples_Bracelet` | `test/samples_test.cpp` | Complex sample |
-| `Samples_CondensedMatter16` | `test/samples_test.cpp` | Condensed matter sim |
-| `Samples_CondensedMatter64` | `test/samples_test.cpp` | Larger condensed matter |
-| `Samples_GyroidModule` | `test/samples_test.cpp` | Gyroid surface |
-| `Properties_Coplanar` | `test/properties_test.cpp` | Coplanar properties |
-| `Properties_MingapStretchyBracelet` | `test/properties_test.cpp` | Complex property test |
-| `PolygonFuzz_TriangulationNoCrash` | `test/polygon_test.cpp` | Fuzz — no crash |
-| `PolygonFuzz_TriangulationNoCrashRounded` | `test/polygon_test.cpp` | Fuzz — rounded |
+### The list (port in this order):
+
+```
+ 1. Boolean_MeshGLRoundTrip              test/boolean_test.cpp
+ 2. Boolean_MixedProperties              test/boolean_test.cpp
+ 3. BooleanComplex_Sphere                test/boolean_complex_test.cpp
+ 4. BooleanComplex_Ring                  test/boolean_complex_test.cpp
+ 5. BooleanComplex_MeshRelation          test/boolean_complex_test.cpp
+ 6. BooleanComplex_InterpolatedNormals   test/boolean_complex_test.cpp
+ 7. BooleanComplex_HullMask              test/boolean_complex_test.cpp
+ 8. BooleanComplex_SimpleOffset          test/boolean_complex_test.cpp
+ 9. BooleanComplex_OffsetSelfIntersect   test/boolean_complex_test.cpp
+10. BooleanComplex_OffsetTriangulationFailure  test/boolean_complex_test.cpp
+11. BooleanComplex_Sweep                 test/boolean_complex_test.cpp
+12. BooleanComplex_CraycloudBool         test/boolean_complex_test.cpp
+13. BooleanComplex_GenericTwinBooleanTest7081   test/boolean_complex_test.cpp
+14. BooleanComplex_GenericTwinBooleanTest7863   test/boolean_complex_test.cpp
+15. BooleanComplex_Havocglass8Bool       test/boolean_complex_test.cpp
+16. Manifold_GetMeshGL                   test/manifold_test.cpp
+17. Manifold_MeshID                      test/manifold_test.cpp
+18. Manifold_MeshRelation                test/manifold_test.cpp
+19. Manifold_MeshRelationRefinePrecision test/manifold_test.cpp
+20. Manifold_FaceIDRoundTrip             test/manifold_test.cpp
+21. Manifold_Merge                       test/manifold_test.cpp
+22. Manifold_MergeEmpty                  test/manifold_test.cpp
+23. Manifold_MergeRefine                 test/manifold_test.cpp
+24. Manifold_DecomposeProps              test/manifold_test.cpp
+25. Manifold_InvalidInput5               test/manifold_test.cpp
+26. Manifold_InvalidInput7               test/manifold_test.cpp
+27. Manifold_ValidInputOneRunIndex       test/manifold_test.cpp
+28. Manifold_WarpBatch                   test/manifold_test.cpp
+29. Manifold_OpenscadCrash               test/manifold_test.cpp
+30. Manifold_Project                     test/manifold_test.cpp
+31. Manifold_Slice                       test/manifold_test.cpp
+32. Manifold_SliceEmptyObject            test/manifold_test.cpp
+33. ManifoldFuzz_SimpleCube              test/manifold_test.cpp
+34. Smooth_Manual                        test/smooth_test.cpp
+35. Smooth_Torus                         test/smooth_test.cpp
+36. Properties_Coplanar                  test/properties_test.cpp
+37. Properties_MingapStretchyBracelet    test/properties_test.cpp
+38. CrossSection_Empty                   test/cross_section_test.cpp
+39. CrossSection_Rect                    test/cross_section_test.cpp
+40. CrossSection_Square                  test/cross_section_test.cpp
+41. CrossSection_Transform               test/cross_section_test.cpp
+42. CrossSection_Hull                    test/cross_section_test.cpp
+43. CrossSection_HullError               test/cross_section_test.cpp
+44. CrossSection_MirrorCheckAxis         test/cross_section_test.cpp
+45. CrossSection_MirrorUnion             test/cross_section_test.cpp
+46. CrossSection_Warp                    test/cross_section_test.cpp
+47. CrossSection_Decompose               test/cross_section_test.cpp
+48. CrossSection_FillRule                 test/cross_section_test.cpp
+49. CrossSection_BatchBoolean            test/cross_section_test.cpp
+50. CrossSection_NegativeOffset          test/cross_section_test.cpp
+51. CrossSection_RoundOffset             test/cross_section_test.cpp
+52. CrossSection_BevelOffset             test/cross_section_test.cpp
+53. Samples_Bracelet                     test/samples_test.cpp
+54. Samples_CondensedMatter16            test/samples_test.cpp
+55. Samples_CondensedMatter64            test/samples_test.cpp
+56. Samples_GyroidModule                 test/samples_test.cpp
+57. PolygonFuzz_TriangulationNoCrash          test/polygon_test.cpp
+58. PolygonFuzz_TriangulationNoCrashRounded   test/polygon_test.cpp
+```
 
 ---
 
 ## Approach
 
-1. **Port tests in priority order** — Priority 1 (Boolean) first since the implementation already exists.
-2. **For each test:**
-   a. Read the C++ test to understand inputs, operations, and expected values.
-   b. Write the C equivalent in `src_c/test_manifold.c` using existing `manifold_*` API.
-   c. Add `RUN_TEST(TestName);` to the appropriate section in `main()`.
-   d. Run single test: `TEST=TestName ./test_manifold`
-   e. If it fails, debug the C implementation (not the test).
-   f. Run full suite to check regressions: `SKIP_SLOW=1 ./test_manifold`
-   g. Commit: `test: port [TestName] from C++`
-3. **Some tests may need new API functions** — if a C++ method isn't yet exposed in `manifold_api.h`, port it.
-4. **CrossSection tests (Priority 3)** may need `manifold_cross_section.c` ported if it doesn't exist yet. Check before starting.
+**Port ONE test. Make it pass. Commit. Repeat.**
+
+If a test needs something that doesn't exist yet in the C port:
+- **Missing API function?** Port it from the C++ source. Add to `manifold_api.h` and `manifold_api.c`.
+- **Missing helper?** Port the helper (e.g., `WithPositionColors` from `test/test_main.cpp`).
+- **Missing subsystem (CrossSection, MeshGL)?** Port the minimum needed for the test to work. You'll build it incrementally — each subsequent test adds more.
+- **Needs external mesh data?** Check `test/meshIO/` for the `.glb` files the C++ tests load.
+
+**Do NOT skip a test because it's hard.** If test #1 needs MeshGL round-trip support, then porting MeshGL round-trip IS the work for test #1.
 
 ---
 
