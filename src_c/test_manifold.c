@@ -5681,6 +5681,24 @@ static void test_BooleanComplex_Sweep(void) {
   params->processOverlaps = old_processOverlaps;
 }
 
+static void test_Manifold_OpenscadCrash(void) {
+  ManifoldExecutionParams *params = manifold_get_params();
+  bool old_processOverlaps = params->processOverlaps;
+  params->processOverlaps = true;
+
+  Manifold m = read_test_obj("openscad-nonmanifold-crash.obj");
+  EXPECT_FALSE(manifold_is_empty(&m));
+
+  Manifold mt = manifold_translate(&m, (ManifoldVec3){0, 0.6, 0});
+  Manifold m2 = manifold_union(&m, &mt);
+  EXPECT_FALSE(manifold_is_empty(&m2));
+
+  manifold_destroy(&m2);
+  manifold_destroy(&mt);
+  manifold_destroy(&m);
+  params->processOverlaps = old_processOverlaps;
+}
+
 static void test_Manifold_DecomposeProps(void) {
   Manifold tet0 = manifold_tetrahedron();
   Manifold tet = with_position_colors(&tet0);
@@ -5948,6 +5966,7 @@ int main(void) {
   RUN_TEST(Manifold_DecomposeProps);
   RUN_TEST(Manifold_MeshID);
   RUN_TEST(Manifold_FaceIDRoundTrip);
+  RUN_TEST(Manifold_OpenscadCrash);
 
   // Boolean tests
   printf("--- Boolean ---\n");
