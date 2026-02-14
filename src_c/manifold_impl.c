@@ -526,6 +526,26 @@ void manifold_impl_calculate_vert_normals(ManifoldImpl *impl) {
   free(vertHalfedgeMap);
 }
 
+void manifold_impl_create_face_normals(ManifoldImpl *impl) {
+  size_t numTri = manifold_impl_num_tri(impl);
+  ManifoldVec3 zero = manifold_vec3(0, 0, 0);
+  vec_vec3_free(&impl->faceNormal);
+  impl->faceNormal = vec_vec3_create_fill(numTri, zero);
+  for (size_t tri = 0; tri < numTri; tri++) {
+    int sv0 = impl->halfedge.data[3 * tri].startVert;
+    int sv1 = impl->halfedge.data[3 * tri + 1].startVert;
+    int sv2 = impl->halfedge.data[3 * tri + 2].startVert;
+    if (sv0 < 0 || (size_t)sv0 >= impl->vertPos.len ||
+        sv1 < 0 || (size_t)sv1 >= impl->vertPos.len ||
+        sv2 < 0 || (size_t)sv2 >= impl->vertPos.len) continue;
+    ManifoldVec3 v0 = impl->vertPos.data[sv0];
+    ManifoldVec3 v1 = impl->vertPos.data[sv1];
+    ManifoldVec3 v2 = impl->vertPos.data[sv2];
+    ManifoldVec3 n = vec3_cross(vec3_sub(v1, v0), vec3_sub(v2, v0));
+    impl->faceNormal.data[tri] = manifold_safe_normalize(n);
+  }
+}
+
 void manifold_impl_set_normals_and_coplanar(ManifoldImpl *impl) {
   size_t numTri = manifold_impl_num_tri(impl);
   ManifoldVec3 zero = manifold_vec3(0, 0, 0);

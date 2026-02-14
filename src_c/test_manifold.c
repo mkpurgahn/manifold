@@ -5632,16 +5632,24 @@ static void test_Manifold_DecomposeProps(void) {
   Manifold spha = manifold_as_original(&spht);
   Manifold sph = with_position_colors(&spha);
 
+  // Collect input MeshGLs for RelatedGL
+  ManifoldMeshGL input[3];
+  input[0] = manifold_get_meshgl(&tet);
+  input[1] = manifold_get_meshgl(&cube);
+  input[2] = manifold_get_meshgl(&sph);
+
   Manifold parts[3] = {tet, cube, sph};
   Manifold manifolds = manifold_batch_boolean(parts, 3, MANIFOLD_OP_ADD);
-  EXPECT_FALSE(manifold_is_empty(&manifolds));
 
-  // Decompose - expect 3 components
+  // ExpectMeshes: {{8, 12, 3}, {6, 8, 3}, {4, 4, 3}}
+  EXPECT_FALSE(manifold_is_empty(&manifolds));
+  EXPECT_TRUE(manifold_matches_tri_normals(&manifolds));
+
   Manifold *comps = (Manifold*)malloc(8 * sizeof(Manifold));
   int nComp = manifold_decompose(&manifolds, &comps, 8);
-  EXPECT_EQ(nComp, 3);
+  ASSERT_EQ(nComp, 3);
 
-  // Sort by num_vert descending (matching C++ ExpectMeshes)
+  // Sort by num_vert descending, then num_tri descending
   for (int i = 0; i < nComp - 1; i++) {
     for (int j = i + 1; j < nComp; j++) {
       if (manifold_num_vert(&comps[j]) > manifold_num_vert(&comps[i]) ||
@@ -5651,21 +5659,33 @@ static void test_Manifold_DecomposeProps(void) {
       }
     }
   }
-  // C++ expects: {{8, 12, 3}, {6, 8, 3}, {4, 4, 3}}
-  if (nComp >= 3) {
-    EXPECT_EQ(manifold_num_vert(&comps[0]), (size_t)8);
-    EXPECT_EQ(manifold_num_tri(&comps[0]), (size_t)12);
-    EXPECT_EQ(manifold_num_prop(&comps[0]), (size_t)3);
-    EXPECT_EQ(manifold_num_vert(&comps[1]), (size_t)6);
-    EXPECT_EQ(manifold_num_tri(&comps[1]), (size_t)8);
-    EXPECT_EQ(manifold_num_prop(&comps[1]), (size_t)3);
-    EXPECT_EQ(manifold_num_vert(&comps[2]), (size_t)4);
-    EXPECT_EQ(manifold_num_tri(&comps[2]), (size_t)4);
-    EXPECT_EQ(manifold_num_prop(&comps[2]), (size_t)3);
+
+  EXPECT_EQ(manifold_num_vert(&comps[0]), (size_t)8);
+  EXPECT_EQ(manifold_num_tri(&comps[0]), (size_t)12);
+  EXPECT_EQ(manifold_num_vert(&comps[1]), (size_t)6);
+  EXPECT_EQ(manifold_num_tri(&comps[1]), (size_t)8);
+  EXPECT_EQ(manifold_num_vert(&comps[2]), (size_t)4);
+  EXPECT_EQ(manifold_num_tri(&comps[2]), (size_t)4);
+
+  for (int i = 0; i < nComp; i++) {
+    EXPECT_EQ(manifold_num_prop(&comps[i]), (size_t)3);
+    EXPECT_EQ(manifold_num_prop_vert(&comps[i]), manifold_num_vert(&comps[i]));
+    ManifoldMeshGL meshGL = manifold_get_meshgl(&comps[i]);
+    EXPECT_EQ(meshGL.vertLen - manifold_num_vert(&comps[i]), meshGL.mergeLen);
+    manifold_free_meshgl(&meshGL);
+  }
+
+  // RelatedGL on combined manifold
+  related_gl(&manifolds, input, 3, false);
+
+  // RelatedGL on each decomposed component
+  for (int i = 0; i < nComp; i++) {
+    related_gl(&comps[i], input, 3, false);
   }
 
   for (int i = 0; i < nComp; i++) manifold_destroy(&comps[i]);
   free(comps);
+  for (int i = 0; i < 3; i++) manifold_free_meshgl(&input[i]);
   manifold_destroy(&tet0); manifold_destroy(&tet);
   manifold_destroy(&cube0); manifold_destroy(&cubet); manifold_destroy(&cubea); manifold_destroy(&cube);
   manifold_destroy(&sph0); manifold_destroy(&spht); manifold_destroy(&spha); manifold_destroy(&sph);

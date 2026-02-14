@@ -137,6 +137,7 @@ void manifold_impl_reorder_halfedges(ManifoldImpl *impl);
 void manifold_impl_create_halfedges(ManifoldImpl *impl,
                                      const ManifoldVecIVec3 *triProp,
                                      const ManifoldVecIVec3 *triVert);
+void manifold_impl_create_face_normals(ManifoldImpl *impl);
 void manifold_impl_set_normals_and_coplanar(ManifoldImpl *impl);
 void manifold_impl_dedupe_prop_verts(ManifoldImpl *impl);
 void manifold_impl_remove_unreferenced_verts(ManifoldImpl *impl);

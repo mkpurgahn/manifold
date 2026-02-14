@@ -1166,8 +1166,8 @@ static void boolean_create_properties(ManifoldImpl *outR,
 
       // Check propMissIdx (retained vert with known propVert)
       if (key1 == idMissProp && key2 >= 0) {
-        int *missArr = PQ ? propMissIdxQ : propMissIdxP;
-        int missLen = PQ ? nPropVertQ : nPropVertP;
+        int *missArr = PQ ? propMissIdxP : propMissIdxQ;
+        int missLen = PQ ? nPropVertP : nPropVertQ;
         if (key2 < missLen && missArr && missArr[key2] >= 0) {
           outR->halfedge.data[3 * tri + i].propVert = missArr[key2];
           continue;
@@ -2021,8 +2021,9 @@ ManifoldError manifold_boolean_op(ManifoldImpl *result,
       double combinedEps = fmax(pScaledEps, qScaledEps);
       manifold_impl_set_epsilon(result, combinedEps, false);
       result->tolerance = fmax(p->tolerance, q->tolerance);
-      // Need face normals before remove_degenerates (it calls vert normals calc)
-      manifold_impl_set_normals_and_coplanar(result);
+      // Compute face normals and vertex normals without overwriting coplanarIDs
+      manifold_impl_create_face_normals(result);
+      manifold_impl_calculate_vert_normals(result);
       // Remove degenerate components (tiny meshes with edges < epsilon)
       // This matches C++ Compose behavior which calls RemoveDegenerates
       manifold_impl_remove_degenerates(result, 0);
