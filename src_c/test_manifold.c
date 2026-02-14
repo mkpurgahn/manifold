@@ -2004,6 +2004,150 @@ static void test_Smooth_ToLength(void) {
   manifold_destroy(&refined);
 }
 
+static void test_Smooth_Torus(void) {
+  // Create circle cross-section: Circle(1, 8).Translate({2, 0})
+  const int nCircle = 8;
+  const double dPhi = 360.0 / nCircle;
+  ManifoldVec2 circleVerts[8];
+  for (int i = 0; i < nCircle; i++) {
+    double angle = dPhi * (double)i * M_PI / 180.0;
+    circleVerts[i].x = cos(angle) + 2.0;  // translate x by 2
+    circleVerts[i].y = sin(angle);
+  }
+  int polySizes[1] = {nCircle};
+
+  // Revolve around Y-axis with 6 circular segments
+  Manifold torus = manifold_revolve(circleVerts, polySizes, 1, 6, 360.0);
+  ManifoldMeshGL torusMesh = manifold_get_meshgl(&torus);
+  const size_t numTri = torusMesh.triLen;
+
+  // Create correct toroidal halfedge tangents
+  size_t tangentLen = 4 * 3 * numTri;
+  torusMesh.halfedgeTangent =
+      (float *)realloc(torusMesh.halfedgeTangent, tangentLen * sizeof(float));
+  torusMesh.halfedgeTangentLen = tangentLen;
+
+  for (size_t tri = 0; tri < numTri; tri++) {
+    int tv0 = torusMesh.triVerts[3 * tri + 0];
+    int tv1 = torusMesh.triVerts[3 * tri + 1];
+    int tv2 = torusMesh.triVerts[3 * tri + 2];
+    int triVerts[3] = {tv0, tv1, tv2};
+
+    for (int i = 0; i < 3; i++) {
+      int vi = triVerts[i];
+      int vi1 = triVerts[(i + 1) % 3];
+      double vx = (double)torusMesh.vertProperties[vi * torusMesh.numProp + 0];
+      double vy = (double)torusMesh.vertProperties[vi * torusMesh.numProp + 1];
+      double vz = (double)torusMesh.vertProperties[vi * torusMesh.numProp + 2];
+      double v1x =
+          (double)torusMesh.vertProperties[vi1 * torusMesh.numProp + 0];
+      double v1y =
+          (double)torusMesh.vertProperties[vi1 * torusMesh.numProp + 1];
+      double v1z =
+          (double)torusMesh.vertProperties[vi1 * torusMesh.numProp + 2];
+      double ex = v1x - vx, ey = v1y - vy, ez = v1z - vz;
+
+      ManifoldVec3 tanDir;
+      ManifoldVec3 edgeVec = {ex, ey, ez};
+      int useTangent = 1;
+
+      if (ez == 0.0) {
+        // Horizontal edge: tangent is perpendicular in XY plane
+        double tx = vy, ty = -vx, tz = 0.0;
+        double d = tx * ex + ty * ey + tz * ez;
+        if (d < 0) {
+          tx = -tx;
+          ty = -ty;
+          tz = -tz;
+        }
+        tanDir = (ManifoldVec3){tx, ty, tz};
+      } else if (fabs(vx * ey - vy * ex) < 1e-5) {
+        // Radial edge
+        double theta = asin(vz);
+        double r = sqrt(vx * vx + vy * vy);
+        double xyn_x = vx / r * vz * (r > 2.0 ? -1.0 : 1.0);
+        double xyn_y = vy / r * vz * (r > 2.0 ? -1.0 : 1.0);
+        double tx = xyn_x, ty = xyn_y, tz = cos(theta);
+        double d = tx * ex + ty * ey + tz * ez;
+        if (d < 0) {
+          tx = -tx;
+          ty = -ty;
+          tz = -tz;
+        }
+        tanDir = (ManifoldVec3){tx, ty, tz};
+      } else {
+        useTangent = 0;
+      }
+
+      size_t eIdx = 3 * tri + (size_t)i;
+      if (useTangent) {
+        // CircularTangent: same logic as circular_tangent in manifold_smooth.c
+        ManifoldVec3 dir = manifold_safe_normalize(tanDir);
+        double weight =
+            fmax(0.5, vec3_dot(dir, manifold_safe_normalize(edgeVec)));
+        double elen = vec3_length(edgeVec);
+        ManifoldVec4 bz2 = {dir.x * 0.5 * elen, dir.y * 0.5 * elen,
+                            dir.z * 0.5 * elen, weight};
+        ManifoldVec4 bz3 = vec4_lerp(manifold_vec4(0, 0, 0, 1), bz2, 2.0/3.0);
+        if (bz3.w != 0.0) {
+          torusMesh.halfedgeTangent[4 * eIdx + 0] =
+              (float)(bz3.x / bz3.w);
+          torusMesh.halfedgeTangent[4 * eIdx + 1] =
+              (float)(bz3.y / bz3.w);
+          torusMesh.halfedgeTangent[4 * eIdx + 2] =
+              (float)(bz3.z / bz3.w);
+          torusMesh.halfedgeTangent[4 * eIdx + 3] = (float)bz3.w;
+        } else {
+          torusMesh.halfedgeTangent[4 * eIdx + 0] = (float)bz3.x;
+          torusMesh.halfedgeTangent[4 * eIdx + 1] = (float)bz3.y;
+          torusMesh.halfedgeTangent[4 * eIdx + 2] = (float)bz3.z;
+          torusMesh.halfedgeTangent[4 * eIdx + 3] = (float)bz3.w;
+        }
+      } else {
+        torusMesh.halfedgeTangent[4 * eIdx + 0] = 0.0f;
+        torusMesh.halfedgeTangent[4 * eIdx + 1] = 0.0f;
+        torusMesh.halfedgeTangent[4 * eIdx + 2] = 0.0f;
+        torusMesh.halfedgeTangent[4 * eIdx + 3] = -1.0f;
+      }
+    }
+  }
+
+  Manifold smooth = manifold_from_meshgl(&torusMesh);
+  Manifold refined = manifold_refine_to_length(&smooth, 0.1);
+  Manifold withCurv = manifold_calculate_curvature(&refined, -1, 0);
+  Manifold withNormals = manifold_calculate_normals(&withCurv, 1, 60);
+  ManifoldMeshGL out = manifold_get_meshgl(&withNormals);
+
+  float maxMeanCurvature = 0.0f;
+  for (size_t i = 0; i < out.vertLen; i++) {
+    float *vp = &out.vertProperties[i * out.numProp];
+    double vx = (double)vp[0];
+    double vy = (double)vp[1];
+    double vz = (double)vp[2];
+    // Project to major circle (radius 2) in XY plane
+    double plen = sqrt(vx * vx + vy * vy);
+    double px = 0, py = 0;
+    if (plen > 0) {
+      px = vx / plen * 2.0;
+      py = vy / plen * 2.0;
+    }
+    double dx = vx - px, dy = vy - py, dz = vz;
+    double r = sqrt(dx * dx + dy * dy + dz * dz);
+    ASSERT_NEAR(r, 1.0, 0.006);
+    float absCurv = fabsf(vp[3]);
+    if (absCurv > maxMeanCurvature) maxMeanCurvature = absCurv;
+  }
+  EXPECT_NEAR((double)maxMeanCurvature, 1.63, 0.01);
+
+  manifold_destroy(&torus);
+  manifold_free_meshgl(&torusMesh);
+  manifold_destroy(&smooth);
+  manifold_destroy(&refined);
+  manifold_destroy(&withCurv);
+  manifold_destroy(&withNormals);
+  manifold_free_meshgl(&out);
+}
+
 // ==================== InvalidInput Tests ====================
 
 static void test_Manifold_Invalid(void) {
@@ -6274,6 +6418,7 @@ int main(void) {
   RUN_TEST(Smooth_Manual);
   RUN_TEST(Smooth_RefineQuads);
   RUN_TEST(Smooth_ToLength);
+  RUN_TEST(Smooth_Torus);
 
   // Samples tests
   printf("--- Samples ---\n");
