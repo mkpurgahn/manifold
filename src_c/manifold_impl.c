@@ -1757,6 +1757,8 @@ void manifold_impl_simplify_topology(ManifoldImpl *impl, int firstNewVert) {
 
   impl_collapse_colinear_edges(impl, firstNewVert);
   impl_swap_degenerates(impl, firstNewVert);
+  // Second pass: catch degenerates with all-old vertices that the first pass skips
+  if (firstNewVert > 0) impl_swap_degenerates(impl, 0);
   manifold_impl_calculate_vert_normals(impl);
 }
 
