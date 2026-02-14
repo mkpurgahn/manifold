@@ -304,6 +304,51 @@ static Manifold menger_sponge_impl(int n) {
   return r3;
 }
 
+// ==================== CubeUV helper (mirrors C++ CubeUV in test_main.cpp) =====
+static ManifoldMeshGL cube_uv(void) {
+  ManifoldMeshGL mgl = manifold_meshgl_empty();
+  mgl.numProp = 5;
+  mgl.vertLen = 14;
+  mgl.vertProperties = (float *)malloc(5 * 14 * sizeof(float));
+  float vp[] = {
+     0.5f, -0.5f,  0.5f,  0.5f,  0.66f,
+    -0.5f, -0.5f,  0.5f,  0.25f, 0.66f,
+     0.5f,  0.5f,  0.5f,  0.5f,  0.33f,
+    -0.5f,  0.5f,  0.5f,  0.25f, 0.33f,
+    -0.5f, -0.5f, -0.5f,  1.0f,  0.66f,
+     0.5f, -0.5f, -0.5f,  0.75f, 0.66f,
+    -0.5f,  0.5f, -0.5f,  1.0f,  0.33f,
+     0.5f,  0.5f, -0.5f,  0.75f, 0.33f,
+    -0.5f, -0.5f, -0.5f,  0.0f,  0.66f,
+    -0.5f,  0.5f, -0.5f,  0.0f,  0.33f,
+    -0.5f,  0.5f, -0.5f,  0.25f, 0.0f,
+     0.5f,  0.5f, -0.5f,  0.5f,  0.0f,
+    -0.5f, -0.5f, -0.5f,  0.25f, 1.0f,
+     0.5f, -0.5f, -0.5f,  0.5f,  1.0f
+  };
+  memcpy(mgl.vertProperties, vp, sizeof(vp));
+
+  mgl.triLen = 12;
+  mgl.triVerts = (int *)malloc(3 * 12 * sizeof(int));
+  int tv[] = {3,1,0, 3,0,2, 7,5,4, 7,4,6, 2,0,5, 2,5,7,
+              9,8,1, 9,1,3, 11,10,3, 11,3,2, 0,1,12, 0,12,13};
+  memcpy(mgl.triVerts, tv, sizeof(tv));
+
+  mgl.mergeLen = 6;
+  mgl.mergeFromVert = (int *)malloc(6 * sizeof(int));
+  mgl.mergeToVert = (int *)malloc(6 * sizeof(int));
+  int mf[] = {8, 12, 13, 9, 10, 11};
+  int mt[] = {4, 4, 5, 6, 6, 7};
+  memcpy(mgl.mergeFromVert, mf, sizeof(mf));
+  memcpy(mgl.mergeToVert, mt, sizeof(mt));
+
+  mgl.runOriginalIDLen = 1;
+  mgl.runOriginalID = (uint32_t *)malloc(sizeof(uint32_t));
+  mgl.runOriginalID[0] = manifold_reserve_ids_api(1);
+
+  return mgl;
+}
+
 // ==================== Properties Tests ====================
 
 static void test_Properties_Measurements(void) {
@@ -519,7 +564,8 @@ static void expect_meshes(const Manifold *manifold,
 
 // RelatedGL: verify output mesh can be traced back to originals
 static void related_gl(const Manifold *out,
-                        const ManifoldMeshGL *originals, size_t nOriginals) {
+                        const ManifoldMeshGL *originals, size_t nOriginals,
+                        bool checkNormals) {
   ASSERT_FALSE(manifold_is_empty(out));
   ManifoldMeshGL output = manifold_get_meshgl(out);
 
@@ -579,8 +625,10 @@ static void related_gl(const Manifold *out,
       inNormal[2]=e1[0]*e2[1]-e1[1]*e2[0];
       double area = sqrt(inNormal[0]*inNormal[0]+inNormal[1]*inNormal[1]+inNormal[2]*inNormal[2]);
       if (area == 0) continue;
+      for (int k = 0; k < 3; k++) inNormal[k] /= area;
 
       for (int j = 0; j < 3; j++) {
+        int vert = output.triVerts[3*tri+j];
         double edges[3][3];
         for (int k=0;k<3;k++) {
           edges[0][k] = inTriPos[0][k] - outTriPos[j][k];
@@ -593,6 +641,40 @@ static void related_gl(const Manifold *out,
         double cz = edges[1][0]*edges[2][1] - edges[1][1]*edges[2][0];
         double volume = edges[0][0]*cx + edges[0][1]*cy + edges[0][2]*cz;
         ASSERT_LE(volume, area * (double)tolerance);
+
+        if (checkNormals) {
+          double normal[3];
+          for (int k = 0; k < 3; k++)
+            normal[k] = output.vertProperties[vert * output.numProp + 3 + k];
+          double nlen = sqrt(normal[0]*normal[0] + normal[1]*normal[1] + normal[2]*normal[2]);
+          ASSERT_NEAR(nlen, 1.0, 0.0001);
+          double outNormal[3];
+          double oe1[3], oe2[3];
+          for (int k=0;k<3;k++) { oe1[k]=outTriPos[1][k]-outTriPos[0][k]; oe2[k]=outTriPos[2][k]-outTriPos[0][k]; }
+          outNormal[0]=oe1[1]*oe2[2]-oe1[2]*oe2[1];
+          outNormal[1]=oe1[2]*oe2[0]-oe1[0]*oe2[2];
+          outNormal[2]=oe1[0]*oe2[1]-oe1[1]*oe2[0];
+          double dot = normal[0]*outNormal[0] + normal[1]*outNormal[1] + normal[2]*outNormal[2];
+          ASSERT_GT(dot, 0.0);
+        } else {
+          for (int p = 3; p < inMesh->numProp; ++p) {
+            double propOut = output.vertProperties[vert * output.numProp + p];
+            double inProp[3] = {
+              inMesh->vertProperties[inTriangle[0] + p],
+              inMesh->vertProperties[inTriangle[1] + p],
+              inMesh->vertProperties[inTriangle[2] + p]
+            };
+            double edgesP[3][3];
+            for (int k = 0; k < 3; k++)
+              for (int c = 0; c < 3; c++)
+                edgesP[k][c] = edges[k][c] + inNormal[c] * inProp[k] - inNormal[c] * propOut;
+            double cpx = edgesP[1][1]*edgesP[2][2] - edgesP[1][2]*edgesP[2][1];
+            double cpy = edgesP[1][2]*edgesP[2][0] - edgesP[1][0]*edgesP[2][2];
+            double cpz = edgesP[1][0]*edgesP[2][1] - edgesP[1][1]*edgesP[2][0];
+            double volumeP = edgesP[0][0]*cpx + edgesP[0][1]*cpy + edgesP[0][2]*cpz;
+            ASSERT_LE(volumeP, area * (double)tolerance);
+          }
+        }
       }
     }
   }
@@ -614,7 +696,7 @@ static void test_Boolean_MeshGLRoundTrip(void) {
     const int sizes[][2] = {{18, 32}};
     expect_meshes(&result, sizes, 1);
   }
-  related_gl(&result, &original, 1);
+  related_gl(&result, &original, 1, false);
 
   ManifoldMeshGL inGL = manifold_get_meshgl(&result);
   ASSERT_EQ(inGL.runOriginalIDLen, (size_t)2);
@@ -625,7 +707,7 @@ static void test_Boolean_MeshGLRoundTrip(void) {
     const int sizes[][2] = {{18, 32}};
     expect_meshes(&result2, sizes, 1);
   }
-  related_gl(&result2, &original, 1);
+  related_gl(&result2, &original, 1, false);
 
   ManifoldMeshGL outGL = manifold_get_meshgl(&result2);
   ASSERT_EQ(outGL.runOriginalIDLen, (size_t)2);
@@ -3565,6 +3647,28 @@ static void test_Manifold_MeshRelationRefine(void) {
 }
 
 // ==================== More Boolean tests from C++ ====================
+
+// ==================== Boolean_MixedProperties ====================
+static void test_Boolean_MixedProperties(void) {
+  ManifoldMeshGL cubeUV = cube_uv();
+  Manifold m0 = manifold_from_meshgl(&cubeUV);
+  Manifold m1 = manifold_cube((ManifoldVec3){1,1,1}, false);
+  Manifold m1t = manifold_translate(&m1, (ManifoldVec3){0.5,0.5,0.5});
+  Manifold result = manifold_union(&m0, &m1t);
+  EXPECT_EQ((long long)manifold_num_prop(&result), 2LL);
+
+  ManifoldMeshGL m1gl = manifold_get_meshgl(&m1);
+  ManifoldMeshGL originals[2] = {cubeUV, m1gl};
+  related_gl(&result, originals, 2, false);
+
+  manifold_free_meshgl(&m1gl);
+  manifold_free_meshgl(&cubeUV);
+  manifold_destroy(&m0);
+  manifold_destroy(&m1);
+  manifold_destroy(&m1t);
+  manifold_destroy(&result);
+}
+
 static void test_Boolean_MixedNumProp(void) {
   // Union of manifold with 2 props and manifold with 1 prop
   Manifold cube1 = manifold_cube((ManifoldVec3){1,1,1}, false);
@@ -3813,6 +3917,7 @@ int main(void) {
   RUN_TEST(Boolean_NonIntersecting);
   RUN_TEST(Boolean_Precision);
   RUN_TEST(Boolean_PropsMismatch);
+  RUN_TEST(Boolean_MixedProperties);
   RUN_TEST(Boolean_MixedNumProp);
   RUN_TEST(Boolean_SelfIntersect);
   RUN_TEST(Boolean_SelfUnion);
