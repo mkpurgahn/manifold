@@ -29,34 +29,44 @@ Note: slow tests (hull, sponge, scallop, minkowski) need **240+ seconds**. Don't
 
 ---
 
-## Unported Tests — Port ONE at a Time (58 remaining)
+## Unported Tests — Phase Loop (58 remaining)
 
-**⚠️ FOCUS: Pick the NEXT unported test from the list below. Read its individual prompt file in `prompts/tests/`. Port it completely. If it needs a new C API function, port that function. If it needs CrossSection, port CrossSection. If it needs MeshGL, port MeshGL. Nothing is "blocked" — everything is achievable. Do not skip tests. Do not categorize tests as "not achievable." Port them in order.**
+**⚠️ Each test is its own phase. One prompt. One ralph loop. One problem.**
 
-### Workflow: Ralph Loop Per Test
+### Phase Loop Workflow
 
-Each test has its own prompt file in `prompts/tests/NN-test-name.md`. The workflow is:
+Each test has its own prompt file in `prompts/tests/NN-test-name.md` with a shared preamble in `prompts/tests/PREAMBLE.md`. The phase sequencer runs them:
 
-1. Start a ralph loop with the next test's prompt file (e.g., `prompts/tests/01-boolean-meshglroundtrip.md`).
-2. The loop ports the test, makes it pass, and commits.
-3. Once both the main loop and adversary agree the test passes with no regressions — move to the next test.
-4. Kick off a new loop with the next prompt file (e.g., `prompts/tests/02-boolean-mixedproperties.md`).
-5. Repeat until all 58 are done.
+```bash
+./run-all-tests.sh                    # run all phases 1-58
+./run-all-tests.sh --start-phase 5    # resume from phase 5
+```
 
-### Per-test prompt files
+**How each phase works:**
 
-Each file contains: the exact C++ source code, any helper dependencies, step-by-step porting instructions, and build/run commands. Read the prompt file BEFORE starting work on that test.
+1. The sequencer starts a **ralph loop** with the current test's prompt.
+2. The loop works **ONLY on that test** — ports it, ports any missing API/helpers, makes it pass, commits.
+3. The loop outputs: **"Phase complete — test ported and verified"**
+4. The **adversary runs** — verifies the test passes, checks for regressions (`SKIP_SLOW=1 ./test_manifold`).
+5. **Both must agree.** If the adversary finds problems, the loop continues. Only when both confirm does the phase end.
+6. **Phase ends. Next phase starts.** A new ralph loop begins with the next test's prompt.
+7. **Repeat until all 58 phases complete.**
+
+The loop never sees the next test's prompt. It focuses entirely on the current phase.
+
+### Phase files
 
 ```
-prompts/tests/
-├── 01-boolean-meshglroundtrip.md
-├── 02-boolean-mixedproperties.md
-├── 03-booleancomplex-sphere.md
-├── ...
-├── 56-samples-gyroidmodule.md
-├── 57-polygonfuzz-triangulationnocrash.md
-└── 58-polygonfuzz-triangulationnocrashrounded.md
+prompts/tests/PREAMBLE.md                         ← shared rules (read first)
+prompts/tests/01-boolean-meshglroundtrip.md        ← Phase 1
+prompts/tests/02-boolean-mixedproperties.md        ← Phase 2
+prompts/tests/03-booleancomplex-sphere.md          ← Phase 3
+...
+prompts/tests/57-polygonfuzz-triangulationnocrash.md        ← Phase 57
+prompts/tests/58-polygonfuzz-triangulationnocrashrounded.md ← Phase 58
 ```
+
+Each file contains: the exact C++ source code, helper dependencies, porting steps, and the completion promise.
 
 ### The list (port in this order):
 

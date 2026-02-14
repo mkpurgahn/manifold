@@ -1,5 +1,7 @@
 # Port Test: `PolygonFuzz_TriangulationNoCrash`
 
+> **Read `prompts/tests/PREAMBLE.md` first.**
+
 > **Test #57 of 58.** Port this single test to C. Make it pass. Commit. Then move to the next test.
 
 > **⚠️ NEVER WEAKEN A TEST.** The C++ values are ground truth.
@@ -70,3 +72,12 @@ The C++ test loads seed data from `test/polygons/polygon_corpus.txt`. Port as a 
 2. Never weaken assertions.
 3. Run `SKIP_SLOW=1 ./test_manifold` after to verify no regressions.
 4. Commit: `test: port PolygonFuzz_TriangulationNoCrash from C++`
+
+
+---
+
+## Completion
+
+When this test passes with no regressions, output exactly:
+
+**Phase complete — test ported and verified**

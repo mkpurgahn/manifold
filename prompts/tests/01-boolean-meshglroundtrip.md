@@ -1,5 +1,7 @@
 # Port Test: `Boolean_MeshGLRoundTrip`
 
+> **Read `prompts/tests/PREAMBLE.md` first.**
+
 > **Test #1 of 58.** Port this single test to C. Make it pass. Commit. Then move to the next test.
 
 > **⚠️ NEVER WEAKEN A TEST.** The C++ values are ground truth.
@@ -87,3 +89,12 @@ TEST(Boolean, MeshGLRoundTrip) {
 3. If a C++ method is missing from the C API, port it before writing the test.
 4. Run `SKIP_SLOW=1 ./test_manifold` after to verify no regressions.
 5. Commit: `test: port Boolean_MeshGLRoundTrip from C++`
+
+
+---
+
+## Completion
+
+When this test passes with no regressions, output exactly:
+
+**Phase complete — test ported and verified**

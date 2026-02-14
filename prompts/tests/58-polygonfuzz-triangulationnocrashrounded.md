@@ -1,5 +1,7 @@
 # Port Test: `PolygonFuzz_TriangulationNoCrashRounded`
 
+> **Read `prompts/tests/PREAMBLE.md` first.**
+
 > **Test #58 of 58.** Port this single test to C. Make it pass. Commit. Then move to the next test.
 
 > **⚠️ NEVER WEAKEN A TEST.** The C++ values are ground truth.
@@ -53,3 +55,12 @@ Same as test #57 but round all polygon vertex coordinates to nearest integer bef
 2. Never weaken assertions.
 3. Run `SKIP_SLOW=1 ./test_manifold` after to verify no regressions.
 4. Commit: `test: port PolygonFuzz_TriangulationNoCrashRounded from C++`
+
+
+---
+
+## Completion
+
+When this test passes with no regressions, output exactly:
+
+**Phase complete — test ported and verified**
