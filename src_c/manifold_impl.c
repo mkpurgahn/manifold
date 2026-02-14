@@ -5,6 +5,7 @@
 
 #include "manifold_impl.h"
 #include <stdio.h>
+#include <limits.h>
 
 // Global mesh ID counter
 uint32_t manifold_mesh_id_counter = 1;
@@ -435,22 +436,58 @@ void manifold_impl_sort_geometry(ManifoldImpl *impl) {
 
 void manifold_impl_calculate_vert_normals(ManifoldImpl *impl) {
   size_t numVert = manifold_impl_num_vert(impl);
-  size_t numTri = manifold_impl_num_tri(impl);
   ManifoldVec3 zero = manifold_vec3(0, 0, 0);
+  vec_vec3_free(&impl->vertNormal);
   impl->vertNormal = vec_vec3_create_fill(numVert, zero);
 
-  for (size_t tri = 0; tri < numTri; tri++) {
-    ManifoldVec3 normal = impl->faceNormal.data[tri];
-    for (int i = 0; i < 3; i++) {
-      int v = impl->halfedge.data[3 * tri + i].startVert;
-      if (v >= 0 && (size_t)v < numVert)
-        impl->vertNormal.data[v] = vec3_add(impl->vertNormal.data[v], normal);
-    }
+  // Build vertHalfedgeMap: for each vert, store the minimum halfedge index
+  int *vertHalfedgeMap = (int *)malloc(numVert * sizeof(int));
+  for (size_t i = 0; i < numVert; i++)
+    vertHalfedgeMap[i] = INT_MAX;
+  for (size_t i = 0; i < impl->halfedge.len; i++) {
+    int v = impl->halfedge.data[i].startVert;
+    if (v >= 0 && (size_t)v < numVert && (int)i < vertHalfedgeMap[v])
+      vertHalfedgeMap[v] = (int)i;
   }
 
-  for (size_t i = 0; i < numVert; i++) {
-    impl->vertNormal.data[i] = manifold_safe_normalize(impl->vertNormal.data[i]);
+  for (size_t vert = 0; vert < numVert; vert++) {
+    int firstEdge = vertHalfedgeMap[vert];
+    if (firstEdge == INT_MAX) {
+      impl->vertNormal.data[vert] = zero;
+      continue;
+    }
+    ManifoldVec3 normal = zero;
+    // ForVert loop: iterate over all halfedges starting at this vertex
+    int edge = firstEdge;
+    int iterations = 0;
+    do {
+      int startV = impl->halfedge.data[edge].startVert;
+      int endV = impl->halfedge.data[edge].endVert;
+      int nextEdge = manifold_next_halfedge(edge);
+      int thirdV = impl->halfedge.data[nextEdge].endVert;
+
+      ManifoldVec3 currEdge = vec3_normalize(
+          vec3_sub(impl->vertPos.data[endV], impl->vertPos.data[startV]));
+      ManifoldVec3 prevEdge = vec3_normalize(
+          vec3_sub(impl->vertPos.data[startV], impl->vertPos.data[thirdV]));
+
+      if (isfinite(currEdge.x) && isfinite(prevEdge.x)) {
+        double dot = -vec3_dot(prevEdge, currEdge);
+        double phi = dot >= 1.0 ? 0.0
+                   : (dot <= -1.0 ? MANIFOLD_PI : acos(dot));
+        normal = vec3_add(normal,
+            vec3_scale(impl->faceNormal.data[edge / 3], phi));
+      }
+
+      edge = manifold_next_halfedge(
+          impl->halfedge.data[edge].pairedHalfedge);
+      if (++iterations > (int)impl->halfedge.len) break;
+    } while (edge != firstEdge);
+
+    impl->vertNormal.data[vert] = manifold_safe_normalize(normal);
   }
+
+  free(vertHalfedgeMap);
 }
 
 void manifold_impl_set_normals_and_coplanar(ManifoldImpl *impl) {

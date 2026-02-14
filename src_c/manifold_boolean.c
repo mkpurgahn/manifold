@@ -1293,18 +1293,10 @@ skip_face:
   }
 
   // Remove degenerate face pairs: two triangles with same 3 verts in reversed
-  // winding order AND same face normal (opposite sign). These create
-  // zero-volume flaps that corrupt topology.
+  // winding order. Two triangles sharing identical vertices in opposite winding
+  // occupy the same space and create non-manifold edges.
   {
     size_t nTri = triVerts.len;
-#ifdef MANIFOLD_BOOLEAN_DEBUG
-    fprintf(stderr, "DEBUG face2tri: %zu triangles before degenerate removal\n", nTri);
-    for (size_t i = 0; i < nTri; i++) {
-      fprintf(stderr, "  tri %zu: (%d, %d, %d) n=(%.3f,%.3f,%.3f)\n", i,
-        triVerts.data[i].x, triVerts.data[i].y, triVerts.data[i].z,
-        triNormal.data[i].x, triNormal.data[i].y, triNormal.data[i].z);
-    }
-#endif
     bool *remove = (bool *)calloc(nTri, sizeof(bool));
     if (remove) {
       for (size_t i = 0; i < nTri; i++) {
@@ -1313,23 +1305,14 @@ skip_face:
         for (size_t j = i + 1; j < nTri; j++) {
           if (remove[j]) continue;
           int b0 = triVerts.data[j].x, b1 = triVerts.data[j].y, b2 = triVerts.data[j].z;
-          // Check if same 3 verts in reversed winding
           if ((a0 == b0 && a1 == b2 && a2 == b1) ||
               (a0 == b1 && a1 == b0 && a2 == b2) ||
               (a0 == b2 && a1 == b1 && a2 == b0)) {
-            // Verify they come from the same original face (coplanar)
-            // Same normal → degenerate pair from split face
-            ManifoldVec3 ni = triNormal.data[i];
-            ManifoldVec3 nj = triNormal.data[j];
-            double dot = ni.x * nj.x + ni.y * nj.y + ni.z * nj.z;
-            if (dot > 0.9) {
-              remove[i] = remove[j] = true;
-              break;
-            }
+            remove[i] = remove[j] = true;
+            break;
           }
         }
       }
-      // Compact arrays
       size_t dst = 0;
       for (size_t src = 0; src < nTri; src++) {
         if (!remove[src]) {
@@ -1342,11 +1325,6 @@ skip_face:
       }
       triVerts.len = triProp.len = triNormal.len = triRef.len = dst;
       free(remove);
-#ifdef MANIFOLD_BOOLEAN_DEBUG
-      if (dst < nTri) {
-        fprintf(stderr, "DEBUG: removed %zu degenerate triangles, %zu remain\n", nTri - dst, dst);
-      }
-#endif
     }
   }
 
