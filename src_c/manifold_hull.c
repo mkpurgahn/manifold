@@ -431,7 +431,7 @@ static void qhs_setup_initial_tet(QHState *s) {
 static void qhs_build(QHState *s) {
   s->planar = false;
   qhs_setup_initial_tet(s);
-  if (s->planar) return; // all points coplanar, no 3D hull
+  if (s->planar) return;
 
   // Init face stack
   iv_clear(&s->faceList);
@@ -444,14 +444,19 @@ static void qhs_build(QHState *s) {
   }
 
   size_t iter = 0;
-  while (s->faceList.len > 0) {
+  size_t faceListFront = 0;
+  while (faceListFront < s->faceList.len) {
     iter++;
     if (iter == SIZE_MAX) iter = 0;
 
-    int topFaceIndex = s->faceList.data[0];
-    // Pop front: shift array
-    memmove(s->faceList.data, s->faceList.data + 1, (s->faceList.len - 1) * sizeof(int));
-    s->faceList.len--;
+    int topFaceIndex = s->faceList.data[faceListFront++];
+    if (faceListFront > 1024 && faceListFront > s->faceList.len / 2) {
+      size_t remaining = s->faceList.len - faceListFront;
+      memmove(s->faceList.data, s->faceList.data + faceListFront,
+              remaining * sizeof(int));
+      s->faceList.len = remaining;
+      faceListFront = 0;
+    }
 
     QHFace *tf = &s->mesh.faces[topFaceIndex];
     tf->inFaceStack = 0;
