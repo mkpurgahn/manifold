@@ -3342,6 +3342,39 @@ static void test_Manifold_InvalidInput4(void) {
   manifold_destroy(&tet);
 }
 
+// ==================== Manifold_InvalidInput5 ====================
+static void test_Manifold_InvalidInput5(void) {
+  // Merge index out of bounds: mergeFromVert last element set to 7 (only 7 verts: 0-6)
+  // C++ TetGL: numProp=5, 7 verts, 4 tris, mergeFrom={4,5,6}, mergeTo={1,2,3}
+  float vertProps[] = {
+    -1, -1, 1,  0, 0,   // vert 0
+    -1, 1,  -1, 1, -1,  // vert 1
+    1,  -1, -1, 2, -2,  // vert 2
+    1,  1,  1,  3, -3,  // vert 3
+    -1, 1,  -1, 4, -4,  // vert 4
+    1,  -1, -1, 5, -5,  // vert 5
+    1,  1,  1,  6, -6   // vert 6
+  };
+  int triVerts[] = {2, 0, 1,  0, 3, 1,  2, 3, 0,  6, 5, 4};
+  int mergeFrom[] = {4, 5, 7};  // last element 7 is out of bounds
+  int mergeTo[] = {1, 2, 3};
+
+  ManifoldMeshGL mgl = manifold_meshgl_empty();
+  mgl.numProp = 5;
+  mgl.vertProperties = vertProps;
+  mgl.vertLen = 7;
+  mgl.triVerts = triVerts;
+  mgl.triLen = 4;
+  mgl.mergeFromVert = mergeFrom;
+  mgl.mergeToVert = mergeTo;
+  mgl.mergeLen = 3;
+
+  Manifold tet = manifold_from_meshgl(&mgl);
+  EXPECT_TRUE(manifold_is_empty(&tet));
+  EXPECT_EQ((int)manifold_status(&tet), (int)MANIFOLD_ERROR_MERGE_INDEX_OUT_OF_BOUNDS);
+  manifold_destroy(&tet);
+}
+
 // ==================== More Samples Tests ====================
 
 static Manifold make_rounded_frame(double edgeLength, double radius, int circSeg) {
@@ -5845,6 +5878,7 @@ int main(void) {
   RUN_TEST(Manifold_InvalidInput2);
   RUN_TEST(Manifold_InvalidInput3);
   RUN_TEST(Manifold_InvalidInput4);
+  RUN_TEST(Manifold_InvalidInput5);
   RUN_TEST(Manifold_InvalidInput6);
   RUN_TEST(Manifold_Warp);
   RUN_TEST(Manifold_MeshRelation);
