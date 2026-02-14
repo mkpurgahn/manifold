@@ -2532,7 +2532,7 @@ static void test_ManifoldFuzz_SimpleCube(void) {
   params->processOverlaps = false;
 
   // Each "op" is: transforms[] + isUnion flag
-  typedef struct { int ty; double v[3]; } Xform;  // ty: 0=translate, 1=rotate
+  typedef struct { int ty; double v[3]; } Xform;  // ty: 0=translate, 1=rotate, 2=scale
   typedef struct { Xform xforms[4]; int nxforms; int isUnion; } CubeOp;
 
   // Sequence of operations (5-10 ops covering various combos)
@@ -2547,10 +2547,10 @@ static void test_ManifoldFuzz_SimpleCube(void) {
     { .xforms = {{1, {10.0, -5.0, 3.0}}, {1, {0.0, 90.0, 0.0}}}, .nxforms = 2, .isUnion = 0 },
     // Op 4: identity (no transforms) + union
     { .xforms = {{0}}, .nxforms = 0, .isUnion = 1 },
-    // Op 5: translate far away + subtract (should not affect much)
-    { .xforms = {{0, {5.0, 5.0, 5.0}}}, .nxforms = 1, .isUnion = 0 },
-    // Op 6: chained translate+rotate+translate + union
-    { .xforms = {{0, {0.5, 0.0, 0.0}}, {1, {0.0, 0.0, 30.0}}, {0, {-0.5, 0.5, 0.0}}}, .nxforms = 3, .isUnion = 1 },
+    // Op 5: scale + union
+    { .xforms = {{2, {2.0, 0.5, 1.5}}}, .nxforms = 1, .isUnion = 1 },
+    // Op 6: chained translate+scale+rotate + union
+    { .xforms = {{0, {0.5, 0.0, 0.0}}, {2, {1.5, 1.5, 1.5}}, {1, {0.0, 0.0, 30.0}}}, .nxforms = 3, .isUnion = 1 },
     // Op 7: rotate + union (same axis as Op 1, different angle)
     { .xforms = {{1, {-0.1, -0.10000000000066571, -1.0}}}, .nxforms = 1, .isUnion = 1 },
     // Op 8: translate negative + subtract
@@ -2570,8 +2570,10 @@ static void test_ManifoldFuzz_SimpleCube(void) {
       Manifold tmp;
       if (xf->ty == 0) {
         tmp = manifold_translate(&cur, (ManifoldVec3){xf->v[0], xf->v[1], xf->v[2]});
-      } else {
+      } else if (xf->ty == 1) {
         tmp = manifold_rotate(&cur, xf->v[0], xf->v[1], xf->v[2]);
+      } else {
+        tmp = manifold_scale(&cur, (ManifoldVec3){xf->v[0], xf->v[1], xf->v[2]});
       }
       if (transformed) manifold_destroy(&cur);
       cur = tmp;
