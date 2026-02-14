@@ -1019,10 +1019,6 @@ static void face2tri(ManifoldImpl *impl, const ManifoldVecInt *faceEdge,
         } else {
           tris = manifold_triangulate_polygon(allPts, NULL, (size_t)polyLen);
         }
-#ifdef MANIFOLD_BOOLEAN_DEBUG
-        fprintf(stderr, "DEBUG face %zu (single loop, %d pts, pinch=%d) → %zu tris\n",
-            face, polyLen, pinchI, tris.len);
-#endif
       } else {
         // Multiple loops: check if all are already triangles
         bool allTriangles = true;
@@ -1920,21 +1916,37 @@ static ManifoldError boolean3_result(const ManifoldBoolean3 *b3,
 
 
 
-  // Merge coincident vertices before face2tri to avoid degenerate polygons.
+  // Merge coincident vertices connected by zero-length edges within faces.
+  // Unlike a global merge (which breaks Perturb1 by collapsing non-adjacent
+  // coincident vertices), this only merges vertices that share an edge within
+  // the same face and are at the same 3D position.
   {
     int nv = (int)outR->vertPos.len;
     int *vertMap = (int *)malloc((size_t)nv * sizeof(int));
     for (int i = 0; i < nv; i++) vertMap[i] = i;
     double eps = fmax(outR->epsilon, 1e-12);
-    for (int i = 0; i < nv; i++) {
-      if (vertMap[i] != i) continue;
-      for (int j = i + 1; j < nv; j++) {
-        if (vertMap[j] != j) continue;
-        ManifoldVec3 d = vec3_sub(outR->vertPos.data[i], outR->vertPos.data[j]);
-        if (fabs(d.x) <= eps && fabs(d.y) <= eps && fabs(d.z) <= eps) {
-          vertMap[j] = i;
-        }
+
+    // Only merge vertices connected by a halfedge where both endpoints
+    // are at the same position
+    for (size_t i = 0; i < outR->halfedge.len; i++) {
+      int sv = outR->halfedge.data[i].startVert;
+      int ev = outR->halfedge.data[i].endVert;
+      if (sv < 0 || ev < 0 || sv >= nv || ev >= nv) continue;
+      if (sv == ev) continue;
+      // Follow the mapping chain
+      while (vertMap[sv] != sv) sv = vertMap[sv];
+      while (vertMap[ev] != ev) ev = vertMap[ev];
+      if (sv == ev) continue;
+      ManifoldVec3 d = vec3_sub(outR->vertPos.data[sv], outR->vertPos.data[ev]);
+      if (fabs(d.x) <= eps && fabs(d.y) <= eps && fabs(d.z) <= eps) {
+        // Map higher index to lower
+        if (ev > sv) vertMap[ev] = sv;
+        else vertMap[sv] = ev;
       }
+    }
+    // Flatten mapping chains
+    for (int i = 0; i < nv; i++) {
+      while (vertMap[vertMap[i]] != vertMap[i]) vertMap[i] = vertMap[vertMap[i]];
     }
     // Update halfedge vertex references
     for (size_t i = 0; i < outR->halfedge.len; i++) {
@@ -2004,47 +2016,10 @@ static ManifoldError boolean3_result(const ManifoldBoolean3 *b3,
   // Triangulate the faces
   faceEdge.len = (size_t)(numFaceR + 1);
 
-#ifdef MANIFOLD_BOOLEAN_DEBUG
-  // Debug: check face assembly before triangulation
-  {
-    int dbg_totalHe = faceEdge.data[numFaceR];
-    fprintf(stderr, "DEBUG face assembly: %d faces, %d halfedges\n", numFaceR, dbg_totalHe);
-    for (int f = 0; f < numFaceR && f < 30; f++) {
-      int start = faceEdge.data[f];
-      int end = faceEdge.data[f + 1];
-      fprintf(stderr, "  face %d (%d edges):", f, end - start);
-      for (int e = start; e < end; e++) {
-        ManifoldHalfedge h = outR->halfedge.data[e];
-        fprintf(stderr, " %d->%d", h.startVert, h.endVert);
-      }
-      // Check if edges form valid loops
-      int chain_breaks = 0;
-      for (int e = start; e < end; e++) {
-        int ev = outR->halfedge.data[e].endVert;
-        int found = 0;
-        for (int e2 = start; e2 < end; e2++) {
-          if (outR->halfedge.data[e2].startVert == ev) { found = 1; break; }
-        }
-        if (!found) chain_breaks++;
-      }
-      if (chain_breaks) fprintf(stderr, " [%d BREAKS]", chain_breaks);
-      fprintf(stderr, "\n");
-    }
-  }
-#endif
-
   face2tri(outR, &faceEdge, &halfedgeRef, true);
-
-#ifdef MANIFOLD_BOOLEAN_DEBUG
-  fprintf(stderr, "DEBUG: face2tri done, %zu halfedges, %zu triRef\n", outR->halfedge.len, outR->meshRelation.triRef.len);
-#endif
 
   // Reorder halfedges for determinism
   manifold_impl_reorder_halfedges(outR);
-
-#ifdef MANIFOLD_BOOLEAN_DEBUG
-  fprintf(stderr, "DEBUG: reorder done\n");
-#endif
 
   // Update references
   size_t offsetQ = manifold_mesh_id_counter;
@@ -2073,14 +2048,7 @@ static ManifoldError boolean3_result(const ManifoldBoolean3 *b3,
   }
 
   // Simplify topology
-#ifdef MANIFOLD_BOOLEAN_DEBUG
-  fprintf(stderr, "DEBUG: starting simplify_topology\n");
-#endif
   manifold_impl_simplify_topology(outR, nPv + nQv);
-#ifdef MANIFOLD_BOOLEAN_DEBUG
-  fprintf(stderr, "DEBUG: simplify done\n");
-#endif
-
 
   manifold_impl_remove_unreferenced_verts(outR);
 
