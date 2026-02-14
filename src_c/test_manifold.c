@@ -3293,6 +3293,17 @@ static void test_Manifold_ValidInput(void) {
   manifold_destroy(&tet);
 }
 
+static void test_Manifold_ValidInputOneRunIndex(void) {
+  ManifoldMeshGL emptyMesh = manifold_meshgl_empty();
+  int runIdx[] = {0};
+  emptyMesh.runIndex = runIdx;
+  emptyMesh.runIndexLen = 1;
+  Manifold empty = manifold_from_meshgl(&emptyMesh);
+  EXPECT_TRUE(manifold_is_empty(&empty));
+  EXPECT_EQ((int)manifold_status(&empty), (int)MANIFOLD_ERROR_NO_ERROR);
+  manifold_destroy(&empty);
+}
+
 static void test_Manifold_InvalidInput1(void) {
   // NaN vertex should produce empty manifold with NonFiniteVertex error
   ManifoldVec3 verts[] = {{0,0,0}, {1,0,0}, {0,NAN,0}, {0,0,1}};
@@ -5891,6 +5902,7 @@ int main(void) {
   RUN_TEST(Manifold_Invalid);
   RUN_TEST(Manifold_PinchedVert);
   RUN_TEST(Manifold_ValidInput);
+  RUN_TEST(Manifold_ValidInputOneRunIndex);
   RUN_TEST(Manifold_InvalidInput1);
   RUN_TEST(Manifold_InvalidInput2);
   RUN_TEST(Manifold_InvalidInput3);
