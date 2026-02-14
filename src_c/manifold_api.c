@@ -1717,6 +1717,16 @@ Manifold manifold_from_meshgl(const ManifoldMeshGL *mesh) {
     }
   }
 
+  // Validate runIndex length (C++ impl.h line 95-100)
+  if (mesh->runOriginalIDLen > 0 && mesh->runIndexLen > 0 &&
+      mesh->runOriginalIDLen + 1 != mesh->runIndexLen &&
+      mesh->runOriginalIDLen != mesh->runIndexLen) {
+    Manifold m;
+    manifold_impl_init(&m.impl);
+    m.impl.status = MANIFOLD_ERROR_RUN_INDEX_WRONG_LENGTH;
+    return m;
+  }
+
   const size_t numVert = mesh->vertLen;
   const size_t numTri = mesh->triLen;
   const int numProp = mesh->numProp - 3;  // custom properties (excluding xyz)

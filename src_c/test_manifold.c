@@ -3430,6 +3430,23 @@ static void test_Manifold_InvalidInput6(void) {
   manifold_destroy(&tet);
 }
 
+// ==================== Manifold_InvalidInput7 ====================
+static void test_Manifold_InvalidInput7(void) {
+  ManifoldMeshGL cube = cube_uv();
+  // Override runIndex with wrong length: 3 entries but only 1 run
+  free(cube.runIndex);
+  cube.runIndexLen = 3;
+  cube.runIndex = (int *)malloc(3 * sizeof(int));
+  cube.runIndex[0] = 0;
+  cube.runIndex[1] = 1;
+  cube.runIndex[2] = (int)(cube.triLen * 3);
+  Manifold tet = manifold_from_meshgl(&cube);
+  EXPECT_TRUE(manifold_is_empty(&tet));
+  EXPECT_EQ(manifold_status(&tet), MANIFOLD_ERROR_RUN_INDEX_WRONG_LENGTH);
+  manifold_destroy(&tet);
+  manifold_free_meshgl(&cube);
+}
+
 // ==================== Samples_Frame ====================
 static void test_Samples_Frame(void) {
   // Full rounded frame with default circular segments (0 = auto)
@@ -5880,6 +5897,7 @@ int main(void) {
   RUN_TEST(Manifold_InvalidInput4);
   RUN_TEST(Manifold_InvalidInput5);
   RUN_TEST(Manifold_InvalidInput6);
+  RUN_TEST(Manifold_InvalidInput7);
   RUN_TEST(Manifold_Warp);
   RUN_TEST(Manifold_MeshRelation);
   RUN_TEST(Manifold_MeshRelationTransform);
