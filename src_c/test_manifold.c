@@ -4792,6 +4792,23 @@ static void test_BooleanComplex_GenericTwinBooleanTest7863(void) {
   params->processOverlaps = old_processOverlaps;
 }
 
+static void test_BooleanComplex_Havocglass8Bool(void) {
+  ManifoldExecutionParams *params = manifold_get_params();
+  bool old_processOverlaps = params->processOverlaps;
+  params->processOverlaps = true;
+
+  Manifold m1 = read_test_glb("Havocglass8_left.glb");
+  Manifold m2 = read_test_glb("Havocglass8_right.glb");
+  Manifold res = manifold_union(&m1, &m2);
+  ManifoldMeshGL mgl = manifold_get_meshgl(&res);
+  manifold_free_meshgl(&mgl);
+  manifold_destroy(&res);
+  manifold_destroy(&m2);
+  manifold_destroy(&m1);
+
+  params->processOverlaps = old_processOverlaps;
+}
+
 // --- BooleanComplex_Sweep helpers ---
 typedef struct {
   int nSegments;
@@ -5282,6 +5299,7 @@ int main(void) {
   RUN_TEST(BooleanComplex_CraycloudBool);
   RUN_TEST(BooleanComplex_GenericTwinBooleanTest7081);
   RUN_TEST(BooleanComplex_GenericTwinBooleanTest7863);
+  RUN_TEST(BooleanComplex_Havocglass8Bool);
   RUN_TEST(BooleanComplex_Sweep);
 
   // Additional Smooth tests already registered above
