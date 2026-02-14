@@ -4555,6 +4555,133 @@ static void test_BooleanComplex_MeshRelation(void) {
   manifold_destroy(&refined);
 }
 
+// ==================== BooleanComplex_SimpleOffset ====================
+#include "generic_twin_91_mesh.h"
+
+static void test_BooleanComplex_SimpleOffset(void) {
+  // "seeds" mesh: numProp=3, vertProperties=float[], triVerts=int[]
+  const int numVert = GENERIC_TWIN_91_NUM_VERT;
+  const int numTri  = GENERIC_TWIN_91_NUM_TRI;
+  const float *vertProps = generic_twin_91_vert_props;
+  const int   *triVerts  = generic_twin_91_tri_verts;
+
+  EXPECT_TRUE(numTri > 10);
+  EXPECT_TRUE(numVert > 10);
+
+  // Collect unique edges (v1 < v2)
+  typedef struct { int v1, v2; } Edge;
+  Edge *edges = (Edge*)malloc(numTri * 3 * sizeof(Edge));
+  int numEdges = 0;
+  for (int i = 0; i < numTri; i++) {
+    const int k[3] = {1, 2, 0};
+    for (int j = 0; j < 3; j++) {
+      int v1 = triVerts[i * 3 + j];
+      int v2 = triVerts[i * 3 + k[j]];
+      if (v2 > v1) edges[numEdges++] = (Edge){v1, v2};
+    }
+  }
+
+  Manifold c = manifold_empty();
+
+  // Vertex Spheres
+  Manifold sph = manifold_sphere(1, 8);
+  for (int i = 0; i < numVert; i++) {
+    ManifoldVec3 vpos = manifold_vec3(
+        (double)vertProps[3*i+0],
+        (double)vertProps[3*i+1],
+        (double)vertProps[3*i+2]);
+    Manifold vsph = manifold_translate(&sph, vpos);
+    Manifold tmp = manifold_union(&c, &vsph);
+    manifold_destroy(&c);
+    manifold_destroy(&vsph);
+    c = tmp;
+  }
+
+  // Edge Cylinders
+  for (int i = 0; i < numEdges; i++) {
+    ManifoldVec3 ev1 = manifold_vec3(
+        (double)vertProps[3*edges[i].v1+0],
+        (double)vertProps[3*edges[i].v1+1],
+        (double)vertProps[3*edges[i].v1+2]);
+    ManifoldVec3 ev2 = manifold_vec3(
+        (double)vertProps[3*edges[i].v2+0],
+        (double)vertProps[3*edges[i].v2+1],
+        (double)vertProps[3*edges[i].v2+2]);
+    ManifoldVec3 edge_vec = vec3_sub(ev2, ev1);
+    double len = vec3_length(edge_vec);
+    if (len < FLT_MIN) continue;
+    Manifold origin_cyl = manifold_cylinder(len, 1, 1, 8, false);
+    ManifoldVec3 evec = manifold_vec3(-1*edge_vec.x, -1*edge_vec.y, edge_vec.z);
+    ManifoldQuat q = quat_rotation(vec3_normalize(evec), manifold_vec3(0, 0, 1));
+    ManifoldMat3 rot = quat_to_mat3(q);
+    ManifoldMat3x4 xform = mat3x4_from_mat3_translate(rot, ev1);
+    Manifold right = manifold_transform(&origin_cyl, xform);
+    Manifold tmp = manifold_union(&c, &right);
+    manifold_destroy(&c);
+    manifold_destroy(&origin_cyl);
+    manifold_destroy(&right);
+    c = tmp;
+  }
+
+  // Triangle Volumes
+  for (int i = 0; i < numTri; i++) {
+    int eind[3];
+    for (int j = 0; j < 3; j++) eind[j] = triVerts[i * 3 + j];
+    ManifoldVec3 ev[3];
+    for (int j = 0; j < 3; j++) {
+      ev[j] = manifold_vec3(
+          (double)vertProps[3*eind[j]+0],
+          (double)vertProps[3*eind[j]+1],
+          (double)vertProps[3*eind[j]+2]);
+    }
+    ManifoldVec3 a = vec3_sub(ev[0], ev[2]);
+    ManifoldVec3 b = vec3_sub(ev[1], ev[2]);
+    ManifoldVec3 n = vec3_normalize(vec3_cross(a, b));
+    if (!vec3_isfinite(n)) continue;
+    // Extrude points above and below the plane
+    ManifoldVec3 pnts[6];
+    for (int j = 0; j < 3; j++) pnts[j] = vec3_add(ev[j], n);
+    for (int j = 3; j < 6; j++) pnts[j] = vec3_sub(ev[j-3], n);
+    // Construct points and faces (same vertex ordering as C++)
+    float pts[18] = {
+      (float)pnts[4].x, (float)pnts[4].y, (float)pnts[4].z,
+      (float)pnts[3].x, (float)pnts[3].y, (float)pnts[3].z,
+      (float)pnts[0].x, (float)pnts[0].y, (float)pnts[0].z,
+      (float)pnts[1].x, (float)pnts[1].y, (float)pnts[1].z,
+      (float)pnts[5].x, (float)pnts[5].y, (float)pnts[5].z,
+      (float)pnts[2].x, (float)pnts[2].y, (float)pnts[2].z
+    };
+    int faces[24] = {
+      0, 1, 4,
+      2, 3, 5,
+      1, 0, 3,
+      3, 2, 1,
+      3, 0, 4,
+      4, 5, 3,
+      5, 4, 1,
+      1, 2, 5
+    };
+    ManifoldMeshGL tri_m = manifold_meshgl_empty();
+    tri_m.numProp = 3;
+    tri_m.vertProperties = pts;
+    tri_m.vertLen = 6;
+    tri_m.triVerts = faces;
+    tri_m.triLen = 8;
+    Manifold right = manifold_from_meshgl(&tri_m);
+    // Don't free tri_m arrays — they are stack allocated
+    Manifold tmp = manifold_union(&c, &right);
+    manifold_destroy(&c);
+    manifold_destroy(&right);
+    c = tmp;
+  }
+
+  EXPECT_EQ((int)manifold_status(&c), (int)MANIFOLD_ERROR_NO_ERROR);
+
+  free(edges);
+  manifold_destroy(&sph);
+  manifold_destroy(&c);
+}
+
 static void test_Manifold_DecomposeProps(void) {
   Manifold tet0 = manifold_tetrahedron();
   Manifold tet = with_position_colors(&tet0);
@@ -4850,6 +4977,7 @@ int main(void) {
   RUN_TEST(Samples_Scallop);
   RUN_TEST(Boolean_Perturb3);
   RUN_TEST(BooleanComplex_Close);
+  RUN_TEST(BooleanComplex_SimpleOffset);
   RUN_TEST(Boolean_Normals);
   RUN_TEST(Manifold_Warp2);
   RUN_TEST(Manifold_WarpBatch);

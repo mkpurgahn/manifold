@@ -625,6 +625,18 @@ static inline ManifoldVec3 quat_xdir(ManifoldQuat q) {
   return quat_rotate(q, manifold_vec3(1, 0, 0));
 }
 
+// Convert quaternion to 3x3 rotation matrix (equivalent to C++ qmat)
+static inline ManifoldMat3 quat_to_mat3(ManifoldQuat q) {
+  ManifoldMat3 m;
+  double ww = q.w*q.w, xx = q.x*q.x, yy = q.y*q.y, zz = q.z*q.z;
+  double xy = q.x*q.y, xz = q.x*q.z, yz = q.y*q.z;
+  double wx = q.w*q.x, wy = q.w*q.y, wz = q.w*q.z;
+  m.cols[0] = manifold_vec3(ww+xx-yy-zz, 2*(xy+wz),    2*(xz-wy));
+  m.cols[1] = manifold_vec3(2*(xy-wz),    ww-xx+yy-zz,  2*(yz+wx));
+  m.cols[2] = manifold_vec3(2*(xz+wy),    2*(yz-wx),     ww-xx-yy+zz);
+  return m;
+}
+
 // Construct rotation quaternion from (unit axis, unit target)
 static inline ManifoldQuat quat_rotation(ManifoldVec3 from, ManifoldVec3 to) {
   ManifoldVec3 axis = vec3_cross(from, to);
