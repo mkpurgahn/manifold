@@ -4715,6 +4715,22 @@ static void test_BooleanComplex_OffsetSelfIntersect(void) {
   manifold_destroy(&result);
 }
 
+static void test_BooleanComplex_OffsetTriangulationFailure(void) {
+  ManifoldExecutionParams *params = manifold_get_params();
+  bool old_self_intersection = params->selfIntersectionChecks;
+  params->selfIntersectionChecks = true;
+
+  Manifold a = read_test_obj("Offset1.obj");
+  Manifold b = read_test_obj("Offset2.obj");
+  Manifold result = manifold_union(&a, &b);
+  EXPECT_EQ((int)manifold_status(&result), (int)MANIFOLD_ERROR_NO_ERROR);
+
+  params->selfIntersectionChecks = old_self_intersection;
+  manifold_destroy(&a);
+  manifold_destroy(&b);
+  manifold_destroy(&result);
+}
+
 static void test_Manifold_DecomposeProps(void) {
   Manifold tet0 = manifold_tetrahedron();
   Manifold tet = with_position_colors(&tet0);
@@ -4969,6 +4985,7 @@ int main(void) {
   RUN_TEST(BooleanComplex_InterpolatedNormals);
   RUN_TEST(BooleanComplex_HullMask);
   RUN_TEST(BooleanComplex_OffsetSelfIntersect);
+  RUN_TEST(BooleanComplex_OffsetTriangulationFailure);
 
   // Additional Smooth tests already registered above
 
