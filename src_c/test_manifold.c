@@ -3972,6 +3972,109 @@ static void warp2_fn(double *x, double *y, double *z, void *ctx) {
   (void)oldZ;
 }
 
+static void test_Manifold_Project(void) {
+  // Build MeshGL with 29 vertices (numProp=3) and 48 triangles
+  ManifoldMeshGL mgl = manifold_meshgl_empty();
+  mgl.numProp = 3;
+  float vp[] = {
+    0,    0,       0,
+    -2,   -0.7f,   -0.1f,
+    -2,   -0.7f,    0,
+    -1.9f,-0.7f,   -0.1f,
+    -1.9f,-0.6901f,-0.1f,
+    -1.9f,-0.7f,    0,
+    -1.9f,-0.6901f, 0,
+    -2,   -1,       3,
+    -1.9f,-1,       3,
+    -2,   -1,       4,
+    -1.9f,-1,       4,
+    -1.9f,-0.6901f, 3,
+    -1.9f,-0.6901f, 4,
+    -1.7f,-0.6901f, 3,
+    -1.7f,-0.6901f, 3.2f,
+    -2,    0,      -0.1f,
+    -2,    0,       0,
+    -2,    0,       3,
+    -2,    0,       4,
+    -1.7f, 0,       3,
+    -1.7f, 0,       3.2f,
+    -1,   -0.6901f,-0.1f,
+    -1,   -0.6901f, 0,
+    -1,   -0.6901f, 3.2f,
+    -1,   -0.6901f, 4,
+    -1,    0,      -0.1f,
+    -1,    0,       0,
+    -1,    0,       3.2f,
+    -1,    0,       4
+  };
+  mgl.vertProperties = vp;
+  mgl.vertLen = 29;
+
+  int tv[] = {
+    1,  3,  2,
+    1,  4,  3,
+    2,  3,  5,
+    5,  6,  2,
+    3,  4,  6,
+    5,  3,  6,
+    6,  4,  21,
+    26, 22, 25,
+    21, 25, 22,
+    25, 15, 26,
+    26, 6,  22,
+    21, 4,  25,
+    21, 22, 6,
+    16, 26, 15,
+    16, 6,  26,
+    4,  15, 25,
+    15, 1,  16,
+    16, 2,  6,
+    4,  1,  15,
+    1,  2,  16,
+    12, 14, 23,
+    12, 13, 14,
+    12, 11, 13,
+    18, 9,  12,
+    11, 7,  17,
+    7,  9,  18,
+    17, 7,  18,
+    13, 11, 19,
+    17, 18, 20,
+    19, 11, 17,
+    19, 17, 20,
+    14, 13, 20,
+    18, 12, 24,
+    20, 13, 19,
+    20, 18, 27,
+    12, 10, 11,
+    24, 12, 23,
+    9,  10, 12,
+    9,  8,  10,
+    8,  11, 10,
+    8,  7,  11,
+    8,  9,  7,
+    14, 20, 27,
+    24, 28, 18,
+    27, 18, 28,
+    23, 14, 27,
+    24, 23, 28,
+    28, 23, 27
+  };
+  mgl.triVerts = tv;
+  mgl.triLen = 48;
+
+  Manifold in = manifold_from_meshgl(&mgl);
+  // Don't free mgl arrays since they're stack-allocated
+
+  ManifoldPolygons2D projected = manifold_project(&in);
+  double area = manifold_cross_section_area(&projected);
+
+  EXPECT_NEAR(area, 0.72, 0.01);
+
+  manifold_polygons2d_free(&projected);
+  manifold_destroy(&in);
+}
+
 static void test_Manifold_Warp2(void) {
   // Create a circle polygon (20 sides, radius 5, centered at (10,10))
   int nSides = 20;
@@ -5966,6 +6069,7 @@ int main(void) {
   RUN_TEST(Manifold_DecomposeProps);
   RUN_TEST(Manifold_MeshID);
   RUN_TEST(Manifold_FaceIDRoundTrip);
+  RUN_TEST(Manifold_Project);
   RUN_TEST(Manifold_OpenscadCrash);
 
   // Boolean tests

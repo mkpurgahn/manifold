@@ -2255,6 +2255,201 @@ void manifold_free_meshgl(ManifoldMeshGL *mgl) {
 }
 
 // ---------- OBJ Import ----------
+
+// ============== Project ==============
+
+void manifold_polygons2d_free(ManifoldPolygons2D *p) {
+  if (!p) return;
+  if (p->polys) {
+    free(p->polys);
+    p->polys = NULL;
+  }
+  if (p->polySizes) {
+    free(p->polySizes);
+    p->polySizes = NULL;
+  }
+  p->numPolys = 0;
+}
+
+ManifoldPolygons2D manifold_project(const Manifold *m) {
+  ManifoldPolygons2D result = {NULL, NULL, 0};
+  const ManifoldImpl *impl = &m->impl;
+
+  if (impl->halfedge.len == 0 || impl->faceNormal.len == 0)
+    return result;
+
+  const size_t numHe = impl->halfedge.len;
+  const ManifoldHalfedge *he = impl->halfedge.data;
+  const ManifoldVec3 *fn = impl->faceNormal.data;
+
+  // Find cusp halfedges where face of this edge has normal.z >= 0,
+  // and face of paired edge has normal.z < 0 (silhouette edges from above).
+  ManifoldHalfedge *cusps = (ManifoldHalfedge *)malloc(numHe * sizeof(ManifoldHalfedge));
+  int numCusps = 0;
+
+  for (size_t i = 0; i < numHe; i++) {
+    int paired = he[i].pairedHalfedge;
+    if (paired < 0 || (size_t)paired >= numHe) continue;
+    int thisFace = he[paired].pairedHalfedge / 3;
+    int pairedFace = paired / 3;
+    if ((size_t)thisFace >= impl->faceNormal.len ||
+        (size_t)pairedFace >= impl->faceNormal.len) continue;
+    if (fn[thisFace].z >= 0 && fn[pairedFace].z < 0) {
+      cusps[numCusps] = he[i];
+      numCusps++;
+    }
+  }
+
+  if (numCusps == 0) {
+    free(cusps);
+    return result;
+  }
+
+  // AssembleHalfedges: build closed loops from cusp edges
+  bool *used = (bool *)calloc(numCusps, sizeof(bool));
+
+  // Build loops
+  int maxPolys = numCusps;
+  int *loopBuf = (int *)malloc(numCusps * sizeof(int));  // halfedge indices
+  int *loopStarts = (int *)malloc(maxPolys * sizeof(int));
+  int *loopSizes = (int *)malloc(maxPolys * sizeof(int));
+  int numLoops = 0;
+  int totalVerts = 0;
+
+  while (1) {
+    // Find first unused cusp
+    int startIdx = -1;
+    for (int i = 0; i < numCusps; i++) {
+      if (!used[i]) { startIdx = i; break; }
+    }
+    if (startIdx < 0) break;
+
+    loopStarts[numLoops] = totalVerts;
+    int loopLen = 0;
+    int curIdx = startIdx;
+
+    do {
+      used[curIdx] = true;
+      loopBuf[totalVerts++] = curIdx;
+      loopLen++;
+
+      // Find next cusp whose startVert == current endVert
+      int endV = cusps[curIdx].endVert;
+      int nextIdx = -1;
+      for (int i = 0; i < numCusps; i++) {
+        if (!used[i] && cusps[i].startVert == endV) {
+          nextIdx = i;
+          break;
+        }
+      }
+      if (nextIdx < 0) {
+        // Check if we've looped back to start
+        if (cusps[startIdx].startVert == endV) break;
+        // Broken loop
+        break;
+      }
+      curIdx = nextIdx;
+    } while (curIdx != startIdx);
+
+    loopSizes[numLoops] = loopLen;
+    numLoops++;
+  }
+
+  // Build polygon output: project vertices to 2D (just x,y for z-axis projection)
+  result.numPolys = numLoops;
+  result.polySizes = (int *)malloc(numLoops * sizeof(int));
+  result.polys = (ManifoldVec2 *)malloc(totalVerts * sizeof(ManifoldVec2));
+  int outIdx = 0;
+  for (int p = 0; p < numLoops; p++) {
+    result.polySizes[p] = loopSizes[p];
+    for (int v = 0; v < loopSizes[p]; v++) {
+      int ci = loopBuf[loopStarts[p] + v];
+      int sv = cusps[ci].startVert;
+      result.polys[outIdx].x = impl->vertPos.data[sv].x;
+      result.polys[outIdx].y = impl->vertPos.data[sv].y;
+      outIdx++;
+    }
+  }
+
+  free(cusps);
+  free(used);
+  free(loopBuf);
+  free(loopStarts);
+  free(loopSizes);
+  return result;
+}
+
+// Compute winding number at a point with respect to all polygon edges
+static int winding_number_at_point(double px, double py,
+                                    const ManifoldVec2 *allVerts,
+                                    const int *polySizes, int numPolys) {
+  int winding = 0;
+  int offset = 0;
+  for (int p = 0; p < numPolys; p++) {
+    int n = polySizes[p];
+    for (int i = 0; i < n; i++) {
+      int j = (i + 1) % n;
+      double ay = allVerts[offset + i].y, by = allVerts[offset + j].y;
+      double ax = allVerts[offset + i].x, bx = allVerts[offset + j].x;
+      if (ay <= py) {
+        if (by > py) {
+          double cross = (bx - ax) * (py - ay) - (px - ax) * (by - ay);
+          if (cross > 0) winding++;
+        }
+      } else {
+        if (by <= py) {
+          double cross = (bx - ax) * (py - ay) - (px - ax) * (by - ay);
+          if (cross < 0) winding--;
+        }
+      }
+    }
+    offset += n;
+  }
+  return winding;
+}
+
+// Compute area under positive fill rule using rasterization.
+// Equivalent to CrossSection(polys, FillRule::Positive).Area() in C++.
+double manifold_cross_section_area(const ManifoldPolygons2D *polys) {
+  if (!polys || polys->numPolys == 0) return 0.0;
+
+  int totalVerts = 0;
+  for (int i = 0; i < polys->numPolys; i++)
+    totalVerts += polys->polySizes[i];
+  if (totalVerts == 0) return 0.0;
+
+  // Find bounding box
+  double minX = polys->polys[0].x, maxX = minX;
+  double minY = polys->polys[0].y, maxY = minY;
+  for (int i = 1; i < totalVerts; i++) {
+    if (polys->polys[i].x < minX) minX = polys->polys[i].x;
+    if (polys->polys[i].x > maxX) maxX = polys->polys[i].x;
+    if (polys->polys[i].y < minY) minY = polys->polys[i].y;
+    if (polys->polys[i].y > maxY) maxY = polys->polys[i].y;
+  }
+
+  double rangeX = maxX - minX, rangeY = maxY - minY;
+  if (rangeX < 1e-15 || rangeY < 1e-15) return 0.0;
+
+  // Use grid-based sampling for area computation
+  int gridN = 1000;
+  double dx = rangeX / gridN;
+  double dy = rangeY / gridN;
+
+  int inside = 0;
+  for (int iy = 0; iy < gridN; iy++) {
+    double py = minY + (iy + 0.5) * dy;
+    for (int ix = 0; ix < gridN; ix++) {
+      double px = minX + (ix + 0.5) * dx;
+      int w = winding_number_at_point(px, py, polys->polys,
+                                       polys->polySizes, polys->numPolys);
+      if (w > 0) inside++;
+    }
+  }
+
+  return inside * dx * dy;
+}
+
 Manifold manifold_read_obj(const char *path) {
   FILE *f = fopen(path, "r");
   if (!f) return manifold_invalid();
