@@ -888,11 +888,18 @@ static void impl_pair_up(ManifoldImpl *impl, int edge0, int edge1) {
 static void impl_update_vert(ManifoldImpl *impl, int vert,
                               int startEdge, int endEdge) {
   int current = startEdge;
-  while (current != endEdge) {
+  int maxIter = (int)impl->halfedge.len + 2;
+  int iter = 0;
+  while (current != endEdge && iter++ < maxIter) {
+    if (current < 0 || (size_t)current >= impl->halfedge.len) break;
     impl->halfedge.data[current].endVert = vert;
     current = manifold_next_halfedge(current);
+    if ((size_t)current >= impl->halfedge.len) break;
     impl->halfedge.data[current].startVert = vert;
-    current = impl->halfedge.data[current].pairedHalfedge;
+    int paired = impl->halfedge.data[current].pairedHalfedge;
+    if (paired < 0 || (size_t)paired >= impl->halfedge.len) break;
+    current = paired;
+    if (current == startEdge) break;  // infinite loop detection
   }
 }
 
@@ -910,8 +917,11 @@ static void impl_collapse_tri(ManifoldImpl *impl, ManifoldIVec3 triEdge) {
 }
 
 static void impl_remove_if_folded(ManifoldImpl *impl, int edge) {
+  if (edge < 0 || (size_t)edge >= impl->halfedge.len) return;
+  int paired = impl->halfedge.data[edge].pairedHalfedge;
+  if (paired < 0 || (size_t)paired >= impl->halfedge.len) return;
   ManifoldIVec3 tri0edge = tri_of(edge);
-  ManifoldIVec3 tri1edge = tri_of(impl->halfedge.data[edge].pairedHalfedge);
+  ManifoldIVec3 tri1edge = tri_of(paired);
   if (impl->halfedge.data[tri0edge.y].pairedHalfedge == -1) return;
   if (impl->halfedge.data[tri0edge.y].endVert ==
       impl->halfedge.data[tri1edge.y].endVert) {
@@ -948,15 +958,22 @@ static void impl_remove_if_folded(ManifoldImpl *impl, int edge) {
 }
 
 static void impl_form_loop(ManifoldImpl *impl, int current, int end) {
+  if (current < 0 || (size_t)current >= impl->halfedge.len) return;
+  if (end < 0 || (size_t)end >= impl->halfedge.len) return;
+  int sv = impl->halfedge.data[current].startVert;
+  int ev = impl->halfedge.data[current].endVert;
+  if (sv < 0 || (size_t)sv >= impl->vertPos.len) return;
+  if (ev < 0 || (size_t)ev >= impl->vertPos.len) return;
+
   int startVert = (int)impl->vertPos.len;
-  vec_vec3_push(&impl->vertPos,
-                impl->vertPos.data[impl->halfedge.data[current].startVert]);
+  vec_vec3_push(&impl->vertPos, impl->vertPos.data[sv]);
   int endVert = (int)impl->vertPos.len;
-  vec_vec3_push(&impl->vertPos,
-                impl->vertPos.data[impl->halfedge.data[current].endVert]);
+  vec_vec3_push(&impl->vertPos, impl->vertPos.data[ev]);
 
   int oldMatch = impl->halfedge.data[current].pairedHalfedge;
   int newMatch = impl->halfedge.data[end].pairedHalfedge;
+  if (oldMatch < 0 || (size_t)oldMatch >= impl->halfedge.len) return;
+  if (newMatch < 0 || (size_t)newMatch >= impl->halfedge.len) return;
 
   impl_update_vert(impl, startVert, oldMatch, newMatch);
   impl_update_vert(impl, endVert, end, current);
@@ -987,6 +1004,9 @@ static bool impl_collapse_edge(ManifoldImpl *impl, int edge,
   bool shortEdge = vec3_dot(delta, delta) < impl->epsilon * impl->epsilon;
 
   int start = impl->halfedge.data[tri1edge.y].pairedHalfedge;
+  if (start < 0 || (size_t)start >= impl->halfedge.len) return false;
+  // Verify tri1edge.y's pairing is consistent
+  if (impl->halfedge.data[start].pairedHalfedge != tri1edge.y) return false;
   int current = tri1edge.z;
   if (!shortEdge) {
     current = start;
@@ -1037,15 +1057,58 @@ static bool impl_collapse_edge(ManifoldImpl *impl, int edge,
     if (safeN >= (int)impl->halfedge.len) return false;
   }
 
+  // Verify endVert fan: from pair(tri0edge.y) to tri1edge.z
+  {
+    int cur = impl->halfedge.data[tri0edge.y].pairedHalfedge;
+    if (cur < 0 || (size_t)cur >= impl->halfedge.len) return false;
+    int safeN = 0;
+    while (cur != tri1edge.z && safeN++ < (int)impl->halfedge.len) {
+      cur = manifold_next_halfedge(cur);
+      if ((size_t)cur >= impl->halfedge.len) break;
+      int p = impl->halfedge.data[cur].pairedHalfedge;
+      if (p < 0 || (size_t)p >= impl->halfedge.len) break;
+      cur = p;
+    }
+    if (cur != tri1edge.z) return false;
+  }
+
   // Orbit endVert
   {
     int cur = impl->halfedge.data[tri0edge.y].pairedHalfedge;
+    if (cur < 0 || (size_t)cur >= impl->halfedge.len) return false;
     int safeN = 0;
     while (cur != tri1edge.z && safeN++ < (int)impl->halfedge.len) {
       cur = manifold_next_halfedge(cur);
       vec_int_push(edges, cur);
       int paired = impl->halfedge.data[cur].pairedHalfedge;
+      if (paired < 0 || (size_t)paired >= impl->halfedge.len) {
+        edges->len = 0;
+        return false;
+      }
       cur = paired;
+    }
+    if (safeN >= (int)impl->halfedge.len) {
+      edges->len = 0;
+      return false;
+    }
+  }
+
+  // Verify startVert fan: from start to tri0edge.z
+  {
+    int cur = start;
+    int safeN = 0;
+    int safeLimit = 2 * (int)impl->halfedge.len;
+    while (cur != tri0edge.z && safeN++ < safeLimit) {
+      cur = manifold_next_halfedge(cur);
+      if ((size_t)cur >= impl->halfedge.len) break;
+      if (impl->halfedge.data[cur].startVert < 0) break;
+      int nxt = impl->halfedge.data[cur].pairedHalfedge;
+      if (nxt < 0 || (size_t)nxt >= impl->halfedge.len) break;
+      cur = nxt;
+    }
+    if (cur != tri0edge.z) {
+      edges->len = 0;
+      return false;
     }
   }
 
@@ -1062,32 +1125,25 @@ static bool impl_collapse_edge(ManifoldImpl *impl, int edge,
   int safeLimit = 2 * (int)impl->halfedge.len;
   while (current != tri0edge.z && safeN++ < safeLimit) {
     current = manifold_next_halfedge(current);
-    if ((size_t)current >= impl->halfedge.len) break;
-    // Check that the halfedge is still valid
-    if (impl->halfedge.data[current].startVert < 0) break;
 
     if (manifold_impl_num_prop(impl) > 0) {
       int tri = current / 3;
-      if ((size_t)tri < impl->meshRelation.triRef.len) {
-        ManifoldTriRef ref = impl->meshRelation.triRef.data[tri];
-        ManifoldTriRef ref0 = impl->meshRelation.triRef.data[tri0];
-        ManifoldTriRef ref1 = impl->meshRelation.triRef.data[tri1];
-        if (manifold_triref_same_face(&ref, &ref0)) {
-          impl->halfedge.data[current].propVert =
-              impl->halfedge.data[manifold_next_halfedge(edge)].propVert;
-        } else if (manifold_triref_same_face(&ref, &ref1)) {
-          impl->halfedge.data[current].propVert =
-              impl->halfedge.data[toRemove.pairedHalfedge].propVert;
-        }
+      ManifoldTriRef ref = impl->meshRelation.triRef.data[tri];
+      ManifoldTriRef ref0 = impl->meshRelation.triRef.data[tri0];
+      ManifoldTriRef ref1 = impl->meshRelation.triRef.data[tri1];
+      if (manifold_triref_same_face(&ref, &ref0)) {
+        impl->halfedge.data[current].propVert =
+            impl->halfedge.data[manifold_next_halfedge(edge)].propVert;
+      } else if (manifold_triref_same_face(&ref, &ref1)) {
+        impl->halfedge.data[current].propVert =
+            impl->halfedge.data[toRemove.pairedHalfedge].propVert;
       }
     }
 
     const int vert = impl->halfedge.data[current].endVert;
     const int next = impl->halfedge.data[current].pairedHalfedge;
-    if (next < 0) break;
     for (size_t i = 0; i < edges->len; i++) {
-      if ((size_t)edges->data[i] < impl->halfedge.len &&
-          vert == impl->halfedge.data[edges->data[i]].endVert) {
+      if (vert == impl->halfedge.data[edges->data[i]].endVert) {
         impl_form_loop(impl, edges->data[i], current);
         start = next;
         edges->len = i;
@@ -1096,6 +1152,7 @@ static bool impl_collapse_edge(ManifoldImpl *impl, int edge,
     }
     current = next;
   }
+  if (safeN >= safeLimit) return false;
 
   impl_update_vert(impl, endVert, start, tri0edge.z);
   impl_collapse_tri(impl, tri0edge);
@@ -1181,14 +1238,18 @@ static void impl_recursive_edge_swap(ManifoldImpl *impl, int edge,
     { \
       int cur_ = impl->halfedge.data[tri1edge.x].pairedHalfedge; \
       int endV_ = impl->halfedge.data[tri1edge.y].endVert; \
-      while (cur_ != tri0edge.y) { \
+      int safeN_ = 0; \
+      while (cur_ != tri0edge.y && safeN_++ < (int)impl->halfedge.len) { \
         cur_ = manifold_next_halfedge(cur_); \
+        if (cur_ < 0 || (size_t)cur_ >= impl->halfedge.len) break; \
         if (impl->halfedge.data[cur_].endVert == endV_) { \
           impl_form_loop(impl, tri0edge.z, cur_); \
           impl_remove_if_folded(impl, tri0edge.z); \
           break; \
         } \
-        cur_ = impl->halfedge.data[cur_].pairedHalfedge; \
+        int paired_ = impl->halfedge.data[cur_].pairedHalfedge; \
+        if (paired_ < 0 || (size_t)paired_ >= impl->halfedge.len) break; \
+        cur_ = paired_; \
       } \
     } \
   } while(0)
@@ -1639,8 +1700,9 @@ static void impl_collapse_colinear_edges(ManifoldImpl *impl,
     size_t numCollapsed = 0;
     for (size_t i = 0; i < flagged.len; i++) {
       scratchBuffer.len = 0;
-      if (impl_collapse_edge(impl, flagged.data[i], &scratchBuffer))
-        numCollapsed++;
+      int e = flagged.data[i];
+      bool collapsed = impl_collapse_edge(impl, e, &scratchBuffer);
+      if (collapsed) numCollapsed++;
     }
     if (numCollapsed == 0) break;
   }
@@ -1667,7 +1729,9 @@ static void impl_swap_degenerates(ManifoldImpl *impl, int firstNewVert) {
     edgeSwapStack.len = 0;
     impl_recursive_edge_swap(impl, flagged.data[i], &tag, visited,
                              &edgeSwapStack, &scratchBuffer);
-    while (edgeSwapStack.len > 0) {
+    int maxSwaps = (int)(nbEdges * 4);
+    int swapCount = 0;
+    while (edgeSwapStack.len > 0 && swapCount++ < maxSwaps) {
       int last = edgeSwapStack.data[edgeSwapStack.len - 1];
       edgeSwapStack.len--;
       impl_recursive_edge_swap(impl, last, &tag, visited,
@@ -1694,22 +1758,10 @@ void manifold_impl_simplify_topology(ManifoldImpl *impl, int firstNewVert) {
 
   manifold_impl_cleanup_topology(impl);
 
-  // Check if topology is well-formed before expensive operations.
-  bool wellFormed = true;
-  for (size_t i = 0; i < impl->halfedge.len; i++) {
-    int p = impl->halfedge.data[i].pairedHalfedge;
-    if (p < 0 || impl->halfedge.data[i].startVert < 0) continue;
-    if ((size_t)p >= impl->halfedge.len ||
-        impl->halfedge.data[p].pairedHalfedge != (int)i) {
-      wellFormed = false;
-      break;
-    }
-  }
-  if (wellFormed) {
-    impl_collapse_short_edges(impl, firstNewVert);
-    impl_collapse_colinear_edges(impl, firstNewVert);
-    impl_swap_degenerates(impl, firstNewVert);
-  }
+  impl_collapse_short_edges(impl, firstNewVert);
+
+  impl_collapse_colinear_edges(impl, firstNewVert);
+  impl_swap_degenerates(impl, firstNewVert);
   manifold_impl_calculate_vert_normals(impl);
 }
 

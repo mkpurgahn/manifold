@@ -1632,7 +1632,7 @@ static ManifoldError boolean3_result(const ManifoldBoolean3 *b3,
       numVertR += abs(i21.data[i]);
     }
   }
-
+  
   manifold_impl_init(outR);
   if (numVertR == 0) {
     vec_int_free(&i12); vec_int_free(&i21);
@@ -2085,9 +2085,10 @@ static ManifoldError boolean3_result(const ManifoldBoolean3 *b3,
 
 
 
+
+
   // Merge coincident vertices connected by zero-length edges within faces.
-  // Unlike a global merge (which breaks Perturb1 by collapsing non-adjacent
-  // coincident vertices), this only merges vertices that share an edge within
+  // This only merges vertices that share an edge within
   // the same face and are at the same 3D position.
   {
     int nv = (int)outR->vertPos.len;
@@ -2117,6 +2118,7 @@ static ManifoldError boolean3_result(const ManifoldBoolean3 *b3,
     for (int i = 0; i < nv; i++) {
       while (vertMap[vertMap[i]] != vertMap[i]) vertMap[i] = vertMap[vertMap[i]];
     }
+    
     // Update halfedge vertex references
     for (size_t i = 0; i < outR->halfedge.len; i++) {
       int sv = outR->halfedge.data[i].startVert;
@@ -2126,23 +2128,75 @@ static ManifoldError boolean3_result(const ManifoldBoolean3 *b3,
     }
     free(vertMap);
 
-    // Remove degenerate edges (start == end) and rebuild faceEdge
+    // Remove degenerate edges (start == end) AND duplicate directed edges
+    // within the same face. After vertex merging, two edges may end up with 
+    // the same startVert→endVert — these form a zero-area tongue and should
+    // both be removed.
     int writeIdx = 0;
     ManifoldVecInt newFaceEdge = vec_int_create_n((size_t)(numFaceR + 1));
     ManifoldVecTriRef newHalfedgeRef = {0};
     for (int f = 0; f < numFaceR; f++) {
       newFaceEdge.data[f] = writeIdx;
-      int start = faceEdge.data[f];
-      int end = faceEdge.data[f + 1];
-      for (int e = start; e < end; e++) {
-        if (outR->halfedge.data[e].startVert != outR->halfedge.data[e].endVert) {
-          if (writeIdx != e) {
-            outR->halfedge.data[writeIdx] = outR->halfedge.data[e];
+      int fStart = faceEdge.data[f];
+      int fEnd = faceEdge.data[f + 1];
+      int fLen = fEnd - fStart;
+      
+      // Mark edges to remove: self-loops and duplicate directed edges
+      bool *remove = (bool *)calloc((size_t)fLen, sizeof(bool));
+      for (int e = 0; e < fLen; e++) {
+        int sv = outR->halfedge.data[fStart + e].startVert;
+        int ev = outR->halfedge.data[fStart + e].endVert;
+        if (sv == ev) { remove[e] = true; continue; }
+        // Check for duplicate directed edge
+        for (int e2 = e + 1; e2 < fLen; e2++) {
+          if (remove[e2]) continue;
+          int sv2 = outR->halfedge.data[fStart + e2].startVert;
+          int ev2 = outR->halfedge.data[fStart + e2].endVert;
+          if (sv == sv2 && ev == ev2) {
+            remove[e] = true;
+            remove[e2] = true;
+            break;
           }
-          vec_triref_push(&newHalfedgeRef, halfedgeRef.data[e]);
+        }
+      }
+      // Also remove back-to-back opposite edges: A→B immediately followed by B→A
+      // These form a zero-area spike
+      for (int pass = 0; pass < fLen; pass++) {
+        bool changed = false;
+        // Build list of non-removed edges
+        int *active = (int *)malloc((size_t)fLen * sizeof(int));
+        int nActive = 0;
+        for (int e = 0; e < fLen; e++) {
+          if (!remove[e]) active[nActive++] = e;
+        }
+        for (int a = 0; a < nActive; a++) {
+          int b = (a + 1) % nActive;
+          int ei = active[a], ej = active[b];
+          int sv1 = outR->halfedge.data[fStart + ei].startVert;
+          int ev1 = outR->halfedge.data[fStart + ei].endVert;
+          int sv2 = outR->halfedge.data[fStart + ej].startVert;
+          int ev2 = outR->halfedge.data[fStart + ej].endVert;
+          if (sv1 == ev2 && ev1 == sv2) {
+            remove[ei] = true;
+            remove[ej] = true;
+            changed = true;
+          }
+        }
+        free(active);
+        if (!changed) break;
+      }
+      
+      for (int e = 0; e < fLen; e++) {
+        if (!remove[e]) {
+          int idx = fStart + e;
+          if (writeIdx != idx) {
+            outR->halfedge.data[writeIdx] = outR->halfedge.data[idx];
+          }
+          vec_triref_push(&newHalfedgeRef, halfedgeRef.data[idx]);
           writeIdx++;
         }
       }
+      free(remove);
     }
     newFaceEdge.data[numFaceR] = writeIdx;
     outR->halfedge.len = (size_t)writeIdx;
@@ -2185,24 +2239,7 @@ static ManifoldError boolean3_result(const ManifoldBoolean3 *b3,
   // Triangulate the faces
   faceEdge.len = (size_t)(numFaceR + 1);
 
-#ifdef MANIFOLD_BOOLEAN_DEBUG
-  fprintf(stderr, "BOOL PRE-FACE2TRI: %d faces, %zu halfedges\n", numFaceR, outR->halfedge.len);
-  for (int f = 0; f < numFaceR; f++) {
-    int start = faceEdge.data[f];
-    int end = faceEdge.data[f + 1];
-    fprintf(stderr, "  face[%d] (%d edges):", f, end-start);
-    for (int e = start; e < end; e++) {
-      fprintf(stderr, " %d->%d", outR->halfedge.data[e].startVert, outR->halfedge.data[e].endVert);
-    }
-    fprintf(stderr, "\n");
-  }
-#endif
-
   face2tri(outR, &faceEdge, &halfedgeRef, true);
-
-#ifdef MANIFOLD_BOOLEAN_DEBUG
-  fprintf(stderr, "BOOL POST-FACE2TRI: %zu verts, %zu tris\n", outR->vertPos.len, outR->halfedge.len/3);
-#endif
 
   // Reorder halfedges for determinism
   manifold_impl_reorder_halfedges(outR);
@@ -2240,25 +2277,12 @@ static ManifoldError boolean3_result(const ManifoldBoolean3 *b3,
   // Simplify topology
   manifold_impl_simplify_topology(outR, nPv + nQv);
 
-#ifdef MANIFOLD_BOOLEAN_DEBUG
-  fprintf(stderr, "BOOL POST-SIMPLIFY: %zu verts, %zu tris\n", outR->vertPos.len, outR->halfedge.len/3);
-#endif
-
   manifold_impl_remove_unreferenced_verts(outR);
-
-#ifdef MANIFOLD_BOOLEAN_DEBUG
-  fprintf(stderr, "BOOL POST-REMOVEUNREF: %zu verts, %zu tris\n", outR->vertPos.len, outR->halfedge.len/3);
-#endif
-
 
   // Finalize
   manifold_impl_calculate_bbox(outR);
   manifold_impl_sort_geometry(outR);
   manifold_reserve_ids(1);
-
-#ifdef MANIFOLD_BOOLEAN_DEBUG
-  fprintf(stderr, "BOOL FINAL: %zu verts, %zu tris\n", outR->vertPos.len, outR->halfedge.len/3);
-#endif
 
   // Cleanup
   vec_int_free(&i12); vec_int_free(&i21);
