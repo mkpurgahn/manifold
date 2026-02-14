@@ -1339,6 +1339,201 @@ skip_face:
   vec_ivec3_free(&triProp);
 }
 
+// ============== CreateProperties ==============
+// Interpolates properties from input meshes onto the boolean result mesh.
+// Called between Face2Tri and UpdateReference, when triRef still uses the
+// raw meshID=0 (P) / meshID!=0 (Q) convention.
+
+static void boolean_create_properties(ManifoldImpl *outR,
+                                       const ManifoldImpl *inP,
+                                       const ManifoldImpl *inQ) {
+  int numPropP = manifold_impl_num_prop(inP);
+  int numPropQ = manifold_impl_num_prop(inQ);
+  int numProp = numPropP > numPropQ ? numPropP : numPropQ;
+  outR->numProp = numProp;
+  if (numProp == 0) return;
+
+  int numTri = (int)(outR->halfedge.len / 3);
+
+  // Compute barycentric coordinates for each output halfedge
+  ManifoldVec3 *bary = (ManifoldVec3 *)calloc(outR->halfedge.len,
+                                                sizeof(ManifoldVec3));
+  for (int tri = 0; tri < numTri; tri++) {
+    if (outR->halfedge.data[3 * tri].startVert < 0) continue;
+    ManifoldTriRef refPQ = outR->meshRelation.triRef.data[tri];
+    int triPQ = refPQ.faceID;
+    bool PQ = (refPQ.meshID == 0);
+    const ManifoldVecVec3 *vertPos = PQ ? &inP->vertPos : &inQ->vertPos;
+    const ManifoldVecHalfedge *halfedge = PQ ? &inP->halfedge : &inQ->halfedge;
+
+    if (triPQ < 0 || (size_t)(3 * triPQ + 2) >= halfedge->len) continue;
+
+    ManifoldVec3 triPos[3];
+    for (int j = 0; j < 3; j++) {
+      int sv = halfedge->data[3 * triPQ + j].startVert;
+      if (sv < 0 || (size_t)sv >= vertPos->len) {
+        triPos[j] = manifold_vec3(0, 0, 0);
+      } else {
+        triPos[j] = vertPos->data[sv];
+      }
+    }
+
+    for (int i = 0; i < 3; i++) {
+      int vert = outR->halfedge.data[3 * tri + i].startVert;
+      if (vert < 0 || (size_t)vert >= outR->vertPos.len) continue;
+      bary[3 * tri + i] = manifold_get_barycentric(
+          outR->vertPos.data[vert], triPos, outR->epsilon);
+    }
+  }
+
+  // Property deduplication using a simple hash map approach.
+  // Key: (PQ, vert_or_miss, propVert0, propVert1)
+  // For retained verts (uvw[j]==1): key=(PQ, idMiss, propVert, -1)
+  // For edge verts (uvw[j]==0): key=(PQ, vert, min(p0,p1), max(p0,p1))
+  // For interior verts: key=(PQ, vert, -1, -1)
+
+  int idMissProp = (int)outR->vertPos.len;
+
+  // Simple linked-list hash table for property dedup
+  typedef struct PropEntry {
+    int key0, key1, key2, key3;  // PQ, vert_or_miss, prop0, prop1
+    int propIdx;
+    int next;
+  } PropEntry;
+
+  int entryCapacity = numTri * 3 + 1;
+  PropEntry *entries = (PropEntry *)malloc((size_t)entryCapacity * sizeof(PropEntry));
+  int entryCount = 0;
+  int hashSize = entryCapacity * 2 + 1;
+  int *hashHead = (int *)malloc((size_t)hashSize * sizeof(int));
+  for (int i = 0; i < hashSize; i++) hashHead[i] = -1;
+
+  // propMissIdx: for retained verts with old properties
+  int *propMissIdxQ = NULL;
+  int *propMissIdxP = NULL;
+  int nPropVertQ = inQ->properties.len / (numPropQ > 0 ? numPropQ : 1);
+  int nPropVertP = inP->properties.len / (numPropP > 0 ? numPropP : 1);
+  if (nPropVertQ > 0) {
+    propMissIdxQ = (int *)malloc((size_t)nPropVertQ * sizeof(int));
+    for (int i = 0; i < nPropVertQ; i++) propMissIdxQ[i] = -1;
+  }
+  if (nPropVertP > 0) {
+    propMissIdxP = (int *)malloc((size_t)nPropVertP * sizeof(int));
+    for (int i = 0; i < nPropVertP; i++) propMissIdxP[i] = -1;
+  }
+
+  // Output properties
+  vec_double_free(&outR->properties);
+  outR->properties = (ManifoldVecDouble){0};
+  int idx = 0;
+
+  for (int tri = 0; tri < numTri; tri++) {
+    if (outR->halfedge.data[3 * tri].startVert < 0) continue;
+
+    ManifoldTriRef ref = outR->meshRelation.triRef.data[tri];
+    bool PQ = (ref.meshID == 0);
+    int oldNumProp = PQ ? numPropP : numPropQ;
+    const ManifoldVecDouble *properties = PQ ? &inP->properties : &inQ->properties;
+    const ManifoldVecHalfedge *halfedge = PQ ? &inP->halfedge : &inQ->halfedge;
+
+    if (ref.faceID < 0 || (size_t)(3 * ref.faceID + 2) >= halfedge->len)
+      continue;
+
+    for (int i = 0; i < 3; i++) {
+      int vert = outR->halfedge.data[3 * tri + i].startVert;
+      ManifoldVec3 uvw = bary[3 * tri + i];
+
+      int key0 = PQ ? 1 : 0;
+      int key1 = idMissProp;
+      int key2 = -1;
+      int key3 = -1;
+
+      if (oldNumProp > 0) {
+        int edge = -2;
+        for (int j = 0; j < 3; j++) {
+          if (vec3_get(uvw, j) == 1.0) {
+            key2 = halfedge->data[3 * ref.faceID + j].propVert;
+            edge = -1;
+            break;
+          }
+          if (vec3_get(uvw, j) == 0.0) edge = j;
+        }
+        if (edge >= 0) {
+          int p0 = halfedge->data[3 * ref.faceID + manifold_next3(edge)].propVert;
+          int p1 = halfedge->data[3 * ref.faceID + manifold_prev3(edge)].propVert;
+          key1 = vert;
+          key2 = p0 < p1 ? p0 : p1;
+          key3 = p0 < p1 ? p1 : p0;
+        } else if (edge == -2) {
+          key1 = vert;
+        }
+      }
+
+      // Check propMissIdx (retained vert with known propVert)
+      if (key1 == idMissProp && key2 >= 0) {
+        int *missArr = PQ ? propMissIdxQ : propMissIdxP;
+        int missLen = PQ ? nPropVertQ : nPropVertP;
+        if (key2 < missLen && missArr && missArr[key2] >= 0) {
+          outR->halfedge.data[3 * tri + i].propVert = missArr[key2];
+          continue;
+        }
+        if (key2 < missLen && missArr) missArr[key2] = idx;
+      } else {
+        // Hash lookup
+        unsigned h = (unsigned)(key0 * 73856093 ^ key1 * 19349663 ^
+                                key2 * 83492791 ^ key3 * 42949669);
+        h %= (unsigned)hashSize;
+        int cur = hashHead[h];
+        bool found = false;
+        while (cur >= 0) {
+          PropEntry *e = &entries[cur];
+          if (e->key0 == key0 && e->key1 == key1 && e->key2 == key2 &&
+              e->key3 == key3) {
+            outR->halfedge.data[3 * tri + i].propVert = e->propIdx;
+            found = true;
+            break;
+          }
+          cur = e->next;
+        }
+        if (found) continue;
+
+        // Insert into hash
+        if (entryCount >= entryCapacity) {
+          entryCapacity *= 2;
+          entries = (PropEntry *)realloc(entries,
+                                          (size_t)entryCapacity * sizeof(PropEntry));
+        }
+        entries[entryCount] = (PropEntry){key0, key1, key2, key3, idx,
+                                           hashHead[h]};
+        hashHead[h] = entryCount++;
+      }
+
+      outR->halfedge.data[3 * tri + i].propVert = idx++;
+      for (int p = 0; p < numProp; p++) {
+        if (p < oldNumProp) {
+          double oldProps[3];
+          for (int j = 0; j < 3; j++) {
+            int pv = halfedge->data[3 * ref.faceID + j].propVert;
+            size_t propOff = (size_t)(oldNumProp * pv + p);
+            oldProps[j] = (propOff < properties->len) ? properties->data[propOff]
+                                                       : 0.0;
+          }
+          ManifoldVec3 oldP = manifold_vec3(oldProps[0], oldProps[1], oldProps[2]);
+          vec_double_push(&outR->properties, vec3_dot(uvw, oldP));
+        } else {
+          vec_double_push(&outR->properties, 0.0);
+        }
+      }
+    }
+  }
+
+  free(bary);
+  free(entries);
+  free(hashHead);
+  free(propMissIdxQ);
+  free(propMissIdxP);
+}
+
 // ============== Boolean3 Result ==============
 
 static void intersections_free(ManifoldIntersections *x) {
@@ -2020,6 +2215,10 @@ static ManifoldError boolean3_result(const ManifoldBoolean3 *b3,
 
   // Reorder halfedges for determinism
   manifold_impl_reorder_halfedges(outR);
+
+  // Create properties (interpolate from input meshes) — must be before
+  // UpdateReference since it uses the raw meshID=0/1 convention
+  boolean_create_properties(outR, inP, inQ);
 
   // Update references
   size_t offsetQ = manifold_mesh_id_counter;
