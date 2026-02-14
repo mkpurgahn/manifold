@@ -4731,6 +4731,238 @@ static void test_BooleanComplex_OffsetTriangulationFailure(void) {
   manifold_destroy(&result);
 }
 
+// --- BooleanComplex_Sweep helpers ---
+typedef struct {
+  int nSegments;
+  double angleStep;
+  double startAngle;
+} SweepWarpCtx;
+
+static void sweep_warp_fn(double *x, double *y, double *z, void *ctx) {
+  SweepWarpCtx *c = (SweepWarpCtx *)ctx;
+  double zIndex = c->nSegments - 1 - *z;
+  double angle = zIndex * c->angleStep + c->startAngle;
+  *z = *y;
+  *y = *x * sin(angle);
+  *x = *x * cos(angle);
+}
+
+static void test_BooleanComplex_Sweep(void) {
+  ManifoldExecutionParams *params = manifold_get_params();
+  bool old_processOverlaps = params->processOverlaps;
+  params->processOverlaps = true;
+
+  // Generate profile polygon
+  const double filletRadius = 2.5;
+  const double filletWidth = 5.0;
+  const int numberOfArcPoints = 10;
+  ManifoldVec2 arcCenterPoint = {filletWidth - filletRadius, filletRadius};
+
+  ManifoldVec2 profile[2 + 10 + 1]; // (0,0), (2.5,0), 10 arc pts, (0,5)
+  int profileCount = 0;
+  profile[profileCount++] = (ManifoldVec2){0, 0};
+  profile[profileCount++] = (ManifoldVec2){filletWidth - filletRadius, 0};
+  for (int i = 0; i < numberOfArcPoints; i++) {
+    double angle = i * kPi / numberOfArcPoints;
+    double py = arcCenterPoint.y - cos(angle) * filletRadius;
+    double px = arcCenterPoint.x + sin(angle) * filletRadius;
+    profile[profileCount++] = (ManifoldVec2){px, py};
+  }
+  profile[profileCount++] = (ManifoldVec2){0, filletWidth};
+  int profileSize = profileCount;
+
+  // Path points (90 points)
+  ManifoldVec2 pathPoints[] = {
+    {-21.707751473606564, 10.04202769267855},
+    {-21.840846948218307, 9.535474475521578},
+    {-21.940954413815387, 9.048287386171369},
+    {-22.005569458385835, 8.587741145234093},
+    {-22.032187669917704, 8.16111047331591},
+    {-22.022356960178296, 7.755456475810721},
+    {-21.9823319178086, 7.356408291345673},
+    {-21.91208498286602, 6.964505631629036},
+    {-21.811437268778267, 6.579251589515578},
+    {-21.68020988897306, 6.200149257860059},
+    {-21.51822395687812, 5.82670172951726},
+    {-21.254086890521585, 5.336709200579579},
+    {-21.01963533308061, 4.974523796623895},
+    {-20.658228140926262, 4.497743844638198},
+    {-20.350337020134603, 4.144115181723373},
+    {-19.9542029967, 3.7276501717684054},
+    {-20.6969129296381, 3.110639833377638},
+    {-21.026318197401537, 2.793796378245609},
+    {-21.454710558515973, 2.3418076758544806},
+    {-21.735944543382722, 2.014266362004704},
+    {-21.958999535447845, 1.7205197644485681},
+    {-22.170169612837164, 1.3912359628761894},
+    {-22.376940405634056, 1.0213515348242117},
+    {-22.62545385249271, 0.507889651991388},
+    {-22.77620002102207, 0.13973666928102288},
+    {-22.8689989640578, -0.135962138067232},
+    {-22.974385239894364, -0.5322784681448909},
+    {-23.05966775687304, -0.9551466941218276},
+    {-23.102914137841445, -1.2774406685179822},
+    {-23.14134824916783, -1.8152432718003662},
+    {-23.152085124298473, -2.241104719188421},
+    {-23.121576743285054, -2.976332948223073},
+    {-23.020491352156856, -3.6736813934577914},
+    {-22.843552165110886, -4.364810769710428},
+    {-22.60334013490563, -5.033012850282157},
+    {-22.305015243491663, -5.67461444847819},
+    {-21.942709324216615, -6.330962778427178},
+    {-21.648491707764062, -6.799117771996025},
+    {-21.15330508818782, -7.496539096945377},
+    {-21.10687739725184, -7.656798276710632},
+    {-21.01253055778545, -8.364144493707382},
+    {-20.923211927856293, -8.782280691344269},
+    {-20.771325204062215, -9.258087073404687},
+    {-20.554404009259198, -9.72613360625344},
+    {-20.384050989017144, -9.985885743112847},
+    {-20.134404839253612, -10.263023004626703},
+    {-19.756998832033442, -10.613109670467736},
+    {-18.83161393127597, -15.68768837402245},
+    {-19.155593463785983, -17.65410871259763},
+    {-17.930304365744544, -19.005810988385562},
+    {-16.893408103100064, -19.50558228186199},
+    {-16.27514960757635, -19.8288501942628},
+    {-15.183033464853374, -20.47781203017123},
+    {-14.906850387751492, -20.693472553142833},
+    {-14.585198957236713, -21.015257964547136},
+    {-11.013839210807205, -34.70394287828328},
+    {-8.79778020674896, -36.17434400175442},
+    {-7.850491148257242, -36.48835987119041},
+    {-6.982497182376991, -36.74546968896842},
+    {-6.6361688522576, -36.81653354539242},
+    {-6.0701080598244035, -36.964332993204},
+    {-5.472439187922815, -37.08824838436714},
+    {-4.802871164820756, -37.20127157090685},
+    {-3.6605994233344745, -37.34427653957914},
+    {-1.7314396363710867, -37.46415201430501},
+    {-0.7021130485987349, -37.5},
+    {0.01918509410483974, -37.49359541901704},
+    {1.2107837650065625, -37.45093992812552},
+    {3.375529069920302, 32.21823383780513},
+    {1.9041980552754056, 32.89839543047101},
+    {1.4107184651094313, 33.16556804736585},
+    {1.1315552947605065, 33.34344755450097},
+    {0.8882931135353977, 33.52377699790175},
+    {0.6775397019893341, 33.708817857198056},
+    {0.49590284067753837, 33.900831612019715},
+    {0.2291596803839543, 34.27380625039597},
+    {0.03901816126171688, 34.66402375075138},
+    {-0.02952797094655369, 34.8933309389416},
+    {-0.0561772851849209, 35.044928843125824},
+    {-0.067490756643705, 35.27129875796868},
+    {-0.05587453990569748, 35.42204271802184},
+    {0.013497378362074697, 35.72471438137191},
+    {0.07132375113026912, 35.877348797053145},
+    {0.18708820875448923, 36.108917464873215},
+    {0.39580614140195136, 36.424415957998825},
+    {0.8433687814267005, 36.964365016108914},
+    {0.7078417131710703, 37.172455373435916},
+    {0.5992848016685662, 37.27482757003058},
+    {0.40594743344375905, 37.36664006036318},
+    {0.1397973410299913, 37.434752779117005}
+  };
+  int numPoints = (int)(sizeof(pathPoints) / sizeof(pathPoints[0]));
+
+  // Scale path by 0.9
+  for (int i = 0; i < numPoints; i++) {
+    pathPoints[i].x *= 0.9;
+    pathPoints[i].y *= 0.9;
+  }
+
+  // Collect all primitives
+  // Max primitives: 2 per point (extrusion + round)
+  int maxPrimitives = numPoints * 2;
+  Manifold *result = (Manifold *)malloc(maxPrimitives * sizeof(Manifold));
+  int resultCount = 0;
+
+  for (int i = 0; i < numPoints; i++) {
+    ManifoldVec2 p1 = pathPoints[i];
+    ManifoldVec2 p2 = pathPoints[(i + 1) % numPoints];
+    ManifoldVec2 p3 = pathPoints[(i + 2) % numPoints];
+
+    // cutterPrimitives(p1, p2, p3)
+    ManifoldVec2 diff = {p2.x - p1.x, p2.y - p1.y};
+    ManifoldVec2 vec1 = {p1.x - p2.x, p1.y - p2.y};
+    ManifoldVec2 vec2 = {p3.x - p2.x, p3.y - p2.y};
+    double determinant = vec1.x * vec2.y - vec1.y * vec2.x;
+
+    double startAngle = atan2(vec1.x, -vec1.y);
+    double endAngle = atan2(-vec2.x, vec2.y);
+
+    // partialRevolve(startAngle, endAngle, 20)
+    // minPosAngle(endAngle)
+    double posEndAngle;
+    {
+      double div = endAngle / kTwoPi;
+      double wholeDiv = floor(div);
+      posEndAngle = endAngle - wholeDiv * kTwoPi;
+    }
+    double totalAngle = 0;
+    if (startAngle < 0 && endAngle < 0 && startAngle < endAngle) {
+      totalAngle = endAngle - startAngle;
+    } else {
+      totalAngle = posEndAngle - startAngle;
+    }
+    int nSegments = (int)ceil(totalAngle / kTwoPi * 20 + 1);
+    if (nSegments < 2) nSegments = 2;
+    double angleStep = totalAngle / (nSegments - 1);
+
+    // Build the round (partial revolve)
+    Manifold roundPrim;
+    if (determinant < 0) {
+      Manifold extruded = manifold_extrude(profile, &profileSize, 1,
+                                           nSegments - 1, nSegments - 2,
+                                           0, (ManifoldVec2){1, 1});
+      SweepWarpCtx wctx = {nSegments, angleStep, startAngle};
+      Manifold warped = manifold_warp(&extruded, sweep_warp_fn, &wctx);
+      roundPrim = manifold_translate(&warped, (ManifoldVec3){p2.x, p2.y, 0});
+      manifold_destroy(&extruded);
+      manifold_destroy(&warped);
+    }
+
+    // Build the straight extrusion
+    double distance = sqrt(diff.x * diff.x + diff.y * diff.y);
+    double edgeAngle = atan2(diff.y, diff.x);
+    Manifold extPrim = manifold_extrude(profile, &profileSize, 1,
+                                        distance, 0, 0,
+                                        (ManifoldVec2){1, 1});
+    Manifold r1 = manifold_rotate(&extPrim, 90, 0, -90);
+    Manifold t1 = manifold_translate(&r1, (ManifoldVec3){distance, 0, 0});
+    Manifold r2 = manifold_rotate(&t1, 0, 0, edgeAngle * 180 / kPi);
+    Manifold extrusionPrimitive = manifold_translate(&r2, (ManifoldVec3){p1.x, p1.y, 0});
+    manifold_destroy(&extPrim);
+    manifold_destroy(&r1);
+    manifold_destroy(&t1);
+    manifold_destroy(&r2);
+
+    if (determinant < 0) {
+      result[resultCount++] = roundPrim;
+      result[resultCount++] = extrusionPrimitive;
+    } else {
+      result[resultCount++] = extrusionPrimitive;
+    }
+  }
+
+  // all primitives should be valid
+  for (int i = 0; i < resultCount; i++) {
+    double vol = manifold_volume(&result[i]);
+    if (vol < 0) {
+      printf("INVALID PRIMITIVE %d: vol=%f\n", i, vol);
+    }
+  }
+
+  Manifold shape = manifold_batch_boolean(result, resultCount, MANIFOLD_OP_ADD);
+  EXPECT_NEAR(manifold_volume(&shape), 3757, 1);
+
+  for (int i = 0; i < resultCount; i++) manifold_destroy(&result[i]);
+  free(result);
+  manifold_destroy(&shape);
+  params->processOverlaps = old_processOverlaps;
+}
+
 static void test_Manifold_DecomposeProps(void) {
   Manifold tet0 = manifold_tetrahedron();
   Manifold tet = with_position_colors(&tet0);
@@ -4986,6 +5218,7 @@ int main(void) {
   RUN_TEST(BooleanComplex_HullMask);
   RUN_TEST(BooleanComplex_OffsetSelfIntersect);
   RUN_TEST(BooleanComplex_OffsetTriangulationFailure);
+  RUN_TEST(BooleanComplex_Sweep);
 
   // Additional Smooth tests already registered above
 
