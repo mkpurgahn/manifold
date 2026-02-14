@@ -1020,33 +1020,7 @@ static void face2tri(ManifoldImpl *impl, const ManifoldVecInt *faceEdge,
           tris = manifold_triangulate_polygon(allPts, NULL, (size_t)polyLen);
         }
       } else {
-        // Multiple loops: check if all are already triangles
-        bool allTriangles = true;
-        for (int li = 0; li < numLoops; li++) {
-          if (loopLens[li] != 3) { allTriangles = false; break; }
-        }
-        if (allTriangles) {
-          // Each loop is a triangle - emit directly
-          for (int li = 0; li < numLoops; li++) {
-            int *lp = loops[li];
-            ManifoldIVec3 triV = manifold_ivec3(
-                impl->halfedge.data[firstEdge + lp[0]].startVert,
-                impl->halfedge.data[firstEdge + lp[1]].startVert,
-                impl->halfedge.data[firstEdge + lp[2]].startVert);
-            ManifoldIVec3 triP = manifold_ivec3(
-                impl->halfedge.data[firstEdge + lp[0]].propVert,
-                impl->halfedge.data[firstEdge + lp[1]].propVert,
-                impl->halfedge.data[firstEdge + lp[2]].propVert);
-            vec_ivec3_push(&triVerts, triV);
-            vec_ivec3_push(&triProp, triP);
-            vec_vec3_push(&triNormal, normal);
-            vec_triref_push(&triRef, ref);
-          }
-          for (int li = 0; li < numLoops; li++) free(loops[li]);
-          free(loops); free(loopLens);
-          free(allPts); free(heMap); free(polySizes);
-          continue;
-        }
+        // Multiple loops: fall through to proper polygon-with-holes handling
         // Check if any loops share vertices (pinch points) OR if any
         // single loop has repeated vertices (within-loop pinch)
         bool sharedVert = false;
@@ -2211,7 +2185,24 @@ static ManifoldError boolean3_result(const ManifoldBoolean3 *b3,
   // Triangulate the faces
   faceEdge.len = (size_t)(numFaceR + 1);
 
+#ifdef MANIFOLD_BOOLEAN_DEBUG
+  fprintf(stderr, "BOOL PRE-FACE2TRI: %d faces, %zu halfedges\n", numFaceR, outR->halfedge.len);
+  for (int f = 0; f < numFaceR; f++) {
+    int start = faceEdge.data[f];
+    int end = faceEdge.data[f + 1];
+    fprintf(stderr, "  face[%d] (%d edges):", f, end-start);
+    for (int e = start; e < end; e++) {
+      fprintf(stderr, " %d->%d", outR->halfedge.data[e].startVert, outR->halfedge.data[e].endVert);
+    }
+    fprintf(stderr, "\n");
+  }
+#endif
+
   face2tri(outR, &faceEdge, &halfedgeRef, true);
+
+#ifdef MANIFOLD_BOOLEAN_DEBUG
+  fprintf(stderr, "BOOL POST-FACE2TRI: %zu verts, %zu tris\n", outR->vertPos.len, outR->halfedge.len/3);
+#endif
 
   // Reorder halfedges for determinism
   manifold_impl_reorder_halfedges(outR);
@@ -2249,13 +2240,25 @@ static ManifoldError boolean3_result(const ManifoldBoolean3 *b3,
   // Simplify topology
   manifold_impl_simplify_topology(outR, nPv + nQv);
 
+#ifdef MANIFOLD_BOOLEAN_DEBUG
+  fprintf(stderr, "BOOL POST-SIMPLIFY: %zu verts, %zu tris\n", outR->vertPos.len, outR->halfedge.len/3);
+#endif
+
   manifold_impl_remove_unreferenced_verts(outR);
+
+#ifdef MANIFOLD_BOOLEAN_DEBUG
+  fprintf(stderr, "BOOL POST-REMOVEUNREF: %zu verts, %zu tris\n", outR->vertPos.len, outR->halfedge.len/3);
+#endif
 
 
   // Finalize
   manifold_impl_calculate_bbox(outR);
   manifold_impl_sort_geometry(outR);
   manifold_reserve_ids(1);
+
+#ifdef MANIFOLD_BOOLEAN_DEBUG
+  fprintf(stderr, "BOOL FINAL: %zu verts, %zu tris\n", outR->vertPos.len, outR->halfedge.len/3);
+#endif
 
   // Cleanup
   vec_int_free(&i12); vec_int_free(&i21);
@@ -2452,6 +2455,22 @@ ManifoldError manifold_boolean_op(ManifoldImpl *result,
     b3.w03 = winding03(p, q, &b3.xv12, b3.expandP, true);
     b3.w30 = winding03(p, q, &b3.xv21, b3.expandP, false);
   }
+
+#ifdef MANIFOLD_BOOLEAN_DEBUG
+  fprintf(stderr, "BOOL: P=%zu verts %zu tris, Q=%zu verts %zu tris\n",
+          p->vertPos.len, p->halfedge.len/3, q->vertPos.len, q->halfedge.len/3);
+  fprintf(stderr, "BOOL: xv12=%zu intersections, xv21=%zu intersections\n",
+          b3.xv12.v12.len, b3.xv21.v12.len);
+  fprintf(stderr, "BOOL: w03 (P verts in Q):");
+  for (size_t i = 0; i < b3.w03.len; i++) fprintf(stderr, " %d", b3.w03.data[i]);
+  fprintf(stderr, "\nBOOL: w30 (Q verts in P):");
+  for (size_t i = 0; i < b3.w30.len; i++) fprintf(stderr, " %d", b3.w30.data[i]);
+  fprintf(stderr, "\nBOOL: x12 (P edges x Q faces):");
+  for (size_t i = 0; i < b3.xv12.x12.len; i++) fprintf(stderr, " %d", b3.xv12.x12.data[i]);
+  fprintf(stderr, "\nBOOL: x21 (Q edges x P faces):");
+  for (size_t i = 0; i < b3.xv21.x12.len; i++) fprintf(stderr, " %d", b3.xv21.x12.data[i]);
+  fprintf(stderr, "\n");
+#endif
 
   ManifoldError err = boolean3_result(&b3, result, op);
 
