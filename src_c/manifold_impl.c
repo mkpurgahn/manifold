@@ -100,6 +100,7 @@ bool manifold_impl_is_manifold(const ManifoldImpl *impl) {
   // Check: every edge appears exactly twice with opposite orientations
   for (size_t i = 0; i < impl->halfedge.len; i++) {
     const ManifoldHalfedge *he = &impl->halfedge.data[i];
+    if (he->startVert < 0) continue;  // skip removed halfedges
     if (he->pairedHalfedge < 0 || (size_t)he->pairedHalfedge >= impl->halfedge.len)
       return false;
     const ManifoldHalfedge *paired = &impl->halfedge.data[he->pairedHalfedge];
