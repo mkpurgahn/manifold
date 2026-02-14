@@ -3243,7 +3243,6 @@ int main(void) {
   RUN_TEST(SDF_SphereShell);
   RUN_TEST(SDF_Blobs);
   RUN_TEST(SDF_SineSurface);
-  RUN_TEST(Samples_FrameReduced);
   RUN_TEST(Smooth_Sphere);
   RUN_TEST(Smooth_Csaszar);
   RUN_TEST(Smooth_SineSurface);
@@ -3263,6 +3262,9 @@ int main(void) {
 
   // Crash-prone under -O2 (boolean memory corruption) - run last
   RUN_TEST(Boolean_Perturb3);
+
+  // FrameReduced currently crashes due to boolean topology bug - run last
+  RUN_TEST(Samples_FrameReduced);
 
   printf("\n=== %d tests passed, %d failed ===\n", test_passed, test_failed);
   return test_failed;

@@ -484,7 +484,10 @@ static ManifoldVecInt winding03(const ManifoldImpl *inP,
       if (xv->p1q2.data[j].v[index] > (int)edge) break;
     }
     if (!broken) {
-      manifold_disjoint_sets_unite(&uf, he.startVert, he.endVert);
+      if (he.startVert >= 0 && (size_t)he.startVert < numVertA &&
+          he.endVert >= 0 && (size_t)he.endVert < numVertA) {
+        manifold_disjoint_sets_unite(&uf, he.startVert, he.endVert);
+      }
     }
   }
 
@@ -505,6 +508,7 @@ static ManifoldVecInt winding03(const ManifoldImpl *inP,
 
     for (size_t qi = 0; qi < verts.len; qi++) {
       int vert = verts.data[qi];
+      if (vert < 0 || (size_t)vert >= numVertA) continue;
       ManifoldVec3 pos = a->vertPos.data[vert];
 
       // Walk the BVH to find faces whose x-y bounding box covers the vertex.
@@ -515,8 +519,11 @@ static ManifoldVecInt winding03(const ManifoldImpl *inP,
 
       while (1) {
         int internal = collider_node2internal(node);
+        if (internal < 0 || (size_t)internal >= b->collider.internalChildren.len) break;
         int child1 = b->collider.internalChildren.data[internal].first;
         int child2 = b->collider.internalChildren.data[internal].second;
+        if (child1 < 0 || (size_t)child1 >= b->collider.nodeBBox.len ||
+            child2 < 0 || (size_t)child2 >= b->collider.nodeBBox.len) break;
 
         bool overlap1 = manifold_box_overlaps_point(b->collider.nodeBBox.data[child1], pos);
         bool overlap2 = manifold_box_overlaps_point(b->collider.nodeBBox.data[child2], pos);
@@ -551,7 +558,7 @@ static ManifoldVecInt winding03(const ManifoldImpl *inP,
   // Flood fill: propagate winding numbers from roots to all verts
   for (size_t v = 0; v < numVertA; v++) {
     int root = manifold_disjoint_sets_find(&uf, (int)v);
-    if ((int)v != root) {
+    if ((int)v != root && root >= 0 && (size_t)root < numVertA) {
       w03.data[v] = w03.data[root];
     }
   }

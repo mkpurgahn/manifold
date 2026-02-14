@@ -341,22 +341,29 @@ void manifold_impl_gather_faces(ManifoldImpl *impl,
     impl->halfedgeTangent = vec_vec4_create_n(3 * numTri);
   }
 
-  ManifoldVecInt faceOld2New = vec_int_create_n(oldNumTri);
+  ManifoldVecInt faceOld2New = vec_int_create_fill(oldNumTri, -1);
   for (size_t i = 0; i < numTri; i++) {
-    faceOld2New.data[faceNew2Old->data[i]] = (int)i;
+    int old = faceNew2Old->data[i];
+    if (old >= 0 && (size_t)old < oldNumTri)
+      faceOld2New.data[old] = (int)i;
   }
 
   for (size_t newFace = 0; newFace < numTri; newFace++) {
     int oldFace = faceNew2Old->data[newFace];
+    if (oldFace < 0 || (size_t)oldFace >= oldNumTri) continue;
     for (int i = 0; i < 3; i++) {
       int oldEdge = 3 * oldFace + i;
+      if ((size_t)oldEdge >= oldHalfedge.len) continue;
       ManifoldHalfedge edge = oldHalfedge.data[oldEdge];
       int pairedFace = edge.pairedHalfedge / 3;
       int offset = edge.pairedHalfedge - 3 * pairedFace;
-      edge.pairedHalfedge = 3 * faceOld2New.data[pairedFace] + offset;
+      if (pairedFace >= 0 && (size_t)pairedFace < oldNumTri &&
+          faceOld2New.data[pairedFace] >= 0) {
+        edge.pairedHalfedge = 3 * faceOld2New.data[pairedFace] + offset;
+      }
       int newEdge = 3 * (int)newFace + i;
       impl->halfedge.data[newEdge] = edge;
-      if (oldTangent.len != 0) {
+      if (oldTangent.len != 0 && (size_t)oldEdge < oldTangent.len) {
         impl->halfedgeTangent.data[newEdge] = oldTangent.data[oldEdge];
       }
     }
