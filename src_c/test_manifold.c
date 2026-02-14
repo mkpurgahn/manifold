@@ -3168,8 +3168,7 @@ int main(void) {
   RUN_TEST(Hull_Degenerate2D);
   RUN_TEST(Hull_Degenerate1D);
   RUN_TEST(Hull_NotEnoughPoints);
-  // TODO: Hull_MengerSponge hangs due to complex boolean operations
-  // RUN_TEST(Hull_MengerSponge);
+  RUN_TEST(Hull_MengerSponge);
   RUN_TEST(Hull_Hollow);
   RUN_TEST(Hull_FailingTest1);
   RUN_TEST(Hull_FailingTest2);
@@ -3197,8 +3196,7 @@ int main(void) {
 
   // Samples tests
   printf("--- Samples ---\n");
-  // TODO: Samples_Sponge1 hangs due to complex boolean operations
-  // RUN_TEST(Samples_Sponge1);
+  RUN_TEST(Samples_Sponge1);
   RUN_TEST(Samples_RoundedFrame);
 
   RUN_TEST(Properties_Tolerance);

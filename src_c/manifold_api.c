@@ -823,14 +823,91 @@ Manifold manifold_batch_boolean(const Manifold *manifolds, int count,
     manifold_copy(&result, &manifolds[0]);
     return result;
   }
-  // Apply operations sequentially
-  Manifold result;
-  manifold_copy(&result, &manifolds[0]);
-  for (int i = 1; i < count; i++) {
-    Manifold next = manifold_boolean(&result, &manifolds[i], op);
-    manifold_destroy(&result);
-    result = next;
+  if (count == 2) {
+    return manifold_boolean(&manifolds[0], &manifolds[1], op);
   }
+  // Heap-based batch boolean matching C++ behavior:
+  // Always pair the two largest meshes (by vertex count) first.
+  int n = count;
+  Manifold *heap = (Manifold *)malloc((size_t)n * sizeof(Manifold));
+  for (int i = 0; i < n; i++) {
+    manifold_copy(&heap[i], &manifolds[i]);
+  }
+
+  // Max-heap by vertex count (largest at index 0)
+  #define HEAP_VAL(i) ((int)heap[i].impl.vertPos.len)
+  #define HEAP_SWAP(i, j) do { Manifold tmp_ = heap[i]; heap[i] = heap[j]; heap[j] = tmp_; } while(0)
+
+  // Build max-heap
+  for (int i = n / 2 - 1; i >= 0; i--) {
+    int k = i;
+    while (1) {
+      int largest = k;
+      int l = 2 * k + 1, r = 2 * k + 2;
+      if (l < n && HEAP_VAL(l) > HEAP_VAL(largest)) largest = l;
+      if (r < n && HEAP_VAL(r) > HEAP_VAL(largest)) largest = r;
+      if (largest == k) break;
+      HEAP_SWAP(k, largest);
+      k = largest;
+    }
+  }
+
+  while (n > 1) {
+    Manifold *tmp = (Manifold *)malloc((size_t)n * sizeof(Manifold));
+    int tmpLen = 0;
+    // Pop pairs (up to 4 pairs per round, matching C++)
+    for (int i = 0; i < 4 && n > 1; i++) {
+      // Pop largest (heap[0])
+      HEAP_SWAP(0, n - 1);
+      Manifold a = heap[--n];
+      // Sift down
+      int k = 0;
+      while (1) {
+        int largest = k;
+        int l = 2*k+1, r = 2*k+2;
+        if (l < n && HEAP_VAL(l) > HEAP_VAL(largest)) largest = l;
+        if (r < n && HEAP_VAL(r) > HEAP_VAL(largest)) largest = r;
+        if (largest == k) break;
+        HEAP_SWAP(k, largest);
+        k = largest;
+      }
+      // Pop second largest
+      HEAP_SWAP(0, n - 1);
+      Manifold b = heap[--n];
+      k = 0;
+      while (1) {
+        int largest = k;
+        int l = 2*k+1, r = 2*k+2;
+        if (l < n && HEAP_VAL(l) > HEAP_VAL(largest)) largest = l;
+        if (r < n && HEAP_VAL(r) > HEAP_VAL(largest)) largest = r;
+        if (largest == k) break;
+        HEAP_SWAP(k, largest);
+        k = largest;
+      }
+      tmp[tmpLen++] = manifold_boolean(&a, &b, op);
+      manifold_destroy(&a);
+      manifold_destroy(&b);
+    }
+    // Push results back into heap
+    for (int i = 0; i < tmpLen; i++) {
+      heap[n] = tmp[i];
+      // Sift up
+      int k = n++;
+      while (k > 0) {
+        int parent = (k - 1) / 2;
+        if (HEAP_VAL(k) > HEAP_VAL(parent)) {
+          HEAP_SWAP(k, parent);
+          k = parent;
+        } else break;
+      }
+    }
+    free(tmp);
+  }
+  #undef HEAP_VAL
+  #undef HEAP_SWAP
+
+  Manifold result = heap[0];
+  free(heap);
   return result;
 }
 
