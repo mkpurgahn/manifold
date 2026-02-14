@@ -10,6 +10,8 @@
 
 #include "manifold_api.h"
 #include "manifold_tri_dist.h"
+#include "mesh_hull_body.h"
+#include "mesh_hull_mask.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -3242,6 +3244,42 @@ static void test_BooleanComplex_Close(void) {
   manifold_destroy(&result);
 }
 
+// ==================== BooleanComplex_HullMask ====================
+
+static void test_BooleanComplex_HullMask(void) {
+  // Load hull-body mesh (convert float verts to double ManifoldVec3)
+  ManifoldVec3 *body_v = (ManifoldVec3 *)malloc(hull_body_num_verts * sizeof(ManifoldVec3));
+  for (int i = 0; i < hull_body_num_verts; i++) {
+    body_v[i].x = hull_body_verts[3*i];
+    body_v[i].y = hull_body_verts[3*i+1];
+    body_v[i].z = hull_body_verts[3*i+2];
+  }
+  ManifoldIVec3 *body_t = (ManifoldIVec3 *)hull_body_tris;
+  Manifold body = manifold_from_mesh(body_v, hull_body_num_verts,
+                                     body_t, hull_body_num_tris);
+  free(body_v);
+
+  // Load hull-mask mesh
+  ManifoldVec3 *mask_v = (ManifoldVec3 *)malloc(hull_mask_num_verts * sizeof(ManifoldVec3));
+  for (int i = 0; i < hull_mask_num_verts; i++) {
+    mask_v[i].x = hull_mask_verts[3*i];
+    mask_v[i].y = hull_mask_verts[3*i+1];
+    mask_v[i].z = hull_mask_verts[3*i+2];
+  }
+  ManifoldIVec3 *mask_t = (ManifoldIVec3 *)hull_mask_tris;
+  Manifold mask = manifold_from_mesh(mask_v, hull_mask_num_verts,
+                                     mask_t, hull_mask_num_tris);
+  free(mask_v);
+
+  Manifold ret = manifold_difference(&body, &mask);
+  ManifoldMeshGL mesh = manifold_get_meshgl(&ret);
+
+  manifold_free_meshgl(&mesh);
+  manifold_destroy(&ret);
+  manifold_destroy(&mask);
+  manifold_destroy(&body);
+}
+
 // ==================== Smooth_SDF ====================
 
 static double spherical_gyroid_sdf(double x, double y, double z, void *ctx) {
@@ -4769,6 +4807,7 @@ int main(void) {
   RUN_TEST(BooleanComplex_MeshRelation);
   RUN_TEST(BooleanComplex_Ring);
   RUN_TEST(BooleanComplex_InterpolatedNormals);
+  RUN_TEST(BooleanComplex_HullMask);
 
   // Additional Smooth tests already registered above
 

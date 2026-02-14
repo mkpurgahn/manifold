@@ -52,7 +52,72 @@ TEST(BooleanComplex, Sphere) {
 TEST(BooleanComplex, MeshRelation) {
   Manifold gyroid = WithPositionColors(Gyroid());
   MeshGL gyroidMeshGL = gyroid.GetMeshGL();
+  std::cout << "Before simplify: numVert=" << gyroid.NumVert() << " numTri=" << gyroid.NumTri() << std::endl;
+  std::cout << "gyroidMeshGL: numVert=" << gyroidMeshGL.NumVert() << " numTri=" << gyroidMeshGL.NumTri() << " numProp=" << gyroidMeshGL.numProp << std::endl;
+  // Check faceID distribution
+  {
+    std::cout << "gyroidMeshGL faceID.size()=" << gyroidMeshGL.faceID.size() << std::endl;
+    int maxFaceID = -1;
+    int minFaceID = INT_MAX;
+    std::set<int> uniqueFaceIDs;
+    for (size_t i = 0; i < gyroidMeshGL.faceID.size(); i++) {
+      int fid = gyroidMeshGL.faceID[i];
+      uniqueFaceIDs.insert(fid);
+      if (fid > maxFaceID) maxFaceID = fid;
+      if (fid < minFaceID) minFaceID = fid;
+    }
+    std::cout << "gyroidMeshGL: uniqueFaceIDs=" << uniqueFaceIDs.size() << " minFaceID=" << minFaceID << " maxFaceID=" << maxFaceID << std::endl;
+    // Check faceID[820]
+    if (gyroidMeshGL.faceID.size() > 820) {
+      std::cout << "gyroidMeshGL faceID[820]=" << gyroidMeshGL.faceID[820] << std::endl;
+    } else {
+      std::cout << "gyroidMeshGL faceID has only " << gyroidMeshGL.faceID.size() << " entries" << std::endl;
+    }
+  }
   gyroid = gyroid.Simplify();
+  std::cout << "After simplify: numVert=" << gyroid.NumVert() << " numTri=" << gyroid.NumTri() << std::endl;
+  
+  // Test: RelatedGL on simplified gyroid
+  std::cout << "Testing RelatedGL on simplified gyroid..." << std::endl;
+  {
+    MeshGL simpGL = gyroid.GetMeshGL();
+    // Write first 100 vertex properties to compare
+    std::cout << "Simplified MeshGL: numVert=" << simpGL.NumVert() << " numProp=" << simpGL.numProp << std::endl;
+    // Find the vertex at position closest to (0, 1.047, 3.665)
+    float minDist = 1e10;
+    int bestVert = -1;
+    for (size_t v = 0; v < simpGL.NumVert(); v++) {
+      float dx = simpGL.vertProperties[v*simpGL.numProp+0] - 0.0f;
+      float dy = simpGL.vertProperties[v*simpGL.numProp+1] - 1.047198f;
+      float dz = simpGL.vertProperties[v*simpGL.numProp+2] - 3.665191f;
+      float d = dx*dx + dy*dy + dz*dz;
+      if (d < minDist) { minDist = d; bestVert = v; }
+    }
+    if (bestVert >= 0) {
+      std::cout << "Closest vert to (0,1.047,3.665): vert=" << bestVert
+                << " pos=(" << simpGL.vertProperties[bestVert*simpGL.numProp]
+                << "," << simpGL.vertProperties[bestVert*simpGL.numProp+1]
+                << "," << simpGL.vertProperties[bestVert*simpGL.numProp+2]
+                << ") prop=("
+                << simpGL.vertProperties[bestVert*simpGL.numProp+3]
+                << "," << simpGL.vertProperties[bestVert*simpGL.numProp+4]
+                << "," << simpGL.vertProperties[bestVert*simpGL.numProp+5]
+                << ")" << std::endl;
+      // Find which triangle references this vertex
+      for (size_t t = 0; t < simpGL.triVerts.size()/3; t++) {
+        for (int i = 0; i < 3; i++) {
+          if (simpGL.triVerts[3*t+i] == bestVert) {
+            int fid = simpGL.faceID.empty() ? (int)t : simpGL.faceID[t];
+            std::cout << "  Referenced by tri=" << t << " faceID=" << fid << std::endl;
+            goto found_cpp;
+          }
+        }
+      }
+      found_cpp: ;
+    }
+  }
+  RelatedGL(gyroid, {gyroidMeshGL});
+  std::cout << "RelatedGL on simplified gyroid PASSED" << std::endl;
 
   Manifold gyroid2 = gyroid.Translate(vec3(2.0));
 
