@@ -4057,6 +4057,65 @@ static void test_BooleanComplex_Sphere(void) {
   manifold_destroy(&result); manifold_destroy(&refined);
 }
 
+// ==================== BooleanComplex_MeshRelation ====================
+
+// Gyroid SDF matching C++ GyroidSDF in test_main.cpp
+static double gyroid_sdf(double x, double y, double z, void *ctx) {
+  (void)ctx;
+  double minX = x, minY = y, minZ = z;
+  double maxX = kTwoPi - x, maxY = kTwoPi - y, maxZ = kTwoPi - z;
+  double min3 = minX < minY ? (minX < minZ ? minX : minZ)
+                             : (minY < minZ ? minY : minZ);
+  double max3 = maxX < maxY ? (maxX < maxZ ? maxX : maxZ)
+                             : (maxY < maxZ ? maxY : maxZ);
+  double bound = min3 < max3 ? min3 : max3;
+  double gyroid = cos(x)*sin(y) + cos(y)*sin(z) + cos(z)*sin(x);
+  return gyroid < bound ? gyroid : bound;
+}
+
+static Manifold make_gyroid(void) {
+  ManifoldBox bounds = {{0, 0, 0}, {kTwoPi, kTwoPi, kTwoPi}};
+  return manifold_level_set(gyroid_sdf, NULL, bounds, 0.5, 0, 0);
+}
+
+static void test_BooleanComplex_MeshRelation(void) {
+  Manifold gyroid0 = make_gyroid();
+  Manifold gyroid = with_position_colors(&gyroid0);
+  ManifoldMeshGL gyroidMeshGL = manifold_get_meshgl(&gyroid);
+  Manifold gyroidS = manifold_simplify(&gyroid, 0);
+
+  Manifold gyroid2 = manifold_translate(&gyroidS, (ManifoldVec3){2.0, 2.0, 2.0});
+
+  EXPECT_FALSE(manifold_is_empty(&gyroidS));
+  EXPECT_TRUE(manifold_matches_tri_normals(&gyroidS));
+  EXPECT_LE(manifold_num_degenerate_tris(&gyroidS), 0);
+
+  Manifold result = manifold_union(&gyroidS, &gyroid2);
+  Manifold refined = manifold_refine_to_length(&result, 0.1);
+
+  EXPECT_TRUE(manifold_matches_tri_normals(&refined));
+  EXPECT_LE(manifold_num_degenerate_tris(&refined), 12);
+
+  Manifold *comps = (Manifold*)malloc(16 * sizeof(Manifold));
+  int nComp = manifold_decompose(&refined, &comps, 16);
+  EXPECT_EQ(nComp, 1);
+  for (int i = 0; i < nComp; i++) manifold_destroy(&comps[i]);
+  free(comps);
+
+  EXPECT_NEAR(manifold_volume(&refined), 226.0, 1.0);
+  EXPECT_NEAR(manifold_surface_area(&refined), 387.0, 1.0);
+
+  related_gl(&refined, &gyroidMeshGL, 1, false);
+
+  manifold_free_meshgl(&gyroidMeshGL);
+  manifold_destroy(&gyroid0);
+  manifold_destroy(&gyroid);
+  manifold_destroy(&gyroidS);
+  manifold_destroy(&gyroid2);
+  manifold_destroy(&result);
+  manifold_destroy(&refined);
+}
+
 static void test_Manifold_DecomposeProps(void) {
   Manifold tet0 = manifold_tetrahedron();
   Manifold tet = with_position_colors(&tet0);
@@ -4306,6 +4365,7 @@ int main(void) {
   RUN_TEST(BooleanComplex_Subtract);
   RUN_TEST(BooleanComplex_BooleanVolumes);
   RUN_TEST(BooleanComplex_Sphere);
+  RUN_TEST(BooleanComplex_MeshRelation);
   RUN_TEST(BooleanComplex_Ring);
 
   // Additional Smooth tests already registered above

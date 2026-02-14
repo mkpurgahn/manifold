@@ -1282,6 +1282,12 @@ static void impl_recursive_edge_swap(ManifoldImpl *impl, int edge,
 
   // Lambda equivalent for SwapEdge
   #define DO_SWAP_EDGE() do { \
+    /* Compute 'a' BEFORE swap using pre-swap v[] projections (matching C++) */ \
+    ManifoldVec2 e01_ = vec2_sub(v[1], v[0]); \
+    ManifoldVec2 e02_ = vec2_sub(v[2], v[0]); \
+    double l01_ = sqrt(vec2_dot(e01_, e01_)); \
+    double l02_ = sqrt(vec2_dot(e02_, e02_)); \
+    double a_ = l01_ > 0 ? fmin(1.0, fmax(0.0, l02_ / l01_)) : 0; \
     int v0_ = impl->halfedge.data[tri0edge.z].startVert; \
     int v1_ = impl->halfedge.data[tri1edge.z].startVert; \
     impl->halfedge.data[tri0edge.x].startVert = v1_; \
@@ -1297,13 +1303,6 @@ static void impl_recursive_edge_swap(ManifoldImpl *impl, int edge,
     int st1 = tri1edge.x / 3; \
     impl->faceNormal.data[st0] = impl->faceNormal.data[st1]; \
     impl->meshRelation.triRef.data[st0] = impl->meshRelation.triRef.data[st1]; \
-    double l01_ = vec3_length(vec3_sub( \
-        impl->vertPos.data[impl->halfedge.data[tri0edge.x].endVert], \
-        impl->vertPos.data[impl->halfedge.data[tri0edge.x].startVert])); \
-    double l02_ = vec3_length(vec3_sub( \
-        impl->vertPos.data[impl->halfedge.data[tri0edge.y].endVert], \
-        impl->vertPos.data[impl->halfedge.data[tri0edge.x].startVert])); \
-    double a_ = l01_ > 0 ? fmin(1.0, fmax(0.0, l02_ / l01_)) : 0; \
     if (impl->properties.len > 0) { \
       impl->halfedge.data[tri0edge.y].propVert = \
           impl->halfedge.data[tri1edge.x].propVert; \
@@ -1767,6 +1766,7 @@ static void impl_collapse_short_edges(ManifoldImpl *impl, int firstNewVert) {
     if (is_short_edge(impl, (int)i, firstNewVert))
       vec_int_push(&flagged, (int)i);
   }
+  size_t numCollapsed = 0;
   for (size_t i = 0; i < flagged.len; i++) {
     int e = flagged.data[i];
     if (e < 0 || (size_t)e >= impl->halfedge.len) continue;
@@ -1774,9 +1774,8 @@ static void impl_collapse_short_edges(ManifoldImpl *impl, int firstNewVert) {
     if (impl->halfedge.data[e].pairedHalfedge < 0) continue;
     if (impl->halfedge.data[e].startVert < 0 || impl->halfedge.data[e].endVert < 0) continue;
     scratchBuffer.len = 0;
-    impl_collapse_edge(impl, e, &scratchBuffer);
+    if (impl_collapse_edge(impl, e, &scratchBuffer)) numCollapsed++;
   }
-
   vec_int_free(&flagged);
   vec_int_free(&scratchBuffer);
 }
@@ -1786,6 +1785,7 @@ static void impl_collapse_colinear_edges(ManifoldImpl *impl,
   ManifoldVecInt flagged = vec_int_create(0);
   ManifoldVecInt scratchBuffer = vec_int_create(0);
 
+  int iterCount = 0;
   int maxIterations = 20;
   while (maxIterations-- > 0) {
     size_t nbEdges = impl->halfedge.len;
@@ -1802,6 +1802,7 @@ static void impl_collapse_colinear_edges(ManifoldImpl *impl,
       bool collapsed = impl_collapse_edge(impl, e, &scratchBuffer);
       if (collapsed) numCollapsed++;
     }
+    iterCount++;
     if (numCollapsed == 0) break;
   }
 
