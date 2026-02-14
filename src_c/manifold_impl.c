@@ -519,16 +519,28 @@ void manifold_impl_set_normals_and_coplanar(ManifoldImpl *impl) {
     triPriority[tri] = (TriPriority){vec3_dot(n, n), (int)tri};
   }
 
-  // Sort by area (largest first) - stable sort
-  for (size_t i = 1; i < numTri; i++) {
-    TriPriority key = triPriority[i];
-    size_t j = i;
-    while (j > 0 && (triPriority[j-1].area2 < key.area2 ||
-           (triPriority[j-1].area2 == key.area2 && triPriority[j-1].tri > key.tri))) {
-      triPriority[j] = triPriority[j-1];
-      j--;
+  // Sort by area (largest first) — O(n log n) merge sort for stability
+  {
+    TriPriority *tmp = (TriPriority *)malloc(numTri * sizeof(TriPriority));
+    for (size_t width = 1; width < numTri; width *= 2) {
+      for (size_t i = 0; i < numTri; i += 2 * width) {
+        size_t mid = i + width < numTri ? i + width : numTri;
+        size_t end = i + 2 * width < numTri ? i + 2 * width : numTri;
+        size_t l = i, r = mid, k = i;
+        while (l < mid && r < end) {
+          if (triPriority[l].area2 > triPriority[r].area2 ||
+              (triPriority[l].area2 == triPriority[r].area2 &&
+               triPriority[l].tri <= triPriority[r].tri))
+            tmp[k++] = triPriority[l++];
+          else
+            tmp[k++] = triPriority[r++];
+        }
+        while (l < mid) tmp[k++] = triPriority[l++];
+        while (r < end) tmp[k++] = triPriority[r++];
+      }
+      memcpy(triPriority, tmp, numTri * sizeof(TriPriority));
     }
-    triPriority[j] = key;
+    free(tmp);
   }
 
   // BFS to assign coplanar groups

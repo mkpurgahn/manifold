@@ -7,6 +7,21 @@
 #include <stdlib.h>
 #include <string.h>
 
+static int cmp_int_by_u32(const void *a_ptr, const void *b_ptr, void *ctx) {
+  const uint32_t *morton = (const uint32_t *)ctx;
+  int a = *(const int *)a_ptr;
+  int b = *(const int *)b_ptr;
+  if (morton[a] < morton[b]) return -1;
+  if (morton[a] > morton[b]) return 1;
+  return (a < b) ? -1 : (a > b) ? 1 : 0;
+}
+
+#ifdef __APPLE__
+static int cmp_int_by_u32_apple(void *ctx, const void *a_ptr, const void *b_ptr) {
+  return cmp_int_by_u32(a_ptr, b_ptr, ctx);
+}
+#endif
+
 double manifold_impl_get_volume(const ManifoldImpl *impl) {
   double vol = 0.0;
   double comp = 0.0;  // Kahan compensation
@@ -537,16 +552,16 @@ double manifold_impl_min_gap(const ManifoldImpl *self,
   ManifoldVecInt sortedIdx = {0};
   vec_int_resize(&sortedIdx, numTriOther);
   for (size_t i = 0; i < numTriOther; i++) sortedIdx.data[i] = (int)i;
-  // Simple insertion sort for morton codes
-  for (size_t i = 1; i < numTriOther; i++) {
-    int key = sortedIdx.data[i];
-    uint32_t keyMorton = faceMortonOther.data[key];
-    int j = (int)i - 1;
-    while (j >= 0 && faceMortonOther.data[sortedIdx.data[j]] > keyMorton) {
-      sortedIdx.data[j + 1] = sortedIdx.data[j];
-      j--;
-    }
-    sortedIdx.data[j + 1] = key;
+  // Sort by morton codes using qsort_r
+  {
+    const uint32_t *mortonCtx = faceMortonOther.data;
+#ifdef __APPLE__
+    qsort_r(sortedIdx.data, numTriOther, sizeof(int), (void *)mortonCtx,
+            cmp_int_by_u32_apple);
+#else
+    qsort_r(sortedIdx.data, numTriOther, sizeof(int), cmp_int_by_u32,
+            (void *)mortonCtx);
+#endif
   }
 
   // Create sorted arrays
