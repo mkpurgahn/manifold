@@ -1632,7 +1632,6 @@ static ManifoldError boolean3_result(const ManifoldBoolean3 *b3,
       numVertR += abs(i21.data[i]);
     }
   }
-  
   manifold_impl_init(outR);
   if (numVertR == 0) {
     vec_int_free(&i12); vec_int_free(&i21);
