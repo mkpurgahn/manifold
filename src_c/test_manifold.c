@@ -1490,6 +1490,33 @@ static void test_Smooth_Mirrored(void) {
   manifold_destroy(&s2); manifold_destroy(&s2scaled);
 }
 
+static void test_Smooth_Manual(void) {
+  // Unit Octahedron
+  Manifold sphere = manifold_sphere(1, 4);
+  ManifoldMeshGL oct = manifold_get_meshgl(&sphere);
+  Manifold smoothM = manifold_smooth_from_meshgl(&oct, NULL, 0);
+  ManifoldMeshGL smooth = manifold_get_meshgl(&smoothM);
+  // Sharpen the edge from vert 4 to 5
+  smooth.halfedgeTangent[4 * 6 + 3] = 0;
+  smooth.halfedgeTangent[4 * 22 + 3] = 0;
+  smooth.halfedgeTangent[4 * 16 + 3] = 0;
+  smooth.halfedgeTangent[4 * 18 + 3] = 0;
+  Manifold interp = manifold_from_meshgl(&smooth);
+  Manifold refined = manifold_refine(&interp, 100);
+
+  int sizes[][2] = {{40002, 80000}};
+  expect_meshes(&refined, sizes, 1);
+  EXPECT_NEAR(manifold_volume(&refined), 3.74, 0.01);
+  EXPECT_NEAR(manifold_surface_area(&refined), 11.78, 0.01);
+
+  manifold_destroy(&sphere);
+  manifold_free_meshgl(&oct);
+  manifold_destroy(&smoothM);
+  manifold_free_meshgl(&smooth);
+  manifold_destroy(&interp);
+  manifold_destroy(&refined);
+}
+
 // ==================== Warp Tests ====================
 
 static void warp_fn_zz(double *x, double *y, double *z, void *ctx) {
@@ -6244,6 +6271,7 @@ int main(void) {
   RUN_TEST(Smooth_Precision);
   RUN_TEST(Smooth_Normals);
   RUN_TEST(Smooth_Mirrored);
+  RUN_TEST(Smooth_Manual);
   RUN_TEST(Smooth_RefineQuads);
   RUN_TEST(Smooth_ToLength);
 
