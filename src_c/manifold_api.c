@@ -1220,6 +1220,50 @@ Manifold manifold_smooth_from_mesh(const ManifoldVec3 *vertPos, size_t numVert,
   return m;
 }
 
+Manifold manifold_smooth_from_meshgl(const ManifoldMeshGL *mesh,
+                                      const ManifoldSmoothness *sharpenedEdges,
+                                      int numSharpened) {
+  Manifold out;
+  manifold_impl_init(&out.impl);
+  if (!mesh || mesh->vertLen == 0 || mesh->triLen == 0) return out;
+
+  // Make a temporary copy with faceID set to identity
+  ManifoldMeshGL tmp = *mesh;
+  size_t numTri = mesh->triLen;
+  int *faceID = (int *)malloc(numTri * sizeof(int));
+  for (size_t i = 0; i < numTri; i++) faceID[i] = (int)i;
+  tmp.faceID = faceID;
+  tmp.faceIDLen = numTri;
+
+  out = manifold_from_meshgl(&tmp);
+  free(faceID);
+  if (manifold_is_empty(&out)) return out;
+
+  // Create tangents
+  if (numSharpened > 0 && sharpenedEdges != NULL) {
+    ManifoldVecSmoothness updated = manifold_impl_update_sharpened_edges(
+        &out.impl, sharpenedEdges, numSharpened);
+    manifold_impl_create_tangents_smooth(&out.impl,
+        updated.data, (int)updated.len);
+    vec_smooth_free(&updated);
+  } else {
+    manifold_impl_create_tangents_smooth(&out.impl, NULL, 0);
+  }
+
+  // Restore faceID: map through original MeshGL's faceID or set to -1
+  size_t nTri = manifold_impl_num_tri(&out.impl);
+  for (size_t i = 0; i < nTri; i++) {
+    int origIdx = out.impl.meshRelation.triRef.data[i].faceID;
+    if (mesh->faceIDLen == numTri && mesh->faceID &&
+        origIdx >= 0 && (size_t)origIdx < numTri) {
+      out.impl.meshRelation.triRef.data[i].faceID = mesh->faceID[origIdx];
+    } else {
+      out.impl.meshRelation.triRef.data[i].faceID = -1;
+    }
+  }
+  return out;
+}
+
 bool manifold_is_convex(const Manifold *m) {
   return manifold_impl_is_convex(&m->impl);
 }

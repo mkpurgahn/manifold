@@ -257,5 +257,9 @@ void manifold_free_meshgl(ManifoldMeshGL *mgl);
 
 // Create a manifold from a MeshGL-style flat structure
 Manifold manifold_from_meshgl(const ManifoldMeshGL *mesh);
+// Smooth from MeshGL (equivalent to C++ Manifold::Smooth(MeshGL))
+Manifold manifold_smooth_from_meshgl(const ManifoldMeshGL *mesh,
+                                      const ManifoldSmoothness *sharpenedEdges,
+                                      int numSharpened);
 
 #endif // MANIFOLD_API_H

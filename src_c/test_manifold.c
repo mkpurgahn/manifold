@@ -3751,6 +3751,59 @@ static void test_Manifold_MeshRelationRefine(void) {
   manifold_destroy(&refined);
 }
 
+// ==================== Manifold_MeshRelationRefinePrecision ====================
+static void test_Manifold_MeshRelationRefinePrecision(void) {
+  // Build Csaszar MeshGL with runOriginalID
+  ManifoldMeshGL csaszarGL = manifold_meshgl_empty();
+  csaszarGL.numProp = 3;
+  float csVerts[] = {
+    -20, -20, -10,  -20,  20, -15,  -5,  -8,   8,
+      0,   0,  30,    5,   8,   8,   20, -20, -15,
+     20,  20, -10
+  };
+  int csTris[] = {
+    1,3,6, 1,6,5, 2,5,6, 0,2,6, 0,6,4, 3,4,6,
+    1,2,3, 1,4,2, 1,0,4, 1,5,0, 3,5,4, 0,5,3,
+    0,3,2, 2,4,5
+  };
+  csaszarGL.vertProperties = csVerts;
+  csaszarGL.vertLen = 7;
+  csaszarGL.triVerts = csTris;
+  csaszarGL.triLen = 14;
+  uint32_t csOrigID = manifold_reserve_ids(1);
+  csaszarGL.runOriginalID = &csOrigID;
+  csaszarGL.runOriginalIDLen = 1;
+
+  // Create Manifold from Csaszar, apply WithPositionColors, get MeshGL
+  Manifold csManifold = manifold_from_meshgl(&csaszarGL);
+  Manifold colored = with_position_colors(&csManifold);
+  ManifoldMeshGL inGL = manifold_get_meshgl(&colored);
+  uint32_t id = inGL.runOriginalID[0];
+
+  // Smooth from MeshGL
+  Manifold csaszar = manifold_smooth_from_meshgl(&inGL, NULL, 0);
+  manifold_free_meshgl(&inGL);
+  manifold_destroy(&csManifold);
+  manifold_destroy(&colored);
+
+  // RefineToTolerance
+  Manifold refined = manifold_refine_to_tolerance(&csaszar, 0.05);
+  manifold_destroy(&csaszar);
+
+  // ExpectMeshes: {2684, 5368, 3}
+  int sizes[][2] = {{2684, 5368}};
+  expect_meshes(&refined, sizes, 1);
+  EXPECT_EQ(manifold_num_prop(&refined), (size_t)3);
+
+  // Check runOriginalID
+  ManifoldMeshGL outGL = manifold_get_meshgl(&refined);
+  EXPECT_EQ(outGL.runOriginalIDLen, (size_t)1);
+  EXPECT_EQ(outGL.runOriginalID[0], id);
+  manifold_free_meshgl(&outGL);
+
+  manifold_destroy(&refined);
+}
+
 // ==================== More Boolean tests from C++ ====================
 
 // ==================== Boolean_MixedProperties ====================
@@ -5287,6 +5340,7 @@ int main(void) {
   RUN_TEST(Manifold_MeshDeterminism);
   RUN_TEST(Manifold_MergeDegenerates);
   RUN_TEST(Manifold_MeshRelationRefine);
+  RUN_TEST(Manifold_MeshRelationRefinePrecision);
   RUN_TEST(Manifold_DecomposeProps);
   RUN_TEST(Manifold_MeshID);
 
