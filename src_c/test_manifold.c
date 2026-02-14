@@ -5173,6 +5173,34 @@ static void test_Manifold_WarpBatch(void) {
   manifold_destroy(&cube); manifold_destroy(&shape1);
 }
 
+static void test_Manifold_MeshID(void) {
+  Manifold cube = manifold_cube((ManifoldVec3){1, 1, 1}, false);
+  ManifoldMeshGL cubeGL = manifold_get_meshgl(&cube);
+
+  // Clear runIndex and runOriginalID (simulate cubeGL.runIndex.clear() etc.)
+  free(cubeGL.runIndex);
+  cubeGL.runIndex = NULL;
+  cubeGL.runIndexLen = 0;
+  free(cubeGL.runOriginalID);
+  cubeGL.runOriginalID = NULL;
+  cubeGL.runOriginalIDLen = 0;
+
+  Manifold cube1 = manifold_from_meshgl(&cubeGL);
+  Manifold cube2 = manifold_from_meshgl(&cubeGL);
+
+  ManifoldMeshGL gl1 = manifold_get_meshgl(&cube1);
+  ManifoldMeshGL gl2 = manifold_get_meshgl(&cube2);
+
+  EXPECT_NE(gl1.runOriginalID[0], gl2.runOriginalID[0]);
+
+  manifold_free_meshgl(&gl1);
+  manifold_free_meshgl(&gl2);
+  manifold_free_meshgl(&cubeGL);
+  manifold_destroy(&cube);
+  manifold_destroy(&cube1);
+  manifold_destroy(&cube2);
+}
+
 // ==================== Main ====================
 
 int main(void) {
@@ -5241,6 +5269,7 @@ int main(void) {
   RUN_TEST(Manifold_MergeDegenerates);
   RUN_TEST(Manifold_MeshRelationRefine);
   RUN_TEST(Manifold_DecomposeProps);
+  RUN_TEST(Manifold_MeshID);
 
   // Boolean tests
   printf("--- Boolean ---\n");
