@@ -2880,6 +2880,164 @@ ManifoldCrossSection manifold_cross_section_warp(
 }
 
 // ============================================================
+// CrossSection: Offset
+// ============================================================
+
+ManifoldCrossSection manifold_cross_section_offset(
+    const ManifoldCrossSection *cs, double delta,
+    ManifoldJoinType joinType, double miter_limit,
+    int circularSegments) {
+  if (!cs || cs->numContours == 0)
+    return manifold_cross_section_empty();
+
+  // Materialize vertices with transform applied
+  ManifoldPolygons2D polys = manifold_cross_section_to_polygons(cs);
+
+  // Segments per full 360 for Round join
+  int n_segs = 72;
+  if (joinType == MANIFOLD_JOIN_ROUND && circularSegments > 2)
+    n_segs = circularSegments;
+
+  // Dynamic arrays for output
+  int out_nc = 0, out_nv = 0;
+  int out_cap_c = 4, out_cap_v = 256;
+  int *out_sizes = (int *)malloc(out_cap_c * sizeof(int));
+  ManifoldVec2 *out_verts = (ManifoldVec2 *)malloc(out_cap_v * sizeof(ManifoldVec2));
+
+  int vi = 0;
+  for (int c = 0; c < polys.numPolys; c++) {
+    int cnt = polys.polySizes[c];
+    ManifoldVec2 *P = &polys.polys[vi];
+    vi += cnt;
+    if (cnt < 3) continue;
+
+    // Signed area to determine orientation
+    double area = 0;
+    for (int i = 0; i < cnt; i++) {
+      int j = (i + 1) % cnt;
+      area += P[i].x * P[j].y - P[j].x * P[i].y;
+    }
+    area *= 0.5;
+    if (fabs(area) < 1e-15) continue;
+
+    // For outer (CCW, area>0): local_delta = delta
+    // For holes (CW, area<0): local_delta = -delta
+    double local_delta = (area > 0) ? delta : -delta;
+
+    // Edge normals: outward for CCW = (dy, -dx) / len
+    ManifoldVec2 *N = (ManifoldVec2 *)malloc(cnt * sizeof(ManifoldVec2));
+    for (int i = 0; i < cnt; i++) {
+      int j = (i + 1) % cnt;
+      double dx = P[j].x - P[i].x, dy = P[j].y - P[i].y;
+      double len = sqrt(dx * dx + dy * dy);
+      if (len < 1e-15) { N[i] = (ManifoldVec2){0, 0}; }
+      else { N[i] = (ManifoldVec2){dy / len, -dx / len}; }
+    }
+
+    // Build offset path for this contour
+    int pcap = cnt * (n_segs / 4 + 4);
+    ManifoldVec2 *pts = (ManifoldVec2 *)malloc(pcap * sizeof(ManifoldVec2));
+    int np = 0;
+
+#define OFF_ENSURE(need) do { \
+  while (np + (need) > pcap) { pcap *= 2; pts = realloc(pts, pcap * sizeof(ManifoldVec2)); } \
+} while(0)
+
+    for (int i = 0; i < cnt; i++) {
+      int prev = (i + cnt - 1) % cnt;
+      int next = (i + 1) % cnt;
+
+      // Edge directions
+      double epx = P[i].x - P[prev].x, epy = P[i].y - P[prev].y;
+      double ecx = P[next].x - P[i].x, ecy = P[next].y - P[i].y;
+      double cross = epx * ecy - epy * ecx;
+
+      // Offset points from adjacent edges at this vertex
+      double p1x = P[i].x + local_delta * N[prev].x;
+      double p1y = P[i].y + local_delta * N[prev].y;
+      double p2x = P[i].x + local_delta * N[i].x;
+      double p2y = P[i].y + local_delta * N[i].y;
+
+      if (cross * local_delta > 1e-10) {
+        // Edges diverge — need join
+        if (joinType == MANIFOLD_JOIN_ROUND) {
+          double r = fabs(local_delta);
+          double sa = atan2(p1y - P[i].y, p1x - P[i].x);
+          double ea = atan2(p2y - P[i].y, p2x - P[i].x);
+          double sweep;
+          if (local_delta > 0) {
+            sweep = ea - sa;
+            if (sweep < 0) sweep += 2 * M_PI;
+          } else {
+            sweep = sa - ea;
+            if (sweep < 0) sweep += 2 * M_PI;
+          }
+          int arc_steps = (int)(sweep / (2 * M_PI) * n_segs + 0.5);
+          if (arc_steps < 1) arc_steps = 1;
+          OFF_ENSURE(arc_steps + 1);
+          double sign = (local_delta > 0) ? 1.0 : -1.0;
+          for (int s = 0; s <= arc_steps; s++) {
+            double a = sa + sign * sweep * s / arc_steps;
+            pts[np++] = (ManifoldVec2){P[i].x + r * cos(a),
+                                       P[i].y + r * sin(a)};
+          }
+        } else {
+          // Square / Bevel: add both points
+          OFF_ENSURE(2);
+          pts[np++] = (ManifoldVec2){p1x, p1y};
+          pts[np++] = (ManifoldVec2){p2x, p2y};
+        }
+      } else if (fabs(cross) <= 1e-10) {
+        // Nearly parallel
+        OFF_ENSURE(1);
+        pts[np++] = (ManifoldVec2){p1x, p1y};
+      } else {
+        // Edges converge — compute intersection of offset edges
+        double denom = epx * ecy - epy * ecx;
+        double ddx = p2x - p1x, ddy = p2y - p1y;
+        double t = (ddx * ecy - ddy * ecx) / denom;
+        OFF_ENSURE(1);
+        pts[np++] = (ManifoldVec2){p1x + t * epx, p1y + t * epy};
+      }
+    }
+
+#undef OFF_ENSURE
+
+    free(N);
+
+    if (np < 3) { free(pts); continue; }
+
+    // Add contour to output
+    if (out_nc >= out_cap_c) {
+      out_cap_c *= 2;
+      out_sizes = (int *)realloc(out_sizes, out_cap_c * sizeof(int));
+    }
+    out_sizes[out_nc++] = np;
+
+    while (out_nv + np > out_cap_v) {
+      out_cap_v *= 2;
+      out_verts = (ManifoldVec2 *)realloc(out_verts, out_cap_v * sizeof(ManifoldVec2));
+    }
+    memcpy(&out_verts[out_nv], pts, np * sizeof(ManifoldVec2));
+    out_nv += np;
+    free(pts);
+  }
+
+  manifold_polygons2d_free(&polys);
+
+  if (out_nc == 0) {
+    free(out_sizes); free(out_verts);
+    return manifold_cross_section_empty();
+  }
+
+  ManifoldCrossSection result = {NULL, NULL, 0, {{{1,0},{0,1},{0,0}}}};
+  result.numContours = out_nc;
+  result.contourSizes = (int *)realloc(out_sizes, out_nc * sizeof(int));
+  result.verts = (ManifoldVec2 *)realloc(out_verts, out_nv * sizeof(ManifoldVec2));
+  return result;
+}
+
+// ============================================================
 // CrossSection: Circle, Hull, Boolean
 // ============================================================
 

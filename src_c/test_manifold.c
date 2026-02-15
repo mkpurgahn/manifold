@@ -6972,6 +6972,26 @@ static void test_CrossSection_BatchBoolean(void) {
   manifold_cross_section_free(&circle3);
 }
 
+static void test_CrossSection_NegativeOffset(void) {
+  // CrossSection::Square({30, 50}, true) + CrossSection::Square({50, 30}, true)
+  ManifoldRect2D r1 = {{-15, -25}, {15, 25}};
+  ManifoldRect2D r2 = {{-25, -15}, {25, 15}};
+  ManifoldCrossSection sq1 = manifold_cross_section_of_rect(&r1);
+  ManifoldCrossSection sq2 = manifold_cross_section_of_rect(&r2);
+  ManifoldCrossSection plusSign = manifold_cross_section_boolean(&sq1, &sq2,
+                                                                MANIFOLD_OP_ADD);
+  manifold_cross_section_free(&sq1);
+  manifold_cross_section_free(&sq2);
+
+  ManifoldCrossSection dilated = manifold_cross_section_offset(
+      &plusSign, -10, MANIFOLD_JOIN_ROUND, 2.0, 1024);
+  manifold_cross_section_free(&plusSign);
+
+  double expected = 30.0 * 30.0 - 10.0 * 10.0 * M_PI;
+  EXPECT_NEAR(manifold_cross_section_area2(&dilated), expected, 0.01);
+  manifold_cross_section_free(&dilated);
+}
+
 // ==================== Main ====================
 
 int main(void) {
@@ -7188,6 +7208,7 @@ int main(void) {
   RUN_TEST(CrossSection_Decompose);
   RUN_TEST(CrossSection_FillRule);
   RUN_TEST(CrossSection_BatchBoolean);
+  RUN_TEST(CrossSection_NegativeOffset);
 
   // Early exit before slow tests (temporary for development)
   if (getenv("SKIP_SLOW") != NULL) {

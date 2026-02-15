@@ -328,6 +328,21 @@ ManifoldCrossSection manifold_cross_section_mirror(
 ManifoldCrossSection manifold_cross_section_warp(
     const ManifoldCrossSection *cs, void (*warpFunc)(ManifoldVec2 *v));
 
+// Join types for offset (matches C++ CrossSection::JoinType).
+typedef enum {
+  MANIFOLD_JOIN_SQUARE = 0,
+  MANIFOLD_JOIN_ROUND = 1,
+  MANIFOLD_JOIN_MITER = 2,
+  MANIFOLD_JOIN_BEVEL = 3,
+} ManifoldJoinType;
+
+// Inflate/deflate cross-section contours by delta.
+// Positive delta expands, negative delta shrinks.
+ManifoldCrossSection manifold_cross_section_offset(
+    const ManifoldCrossSection *cs, double delta,
+    ManifoldJoinType joinType, double miter_limit,
+    int circularSegments);
+
 // Construct a circle with the given radius and number of segments.
 ManifoldCrossSection manifold_cross_section_circle(double radius,
                                                     int circularSegments);
