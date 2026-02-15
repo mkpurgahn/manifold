@@ -6615,6 +6615,46 @@ static void test_CrossSection_Hull(void) {
   manifold_cross_section_free(&diff2);
 }
 
+static void test_CrossSection_HullError(void) {
+  // rounded_rectangle lambda: hull of 4 translated circles at corners
+  double x = 51, y = 36, radius = 9.0;
+  int segments = 36;
+  ManifoldCrossSection circ = manifold_cross_section_circle(radius, segments);
+
+  ManifoldCrossSection c0 = manifold_cross_section_translate(&circ,
+      (ManifoldVec2){radius, radius});
+  ManifoldCrossSection c1 = manifold_cross_section_translate(&circ,
+      (ManifoldVec2){x - radius, radius});
+  ManifoldCrossSection c2 = manifold_cross_section_translate(&circ,
+      (ManifoldVec2){x - radius, y - radius});
+  ManifoldCrossSection c3 = manifold_cross_section_translate(&circ,
+      (ManifoldVec2){radius, y - radius});
+
+  ManifoldCrossSection vl[4];
+  vl[0] = manifold_cross_section_copy(&c0);
+  vl[1] = manifold_cross_section_copy(&c1);
+  vl[2] = manifold_cross_section_copy(&c2);
+  vl[3] = manifold_cross_section_copy(&c3);
+
+  ManifoldCrossSection rr = manifold_cross_section_hull_cross_sections(vl, 4);
+
+  double rr_area = manifold_cross_section_area2(&rr);
+  size_t rr_verts = manifold_cross_section_num_vert(&rr);
+  EXPECT_FLOAT_EQ(rr_area, 1765.1790375559026);
+  EXPECT_FLOAT_EQ((double)rr_verts, 40.0);
+
+  manifold_cross_section_free(&circ);
+  manifold_cross_section_free(&c0);
+  manifold_cross_section_free(&c1);
+  manifold_cross_section_free(&c2);
+  manifold_cross_section_free(&c3);
+  manifold_cross_section_free(&vl[0]);
+  manifold_cross_section_free(&vl[1]);
+  manifold_cross_section_free(&vl[2]);
+  manifold_cross_section_free(&vl[3]);
+  manifold_cross_section_free(&rr);
+}
+
 // ==================== Main ====================
 
 int main(void) {
@@ -6824,6 +6864,7 @@ int main(void) {
   RUN_TEST(CrossSection_Square);
   RUN_TEST(CrossSection_Transform);
   RUN_TEST(CrossSection_Hull);
+  RUN_TEST(CrossSection_HullError);
 
   // Early exit before slow tests (temporary for development)
   if (getenv("SKIP_SLOW") != NULL) {
