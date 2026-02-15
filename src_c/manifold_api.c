@@ -8,12 +8,18 @@
 #include "manifold_hull.h"
 #include "manifold_collider.h"
 #include "manifold_disjoint_sets.h"
+#include "manifold_csg_tree.h"
+#include "clipper2_c.h"
 #include <string.h>
 #include <stdio.h>
 #include <float.h>
 
 // Quality settings (global)
 static ManifoldQuality g_quality = {0, 10.0, 1.0};
+
+// Forward declaration
+static ManifoldCrossSection cs_planar_bool(
+    const ManifoldVec2 *allPts, const int *sizes, int nc, int windingMin);
 
 int manifold_get_circular_segments(double radius) {
   if (g_quality.circularSegments > 0) return g_quality.circularSegments;
@@ -902,8 +908,93 @@ Manifold manifold_batch_boolean(const Manifold *manifolds, int count,
     manifold_destroy(&negUnion);
     return result;
   }
-  // Heap-based batch boolean matching C++ behavior:
-  // Always pair the two largest meshes (by vertex count) first.
+
+  // For Add (union): use disjoint-set compose optimization matching C++
+  // BatchUnion. Group non-overlapping meshes and compose them without boolean
+  // operations, then batch boolean the composed groups.
+  if (op == MANIFOLD_OP_ADD) {
+    Manifold *buf = (Manifold *)malloc((size_t)count * sizeof(Manifold));
+    for (int i = 0; i < count; i++) manifold_copy(&buf[i], &manifolds[i]);
+    int n = count;
+
+    while (n > 1) {
+      // Get bounding boxes
+      ManifoldBox *boxes = (ManifoldBox *)malloc((size_t)n * sizeof(ManifoldBox));
+      for (int i = 0; i < n; i++)
+        boxes[i] = manifold_bounding_box(&buf[i]);
+
+      // Partition into disjoint sets
+      int *setOf = (int *)calloc((size_t)n, sizeof(int));
+      int numSets = 0;
+      int **setMembers = (int **)calloc((size_t)n, sizeof(int*));
+      int *setMemberCounts = (int *)calloc((size_t)n, sizeof(int));
+
+      for (int i = 0; i < n; i++) {
+        int assigned = -1;
+        for (int s = 0; s < numSets; s++) {
+          bool overlaps = false;
+          for (int m = 0; m < setMemberCounts[s]; m++) {
+            if (manifold_box_overlaps(boxes[i], boxes[setMembers[s][m]])) {
+              overlaps = true;
+              break;
+            }
+          }
+          if (!overlaps) { assigned = s; break; }
+        }
+        if (assigned < 0) {
+          assigned = numSets++;
+          setMembers[assigned] = (int *)malloc((size_t)n * sizeof(int));
+          setMemberCounts[assigned] = 0;
+        }
+        setOf[i] = assigned;
+        setMembers[assigned][setMemberCounts[assigned]++] = i;
+      }
+
+      // Compose each disjoint set
+      Manifold *composed = (Manifold *)malloc((size_t)numSets * sizeof(Manifold));
+      for (int s = 0; s < numSets; s++) {
+        if (setMemberCounts[s] == 1) {
+          composed[s] = buf[setMembers[s][0]];
+        } else {
+          const ManifoldImpl **impls = (const ManifoldImpl **)malloc(
+              (size_t)setMemberCounts[s] * sizeof(ManifoldImpl*));
+          for (int m = 0; m < setMemberCounts[s]; m++)
+            impls[m] = &buf[setMembers[s][m]].impl;
+          Manifold c;
+          manifold_create(&c);
+          manifold_compose_impls(impls, setMemberCounts[s], &c.impl);
+          composed[s] = c;
+          free(impls);
+          for (int m = 0; m < setMemberCounts[s]; m++)
+            manifold_destroy(&buf[setMembers[s][m]]);
+        }
+      }
+
+      for (int s = 0; s < numSets; s++) free(setMembers[s]);
+      free(setMembers); free(setMemberCounts); free(setOf); free(boxes);
+
+      // Binary tree reduction on composed groups
+      n = numSets;
+      free(buf);
+      buf = composed;
+
+      if (n <= 1) break;
+      int half = n / 2;
+      for (int i = 0; i < half; i++) {
+        Manifold merged = manifold_boolean(&buf[i*2], &buf[i*2+1], MANIFOLD_OP_ADD);
+        manifold_destroy(&buf[i*2]);
+        manifold_destroy(&buf[i*2+1]);
+        buf[i] = merged;
+      }
+      if (n % 2 == 1) { buf[half] = buf[n-1]; half++; }
+      n = half;
+    }
+    Manifold result = buf[0];
+    free(buf);
+    return result;
+  }
+
+  // Intersect: heap-based batch boolean (no compose optimization)
   int n = count;
   Manifold *heap = (Manifold *)malloc((size_t)n * sizeof(Manifold));
   for (int i = 0; i < n; i++) {
@@ -2377,6 +2468,70 @@ ManifoldCrossSection manifold_cross_section_of_polygons(
   return cs;
 }
 
+ManifoldCrossSection manifold_cross_section_of_polygons_fill(
+    const ManifoldPolygons2D *polys, ManifoldFillRule fillRule) {
+  ManifoldCrossSection cs = {NULL, NULL, 0, {{{1,0},{0,1},{0,0}}}};
+  if (!polys || polys->numPolys == 0) return cs;
+
+  // Count valid contours and total vertices
+  int numValid = 0, totalVerts = 0, offset = 0;
+  for (int i = 0; i < polys->numPolys; i++) {
+    if (polys->polySizes[i] >= 3) {
+      numValid++;
+      totalVerts += polys->polySizes[i];
+    }
+    offset += polys->polySizes[i];
+  }
+  if (numValid == 0) return cs;
+
+  // Flatten valid contours into double array for Clipper2
+  double *allPts = (double *)malloc(totalVerts * 2 * sizeof(double));
+  int *sizes = (int *)malloc(numValid * sizeof(int));
+  int vi = 0, ci = 0;
+  offset = 0;
+  for (int i = 0; i < polys->numPolys; i++) {
+    int n = polys->polySizes[i];
+    if (n >= 3) {
+      for (int j = 0; j < n; j++) {
+        allPts[2 * vi] = polys->polys[offset + j].x;
+        allPts[2 * vi + 1] = polys->polys[offset + j].y;
+        vi++;
+      }
+      sizes[ci++] = n;
+    }
+    offset += n;
+  }
+
+  // Map fill rule
+  int clipperFill = CLIPPER2_FILL_POSITIVE;
+  switch (fillRule) {
+    case MANIFOLD_FILL_EVEN_ODD: clipperFill = CLIPPER2_FILL_EVEN_ODD; break;
+    case MANIFOLD_FILL_NON_ZERO: clipperFill = CLIPPER2_FILL_NON_ZERO; break;
+    case MANIFOLD_FILL_POSITIVE: clipperFill = CLIPPER2_FILL_POSITIVE; break;
+    case MANIFOLD_FILL_NEGATIVE: clipperFill = CLIPPER2_FILL_NEGATIVE; break;
+  }
+
+  Clipper2Paths result;
+  int rc = clipper2_union(allPts, sizes, numValid, clipperFill, &result);
+  free(allPts);
+  free(sizes);
+
+  if (rc != 0 || result.numContours == 0) return cs;
+
+  // Convert to ManifoldCrossSection
+  cs.numContours = result.numContours;
+  cs.contourSizes = (int *)malloc(result.numContours * sizeof(int));
+  cs.verts = (ManifoldVec2 *)malloc(result.totalVerts * sizeof(ManifoldVec2));
+  for (int c = 0; c < result.numContours; c++)
+    cs.contourSizes[c] = result.contourSizes[c];
+  for (int i = 0; i < result.totalVerts; i++) {
+    cs.verts[i].x = result.verts[2 * i];
+    cs.verts[i].y = result.verts[2 * i + 1];
+  }
+  clipper2_free_paths(&result);
+  return cs;
+}
+
 // ==================== Polygon Self-Union with Fill Rules ====================
 // Implements a planar subdivision algorithm for resolving self-intersecting
 // polygons with different fill rules, equivalent to Clipper2's Union operation.
@@ -2717,7 +2872,7 @@ double manifold_cross_section_area2(const ManifoldCrossSection *cs) {
       area += vi.x * vj.y;
       area -= vj.x * vi.y;
     }
-    totalArea += fabs(area) * 0.5;
+    totalArea += area * 0.5;
     offset += n;
   }
   return totalArea;
@@ -2761,6 +2916,134 @@ void manifold_cross_section_free(ManifoldCrossSection *cs) {
   free(cs->contourSizes);
   cs->contourSizes = NULL;
   cs->numContours = 0;
+}
+
+// Ramer-Douglas-Peucker path simplification
+static int rdp_simplify(const ManifoldVec2 *pts, int n, double eps,
+                         ManifoldVec2 *out) {
+  if (n <= 2) {
+    for (int i = 0; i < n; i++) out[i] = pts[i];
+    return n;
+  }
+  // Find point with max distance from line(pts[0], pts[n-1])
+  double maxD = 0;
+  int idx = 0;
+  double dx = pts[n-1].x - pts[0].x, dy = pts[n-1].y - pts[0].y;
+  double len = sqrt(dx*dx + dy*dy);
+  for (int i = 1; i < n - 1; i++) {
+    double d;
+    if (len < 1e-15) {
+      double ex = pts[i].x - pts[0].x, ey = pts[i].y - pts[0].y;
+      d = sqrt(ex*ex + ey*ey);
+    } else {
+      d = fabs(dx*(pts[0].y - pts[i].y) - dy*(pts[0].x - pts[i].x)) / len;
+    }
+    if (d > maxD) { maxD = d; idx = i; }
+  }
+  if (maxD > eps) {
+    int n1 = rdp_simplify(pts, idx + 1, eps, out);
+    int n2 = rdp_simplify(pts + idx, n - idx, eps, out + n1 - 1);
+    return n1 + n2 - 1;
+  }
+  out[0] = pts[0];
+  out[1] = pts[n-1];
+  return 2;
+}
+
+ManifoldCrossSection manifold_cross_section_simplify(
+    const ManifoldCrossSection *cs, double epsilon) {
+  ManifoldCrossSection empty = {NULL, NULL, 0, {{{1,0},{0,1},{0,0}}}};
+  if (!cs || cs->numContours == 0) return empty;
+
+  // Step 1: self-union with positive fill via Clipper2
+  ManifoldPolygons2D polys = manifold_cross_section_to_polygons(cs);
+  ManifoldCrossSection cleaned = manifold_cross_section_of_polygons_fill(
+      &polys, MANIFOLD_FILL_POSITIVE);
+  manifold_polygons2d_free(&polys);
+
+  // Materialize cleaned
+  ManifoldPolygons2D cp = manifold_cross_section_to_polygons(&cleaned);
+  manifold_cross_section_free(&cleaned);
+
+  if (cp.numPolys == 0) {
+    manifold_polygons2d_free(&cp);
+    return empty;
+  }
+
+  // Step 2: filter out contours where |area| <= max(width,height) * epsilon
+  int *keep = (int *)calloc(cp.numPolys, sizeof(int));
+  int nKeep = 0;
+  int off = 0;
+  for (int i = 0; i < cp.numPolys; i++) {
+    int n = cp.polySizes[i];
+    ManifoldVec2 *v = cp.polys + off;
+    double area = 0;
+    double minx = v[0].x, maxx = v[0].x, miny = v[0].y, maxy = v[0].y;
+    for (int j = 0; j < n; j++) {
+      int k = (j + 1) % n;
+      area += v[j].x * v[k].y - v[k].x * v[j].y;
+      if (v[j].x < minx) minx = v[j].x;
+      if (v[j].x > maxx) maxx = v[j].x;
+      if (v[j].y < miny) miny = v[j].y;
+      if (v[j].y > maxy) maxy = v[j].y;
+    }
+    area = fabs(area * 0.5);
+    double maxDim = (maxx - minx) > (maxy - miny) ? (maxx - minx) : (maxy - miny);
+    if (area > maxDim * epsilon) {
+      keep[i] = 1;
+      nKeep++;
+    }
+    off += n;
+  }
+
+  if (nKeep == 0) {
+    free(keep);
+    manifold_polygons2d_free(&cp);
+    return empty;
+  }
+
+  // Step 3: RDP simplification on kept contours
+  int totalVerts = 0;
+  for (int i = 0; i < cp.numPolys; i++)
+    if (keep[i]) totalVerts += cp.polySizes[i];
+
+  ManifoldVec2 *outVerts = (ManifoldVec2 *)malloc(totalVerts * sizeof(ManifoldVec2));
+  int *outSizes = (int *)malloc(nKeep * sizeof(int));
+  int ov = 0, oc = 0;
+  off = 0;
+  for (int i = 0; i < cp.numPolys; i++) {
+    int n = cp.polySizes[i];
+    if (keep[i]) {
+      // Close the polygon for RDP by appending first point
+      ManifoldVec2 *closed = (ManifoldVec2 *)malloc((n+1) * sizeof(ManifoldVec2));
+      memcpy(closed, cp.polys + off, n * sizeof(ManifoldVec2));
+      closed[n] = closed[0];
+      ManifoldVec2 *tmp = (ManifoldVec2 *)malloc((n+1) * sizeof(ManifoldVec2));
+      int sn = rdp_simplify(closed, n + 1, epsilon, tmp);
+      // Remove duplicate last point
+      if (sn > 1 && tmp[sn-1].x == tmp[0].x && tmp[sn-1].y == tmp[0].y) sn--;
+      if (sn < 3) sn = n; // don't degenerate
+      if (sn == n) {
+        memcpy(outVerts + ov, cp.polys + off, n * sizeof(ManifoldVec2));
+      } else {
+        memcpy(outVerts + ov, tmp, sn * sizeof(ManifoldVec2));
+      }
+      outSizes[oc++] = sn;
+      ov += sn;
+      free(closed);
+      free(tmp);
+    }
+    off += n;
+  }
+
+  free(keep);
+  manifold_polygons2d_free(&cp);
+
+  ManifoldCrossSection result = {NULL, NULL, 0, {{{1,0},{0,1},{0,0}}}};
+  result.numContours = oc;
+  result.contourSizes = (int *)realloc(outSizes, oc * sizeof(int));
+  result.verts = (ManifoldVec2 *)realloc(outVerts, ov * sizeof(ManifoldVec2));
+  return result;
 }
 
 ManifoldCrossSection manifold_cross_section_copy(

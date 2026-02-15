@@ -158,6 +158,22 @@ void manifold_compose_impls(const ManifoldImpl **impls, int count,
       out->meshRelation.triRef.data[triOff + j] = ref;
     }
 
+    // Copy meshIDtransform entries
+    for (size_t j = 0; j < src->meshRelation.meshIDtransform.len; j++) {
+      ManifoldMeshIDEntry entry = src->meshRelation.meshIDtransform.data[j];
+      // Check if already present
+      bool found = false;
+      for (size_t k = 0; k < out->meshRelation.meshIDtransform.len; k++) {
+        if (out->meshRelation.meshIDtransform.data[k].key == entry.key) {
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        vec_meshid_push(&out->meshRelation.meshIDtransform, entry);
+      }
+    }
+
     vertOff += nv;
     edgeOff += nhe;
     triOff += nt;

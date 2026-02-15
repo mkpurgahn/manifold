@@ -272,6 +272,12 @@ typedef enum {
 ManifoldCrossSection manifold_cross_section_of_polygons(
     const ManifoldPolygons2D *polys);
 
+// Construct a CrossSection from a set of 2D polygon contours with a fill rule.
+// Resolves self-intersections using planar subdivision and fill rule.
+// Equivalent to C++ CrossSection(Polygons, FillRule).
+ManifoldCrossSection manifold_cross_section_of_polygons_fill(
+    const ManifoldPolygons2D *polys, ManifoldFillRule fillRule);
+
 // Construct a CrossSection from a single simple polygon with a fill rule.
 // Resolves self-intersections using planar subdivision and fill rule.
 ManifoldCrossSection manifold_cross_section_of_simple_polygon(
@@ -298,6 +304,11 @@ double manifold_cross_section_area2(const ManifoldCrossSection *cs);
 
 // Get the bounding rectangle of the cross-section.
 ManifoldRect2D manifold_cross_section_bounds(const ManifoldCrossSection *cs);
+
+// Simplify the cross-section by removing tiny contours and redundant vertices.
+// Equivalent to C++ CrossSection::Simplify(epsilon).
+ManifoldCrossSection manifold_cross_section_simplify(
+    const ManifoldCrossSection *cs, double epsilon);
 
 // Free a ManifoldCrossSection.
 void manifold_cross_section_free(ManifoldCrossSection *cs);

@@ -605,6 +605,32 @@ static void identical_meshgl(const ManifoldMeshGL *m1, const ManifoldMeshGL *m2)
   free(tri1); free(tri2);
 }
 
+// CheckGL: verify MeshGL metadata is consistent
+static void check_gl(const Manifold *m) {
+  ASSERT_FALSE(manifold_is_empty(m));
+  ManifoldMeshGL meshGL = manifold_get_meshgl(m);
+
+  // mergeLen = meshGL verts - manifold verts
+  EXPECT_EQ(meshGL.mergeLen, meshGL.vertLen - manifold_num_vert(m));
+  // runIndex length = runOriginalID length + 1
+  EXPECT_EQ(meshGL.runIndexLen, meshGL.runOriginalIDLen + 1);
+  // runIndex first = 0, last = 3 * numTri
+  EXPECT_EQ((size_t)meshGL.runIndex[0], (size_t)0);
+  EXPECT_EQ((size_t)meshGL.runIndex[meshGL.runIndexLen - 1], (size_t)(3 * meshGL.triLen));
+  // runTransform size
+  if (meshGL.runTransformLen > 0) {
+    EXPECT_EQ(meshGL.runTransformLen, 12 * meshGL.runOriginalIDLen);
+  }
+  // faceID size
+  EXPECT_EQ(meshGL.faceIDLen, meshGL.triLen);
+  // Check finite
+  size_t totalProps = meshGL.numProp * meshGL.vertLen;
+  for (size_t i = 0; i < totalProps; i++) {
+    ASSERT_TRUE(isfinite(meshGL.vertProperties[i]));
+  }
+  manifold_free_meshgl(&meshGL);
+}
+
 // RelatedGL: verify output mesh can be traced back to originals
 static void related_gl(const Manifold *out,
                         const ManifoldMeshGL *originals, size_t nOriginals,
@@ -3864,13 +3890,17 @@ static Manifold bracelet_base(double width, double radius, double decorRadius,
   Manifold decor_scaled = manifold_scale(&decor_ext, (ManifoldVec3){1.0, 0.5, 1.0});
   Manifold decor = manifold_translate(&decor_scaled, (ManifoldVec3){0.0, radius, 0.0});
 
-  // Union decorations around the base
-  for (int i = 0; i < nDecor; i++) {
-    Manifold rotated = manifold_rotate(&decor, 0, 0, (360.0 / nDecor) * i);
-    Manifold tmp = manifold_union(&base, &rotated);
-    manifold_destroy(&base);
-    manifold_destroy(&rotated);
-    base = tmp;
+  // Union decorations around the base using batch boolean (matches C++ CSG tree)
+  {
+    int total = 1 + nDecor;  // base + decorations
+    Manifold *parts = (Manifold *)malloc(total * sizeof(Manifold));
+    parts[0] = base;
+    for (int i = 0; i < nDecor; i++) {
+      parts[1 + i] = manifold_rotate(&decor, 0, 0, (360.0 / nDecor) * i);
+    }
+    base = manifold_batch_boolean(parts, total, MANIFOLD_OP_ADD);
+    for (int i = 0; i < total; i++) manifold_destroy(&parts[i]);
+    free(parts);
   }
 
   // Create stretch polygon
@@ -3931,6 +3961,65 @@ static Manifold make_stretchy_bracelet(double radius, double height,
   manifold_destroy(&outer);
   manifold_destroy(&inner);
   return result;
+}
+
+static void test_Samples_Bracelet(void) {
+  Manifold bracelet = make_stretchy_bracelet(30.0, 8.0, 15.0, 0.4, 20, 27, 30);
+  EXPECT_EQ(manifold_num_degenerate_tris(&bracelet), 0);
+  EXPECT_EQ(manifold_genus(&bracelet), 1);
+  check_gl(&bracelet);
+
+  // Project — must use fill rule to resolve self-intersecting silhouette polygons
+  ManifoldPolygons2D projPolys = manifold_project(&bracelet);
+  ManifoldCrossSection projection = manifold_cross_section_of_polygons_fill(
+      &projPolys, MANIFOLD_FILL_POSITIVE);
+  manifold_polygons2d_free(&projPolys);
+
+  // Simplify
+  ManifoldBox bbox = manifold_bounding_box(&bracelet);
+  double bboxScale = manifold_box_scale(bbox);
+  ManifoldCrossSection projSimp = manifold_cross_section_simplify(
+      &projection, bboxScale * 1e-8);
+  manifold_cross_section_free(&projection);
+
+  ManifoldRect2D rect = manifold_cross_section_bounds(&projSimp);
+  ManifoldBox box = manifold_bounding_box(&bracelet);
+  EXPECT_FLOAT_EQ(rect.min.x, box.min.x);
+  EXPECT_FLOAT_EQ(rect.min.y, box.min.y);
+  EXPECT_FLOAT_EQ(rect.max.x, box.max.x);
+  EXPECT_FLOAT_EQ(rect.max.y, box.max.y);
+  EXPECT_NEAR(manifold_cross_section_area2(&projSimp), 649, 1);
+  EXPECT_EQ((int)manifold_cross_section_num_contour(&projSimp), 2);
+
+  // Extrude projection
+  ManifoldPolygons2D projPolys2 = manifold_cross_section_to_polygons(&projSimp);
+  Manifold extrusion = manifold_extrude(projPolys2.polys, projPolys2.polySizes,
+                                         projPolys2.numPolys, 1.0, 0, 0.0,
+                                         (ManifoldVec2){1.0, 1.0});
+  manifold_polygons2d_free(&projPolys2);
+  EXPECT_EQ(manifold_num_degenerate_tris(&extrusion), 0);
+  EXPECT_EQ(manifold_genus(&extrusion), 1);
+  manifold_destroy(&extrusion);
+  manifold_cross_section_free(&projSimp);
+
+  // Slice
+  ManifoldPolygons2D slicePolys = manifold_slice(&bracelet, 0);
+  ManifoldCrossSection slice = manifold_cross_section_of_polygons(&slicePolys);
+  manifold_polygons2d_free(&slicePolys);
+  EXPECT_EQ((int)manifold_cross_section_num_contour(&slice), 2);
+  EXPECT_NEAR(manifold_cross_section_area2(&slice), 230.6, 0.1);
+
+  // Extrude slice
+  ManifoldPolygons2D slicePolys2 = manifold_cross_section_to_polygons(&slice);
+  extrusion = manifold_extrude(slicePolys2.polys, slicePolys2.polySizes,
+                                slicePolys2.numPolys, 1.0, 0, 0.0,
+                                (ManifoldVec2){1.0, 1.0});
+  manifold_polygons2d_free(&slicePolys2);
+  EXPECT_EQ(manifold_genus(&extrusion), 1);
+  manifold_destroy(&extrusion);
+  manifold_cross_section_free(&slice);
+
+  manifold_destroy(&bracelet);
 }
 
 static void test_Properties_MingapStretchyBracelet(void) {
@@ -7297,6 +7386,7 @@ int main(void) {
   RUN_TEST(Manifold_Warp2);
   RUN_TEST(Manifold_WarpBatch);
   RUN_TEST(Smooth_SDF);
+  RUN_TEST(Samples_Bracelet);
   RUN_TEST(Properties_MingapStretchyBracelet);
 
   // These tests may corrupt memory — run last
