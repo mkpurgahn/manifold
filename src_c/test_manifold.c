@@ -631,6 +631,29 @@ static void check_gl(const Manifold *m) {
   manifold_free_meshgl(&meshGL);
 }
 
+// CheckGLEquiv: verify two MeshGLs are equivalent
+static void check_gl_equiv(const ManifoldMeshGL *mgl1, const ManifoldMeshGL *mgl2) {
+  EXPECT_EQ(mgl1->vertLen, mgl2->vertLen);
+  EXPECT_EQ(mgl1->triLen, mgl2->triLen);
+  EXPECT_EQ(mgl1->numProp, mgl2->numProp);
+
+  size_t ntri = mgl1->triLen;
+  for (size_t t = 0; t < ntri; t++) {
+    for (int i = 0; i < 3; i++) {
+      ASSERT_EQ((size_t)mgl1->triVerts[3 * t + i], (size_t)mgl2->triVerts[3 * t + i]);
+    }
+  }
+
+  int nprop = mgl1->numProp;
+  size_t nvert = mgl1->vertLen;
+  for (size_t v = 0; v < nvert; v++) {
+    for (int p = 0; p < nprop; p++) {
+      ASSERT_NEAR(mgl1->vertProperties[v * nprop + p],
+                  mgl2->vertProperties[v * nprop + p], 0.0);
+    }
+  }
+}
+
 // RelatedGL: verify output mesh can be traced back to originals
 static void related_gl(const Manifold *out,
                         const ManifoldMeshGL *originals, size_t nOriginals,
@@ -4943,6 +4966,227 @@ static void test_Boolean_MixedNumProp(void) {
 }
 
 // ==================== Samples_Sponge4 ====================
+// ==================== CondensedMatter sample ====================
+
+static const double kAtomicRadiusN2 = 0.65;
+static const double kBondPairN2 = 1.197;
+static const double kAtomicRadiusSi = 1.1;
+static const double kLatticeCellSizeSi = 5.4309;
+static const double kFccOffset = 0.25;
+static const double kAtomicRadiusC = 0.7;
+static const double kCellLenA = 2.464;
+static const double kCellLenC = 6.711;
+static const double kLayerSeperationC = 3.364;
+
+static Manifold cm_bond(int fn, ManifoldVec3 p1, ManifoldVec3 p2,
+                        double ar1, double ar2) {
+  double cyR = fmin(ar1, ar2) / 5.0;
+  ManifoldVec3 diff = vec3_sub(p1, p2);
+  double dist = vec3_length(diff);
+  ManifoldVec3 cyC = vec3_scale(vec3_add(p1, p2), 0.5);
+  double beta = acos((p1.z - p2.z) / dist) * 180.0 / M_PI;
+  double gamma = atan2(p1.y - p2.y, p1.x - p2.x) * 180.0 / M_PI;
+  Manifold cyl = manifold_cylinder(dist, cyR, cyR, fn, true);
+  Manifold rotated = manifold_rotate(&cyl, 0.0, beta, gamma);
+  Manifold translated = manifold_translate(&rotated, cyC);
+  manifold_destroy(&cyl);
+  manifold_destroy(&rotated);
+  return translated;
+}
+
+static Manifold cm_bond_pair(int fn, double d, double ar) {
+  double axD = pow(d, 1.0 / 3.0);
+  ManifoldVec3 p1 = {+axD, -axD, -axD};
+  ManifoldVec3 p2 = {-axD, +axD, +axD};
+  Manifold sphere = manifold_sphere(ar, fn);
+  Manifold s1 = manifold_translate(&sphere, p1);
+  Manifold s2 = manifold_translate(&sphere, p2);
+  Manifold b = cm_bond(fn, p1, p2, ar, ar);
+  Manifold parts[3] = {s1, s2, b};
+  Manifold result = manifold_batch_boolean(parts, 3, MANIFOLD_OP_ADD);
+  manifold_destroy(&sphere);
+  manifold_destroy(&s1);
+  manifold_destroy(&s2);
+  manifold_destroy(&b);
+  return result;
+}
+
+static Manifold cm_hexagonal_close_packed(int fn, ManifoldVec3 dst, double ar) {
+  ManifoldVec3 p1 = {0, 0, 0};
+  double baseAg = 30;
+  double ag[3] = {baseAg, baseAg + 120, baseAg + 240};
+  ManifoldVec3 points[3] = {
+    {cosd(ag[0]) * dst.x, sind(ag[0]) * dst.x, 0},
+    {cosd(ag[1]) * dst.y, sind(ag[1]) * dst.y, 0},
+    {cosd(ag[2]) * dst.z, sind(ag[2]) * dst.z, 0}
+  };
+
+  // 1 sphere at origin + 3 spheres + 3 bonds = 7 parts
+  Manifold parts[7];
+  parts[0] = manifold_sphere(ar, fn);
+  for (int i = 0; i < 3; i++) {
+    Manifold sp = manifold_sphere(ar, fn);
+    parts[1 + i * 2] = manifold_translate(&sp, points[i]);
+    parts[2 + i * 2] = cm_bond(fn, p1, points[i], ar, ar);
+    manifold_destroy(&sp);
+  }
+  Manifold result = manifold_batch_boolean(parts, 7, MANIFOLD_OP_ADD);
+  for (int i = 0; i < 7; i++) manifold_destroy(&parts[i]);
+  return result;
+}
+
+static Manifold cm_fcc_diamond(int fn, double ar, double unitCell,
+                               double fccOff) {
+  double huc = unitCell / 2.0;
+  double od = fccOff * unitCell;
+  ManifoldVec3 interstitial[4] = {
+    {+od, +od, +od}, {+od, -od, -od}, {-od, +od, -od}, {-od, -od, +od}
+  };
+  ManifoldVec3 corners[4] = {
+    {+huc, +huc, +huc}, {+huc, -huc, -huc},
+    {-huc, +huc, -huc}, {-huc, -huc, +huc}
+  };
+  ManifoldVec3 fcc[6] = {
+    {+huc, 0, 0}, {-huc, 0, 0}, {0, +huc, 0},
+    {0, -huc, 0}, {0, 0, +huc}, {0, 0, -huc}
+  };
+
+  // 4 corners + 6 fcc + 4 interstitial + 16 bonds = 30 parts
+  Manifold parts[30];
+  int n = 0;
+  for (int i = 0; i < 4; i++) {
+    Manifold sp = manifold_sphere(ar, fn);
+    parts[n++] = manifold_translate(&sp, corners[i]);
+    manifold_destroy(&sp);
+  }
+  for (int i = 0; i < 6; i++) {
+    Manifold sp = manifold_sphere(ar, fn);
+    parts[n++] = manifold_translate(&sp, fcc[i]);
+    manifold_destroy(&sp);
+  }
+  for (int i = 0; i < 4; i++) {
+    Manifold sp = manifold_sphere(ar, fn);
+    parts[n++] = manifold_translate(&sp, interstitial[i]);
+    manifold_destroy(&sp);
+  }
+
+  // 16 bonds matching C++ bond pairs
+  ManifoldVec3 bond_p1[16], bond_p2[16];
+  // interstitial[0] bonds
+  bond_p1[0] = interstitial[0]; bond_p2[0] = corners[0];
+  bond_p1[1] = interstitial[0]; bond_p2[1] = fcc[0];
+  bond_p1[2] = interstitial[0]; bond_p2[2] = fcc[2];
+  bond_p1[3] = interstitial[0]; bond_p2[3] = fcc[4];
+  // interstitial[1] bonds
+  bond_p1[4] = interstitial[1]; bond_p2[4] = corners[1];
+  bond_p1[5] = interstitial[1]; bond_p2[5] = fcc[0];
+  bond_p1[6] = interstitial[1]; bond_p2[6] = fcc[3];
+  bond_p1[7] = interstitial[1]; bond_p2[7] = fcc[5];
+  // interstitial[2] bonds
+  bond_p1[8] = interstitial[2]; bond_p2[8] = corners[2];
+  bond_p1[9] = interstitial[2]; bond_p2[9] = fcc[1];
+  bond_p1[10] = interstitial[2]; bond_p2[10] = fcc[2];
+  bond_p1[11] = interstitial[2]; bond_p2[11] = fcc[5];
+  // interstitial[3] bonds
+  bond_p1[12] = interstitial[3]; bond_p2[12] = corners[3];
+  bond_p1[13] = interstitial[3]; bond_p2[13] = fcc[1];
+  bond_p1[14] = interstitial[3]; bond_p2[14] = fcc[3];
+  bond_p1[15] = interstitial[3]; bond_p2[15] = fcc[4];
+
+  for (int i = 0; i < 16; i++) {
+    parts[n++] = cm_bond(fn, bond_p1[i], bond_p2[i], ar, ar);
+  }
+
+  Manifold result = manifold_batch_boolean(parts, 30, MANIFOLD_OP_ADD);
+  for (int i = 0; i < 30; i++) manifold_destroy(&parts[i]);
+  return result;
+}
+
+static Manifold cm_si_cell(int fn, double x, double y, double z) {
+  Manifold diamond = cm_fcc_diamond(fn, kAtomicRadiusSi, kLatticeCellSizeSi, kFccOffset);
+  ManifoldVec3 tr = {kLatticeCellSizeSi * x, kLatticeCellSizeSi * y, kLatticeCellSizeSi * z};
+  Manifold result = manifold_translate(&diamond, tr);
+  manifold_destroy(&diamond);
+  return result;
+}
+
+static Manifold cm_sin2_cell(int fn, double x, double y, double z) {
+  double n2Offset = kLatticeCellSizeSi / 8.0;
+  Manifold bp = cm_bond_pair(fn, kBondPairN2, kAtomicRadiusN2);
+  ManifoldVec3 tr = {kLatticeCellSizeSi * x - n2Offset,
+                     kLatticeCellSizeSi * y + n2Offset,
+                     kLatticeCellSizeSi * z + n2Offset};
+  Manifold bpT = manifold_translate(&bp, tr);
+  Manifold si = cm_si_cell(fn, x, y, z);
+  Manifold result = manifold_union(&bpT, &si);
+  manifold_destroy(&bp);
+  manifold_destroy(&bpT);
+  manifold_destroy(&si);
+  return result;
+}
+
+static Manifold cm_graphite_cell(int fn, ManifoldVec3 xyz) {
+  ManifoldVec3 loc = {
+    kCellLenA * xyz.x * cosd(30) * 2.0,
+    (kCellLenA * sind(30) + kCellLenC) * xyz.y,
+    xyz.z
+  };
+  ManifoldVec3 dst = {kCellLenA, kCellLenA, kCellLenC};
+  Manifold hcp = cm_hexagonal_close_packed(fn, dst, kAtomicRadiusC);
+  Manifold result = manifold_translate(&hcp, loc);
+  manifold_destroy(&hcp);
+  return result;
+}
+
+static Manifold make_condensed_matter(int fn) {
+  // Count: graphite cells = 7*4 = 28 (x from -3 to 3, y from -1 to 2)
+  // SiN2 cells = 5*5 = 25
+  // Total = 53
+  int maxParts = 28 + 25;
+  Manifold *parts = (Manifold *)calloc(maxParts, sizeof(Manifold));
+  int n = 0;
+
+  double siOffset = 3.0 * kLatticeCellSizeSi / 8.0;
+  for (int x = -3; x <= 3; x++) {
+    for (int y = -1; y <= 2; y++) {
+      double xoff = (y % 2 == 0) ? 0.0 : 0.5;
+      ManifoldVec3 xyz = {x + xoff, (double)y,
+                          kLayerSeperationC * 0.5 + kLatticeCellSizeSi * 1.5};
+      Manifold gc = cm_graphite_cell(fn, xyz);
+      Manifold gc_tr = manifold_translate(&gc, (ManifoldVec3){0, -siOffset, 0});
+      Manifold gc_rot = manifold_rotate(&gc_tr, 0, 0, 45);
+      parts[n++] = gc_rot;
+      manifold_destroy(&gc);
+      manifold_destroy(&gc_tr);
+    }
+  }
+
+  double xyPlane[5] = {-2, -1, 0, 1, 2};
+  for (int xi = 0; xi < 5; xi++) {
+    for (int yi = 0; yi < 5; yi++) {
+      parts[n++] = cm_sin2_cell(fn, xyPlane[xi], xyPlane[yi], 1.0);
+    }
+  }
+
+  Manifold result = manifold_batch_boolean(parts, n, MANIFOLD_OP_ADD);
+  for (int i = 0; i < n; i++) manifold_destroy(&parts[i]);
+  free(parts);
+  return result;
+}
+
+static void test_Samples_CondensedMatter16(void) {
+  Manifold cm = make_condensed_matter(16);
+  check_gl(&cm);
+  Manifold cm2 = make_condensed_matter(16);
+  ManifoldMeshGL mgl1 = manifold_get_meshgl(&cm);
+  ManifoldMeshGL mgl2 = manifold_get_meshgl(&cm2);
+  check_gl_equiv(&mgl1, &mgl2);
+  manifold_free_meshgl(&mgl1);
+  manifold_free_meshgl(&mgl2);
+  manifold_destroy(&cm);
+  manifold_destroy(&cm2);
+}
+
 static void test_Samples_Sponge4(void) {
   // C++ Sponge4 uses MengerSponge(4) but that's too slow for C port.
   // Use level 2 instead. C++ genus values: 1:5, 2:81, 3:1409, 4:26433
@@ -7388,6 +7632,7 @@ int main(void) {
   RUN_TEST(Smooth_SDF);
   RUN_TEST(Samples_Bracelet);
   RUN_TEST(Properties_MingapStretchyBracelet);
+  RUN_TEST(Samples_CondensedMatter16);
 
   // These tests may corrupt memory — run last
   RUN_TEST(Samples_Sponge4);
