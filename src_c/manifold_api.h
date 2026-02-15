@@ -307,6 +307,31 @@ ManifoldCrossSection manifold_cross_section_scale(
 ManifoldCrossSection manifold_cross_section_transform(
     const ManifoldCrossSection *cs, ManifoldMat2x3 m);
 
+// Construct a circle with the given radius and number of segments.
+ManifoldCrossSection manifold_cross_section_circle(double radius,
+                                                    int circularSegments);
+
+// Compute the 2D convex hull of an array of points.
+ManifoldCrossSection manifold_cross_section_hull_points(
+    const ManifoldVec2 *points, int count);
+
+// Compute the convex hull of a single cross-section.
+ManifoldCrossSection manifold_cross_section_hull(
+    const ManifoldCrossSection *cs);
+
+// Compute the convex hull enveloping multiple cross-sections.
+ManifoldCrossSection manifold_cross_section_hull_cross_sections(
+    const ManifoldCrossSection *css, int count);
+
+// Boolean operation between two cross-sections.
+ManifoldCrossSection manifold_cross_section_boolean(
+    const ManifoldCrossSection *a, const ManifoldCrossSection *b,
+    ManifoldOpType op);
+
+// Batch boolean operation on an array of cross-sections.
+ManifoldCrossSection manifold_cross_section_batch_boolean(
+    const ManifoldCrossSection *css, int count, ManifoldOpType op);
+
 // ---------- OBJ Import ----------
 // Read a Manifold from a Wavefront OBJ file (matching C++ ReadOBJ).
 Manifold manifold_read_obj(const char *path);

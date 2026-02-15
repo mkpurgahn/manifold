@@ -6548,6 +6548,73 @@ static void test_CrossSection_Transform(void) {
   manifold_destroy(&ext_bc);
 }
 
+static void test_CrossSection_Hull(void) {
+  // auto circ = CrossSection::Circle(10, 360);
+  ManifoldCrossSection circ = manifold_cross_section_circle(10, 360);
+
+  // auto circs = {circ, circ.Translate({0, 30}), circ.Translate({30, 0})};
+  ManifoldCrossSection circ_t1 = manifold_cross_section_translate(&circ,
+      (ManifoldVec2){0, 30});
+  ManifoldCrossSection circ_t2 = manifold_cross_section_translate(&circ,
+      (ManifoldVec2){30, 0});
+  ManifoldCrossSection circs[3];
+  circs[0] = manifold_cross_section_copy(&circ);
+  circs[1] = manifold_cross_section_copy(&circ_t1);
+  circs[2] = manifold_cross_section_copy(&circ_t2);
+
+  // auto circ_tri = CrossSection::Hull(circs);
+  ManifoldCrossSection circ_tri = manifold_cross_section_hull_cross_sections(
+      circs, 3);
+  (void)circ_tri; // used only for export in C++
+
+  // auto centres = SimplePolygon{{0, 0}, {0, 30}, {30, 0}, {15, 5}};
+  ManifoldVec2 centres[] = {{0, 0}, {0, 30}, {30, 0}, {15, 5}};
+  // auto tri = CrossSection::Hull(centres);
+  ManifoldCrossSection tri = manifold_cross_section_hull_points(centres, 4);
+
+  // auto circ_area = circ.Area();
+  double circ_area = manifold_cross_section_area2(&circ);
+
+  // (circ - circ.Scale({0.8, 0.8})).Hull().Area()
+  ManifoldCrossSection circ_scaled = manifold_cross_section_scale(&circ,
+      (ManifoldVec2){0.8, 0.8});
+  ManifoldCrossSection diff1 = manifold_cross_section_boolean(&circ,
+      &circ_scaled, MANIFOLD_OP_SUBTRACT);
+  ManifoldCrossSection hull1 = manifold_cross_section_hull(&diff1);
+  double hull1_area = manifold_cross_section_area2(&hull1);
+  EXPECT_FLOAT_EQ(circ_area, hull1_area);
+
+  // CrossSection::BatchBoolean(circs, OpType::Add) - tri
+  ManifoldCrossSection circs2[3];
+  circs2[0] = manifold_cross_section_copy(&circ);
+  circs2[1] = manifold_cross_section_copy(&circ_t1);
+  circs2[2] = manifold_cross_section_copy(&circ_t2);
+  ManifoldCrossSection batch_union = manifold_cross_section_batch_boolean(
+      circs2, 3, MANIFOLD_OP_ADD);
+  ManifoldCrossSection diff2 = manifold_cross_section_boolean(&batch_union,
+      &tri, MANIFOLD_OP_SUBTRACT);
+  double diff2_area = manifold_cross_section_area2(&diff2);
+  EXPECT_FLOAT_EQ(circ_area * 2.5, diff2_area);
+
+  // Cleanup
+  manifold_cross_section_free(&circ);
+  manifold_cross_section_free(&circ_t1);
+  manifold_cross_section_free(&circ_t2);
+  manifold_cross_section_free(&circs[0]);
+  manifold_cross_section_free(&circs[1]);
+  manifold_cross_section_free(&circs[2]);
+  manifold_cross_section_free(&circ_tri);
+  manifold_cross_section_free(&tri);
+  manifold_cross_section_free(&circ_scaled);
+  manifold_cross_section_free(&diff1);
+  manifold_cross_section_free(&hull1);
+  manifold_cross_section_free(&circs2[0]);
+  manifold_cross_section_free(&circs2[1]);
+  manifold_cross_section_free(&circs2[2]);
+  manifold_cross_section_free(&batch_union);
+  manifold_cross_section_free(&diff2);
+}
+
 // ==================== Main ====================
 
 int main(void) {
@@ -6756,6 +6823,7 @@ int main(void) {
   RUN_TEST(CrossSection_Rect);
   RUN_TEST(CrossSection_Square);
   RUN_TEST(CrossSection_Transform);
+  RUN_TEST(CrossSection_Hull);
 
   // Early exit before slow tests (temporary for development)
   if (getenv("SKIP_SLOW") != NULL) {

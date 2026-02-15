@@ -2529,6 +2529,479 @@ ManifoldCrossSection manifold_cross_section_scale(
   return manifold_cross_section_transform(cs, m);
 }
 
+// ============================================================
+// CrossSection: Circle, Hull, Boolean
+// ============================================================
+
+ManifoldCrossSection manifold_cross_section_circle(double radius,
+                                                    int circularSegments) {
+  ManifoldCrossSection cs = {NULL, NULL, 0, {{{1,0},{0,1},{0,0}}}};
+  if (radius <= 0.0) return cs;
+  int n = circularSegments > 2 ? circularSegments : 32;
+  double dPhi = 360.0 / n;
+  cs.numContours = 1;
+  cs.contourSizes = (int *)malloc(sizeof(int));
+  cs.contourSizes[0] = n;
+  cs.verts = (ManifoldVec2 *)malloc(n * sizeof(ManifoldVec2));
+  for (int i = 0; i < n; i++) {
+    cs.verts[i].x = radius * manifold_cosd(dPhi * i);
+    cs.verts[i].y = radius * manifold_sind(dPhi * i);
+  }
+  return cs;
+}
+
+// 2D convex hull helpers
+static int cs_v2_cmp(const void *a, const void *b) {
+  const ManifoldVec2 *pa = (const ManifoldVec2 *)a;
+  const ManifoldVec2 *pb = (const ManifoldVec2 *)b;
+  if (pa->x < pb->x) return -1;
+  if (pa->x > pb->x) return 1;
+  if (pa->y < pb->y) return -1;
+  if (pa->y > pb->y) return 1;
+  return 0;
+}
+
+static double cs_ccw2d(ManifoldVec2 a, ManifoldVec2 b, ManifoldVec2 c) {
+  return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+}
+
+ManifoldCrossSection manifold_cross_section_hull_points(
+    const ManifoldVec2 *points, int count) {
+  ManifoldCrossSection cs = {NULL, NULL, 0, {{{1,0},{0,1},{0,0}}}};
+  if (count < 3) return cs;
+
+  ManifoldVec2 *pts = (ManifoldVec2 *)malloc(count * sizeof(ManifoldVec2));
+  memcpy(pts, points, count * sizeof(ManifoldVec2));
+  qsort(pts, count, sizeof(ManifoldVec2), cs_v2_cmp);
+
+  ManifoldVec2 *lower = (ManifoldVec2 *)malloc((count+1) * sizeof(ManifoldVec2));
+  int lsz = 0;
+  for (int i = 0; i < count; i++) {
+    while (lsz >= 2 && cs_ccw2d(lower[lsz-2], lower[lsz-1], pts[i]) <= 0.0)
+      lsz--;
+    lower[lsz++] = pts[i];
+  }
+
+  ManifoldVec2 *upper = (ManifoldVec2 *)malloc((count+1) * sizeof(ManifoldVec2));
+  int usz = 0;
+  for (int i = count - 1; i >= 0; i--) {
+    while (usz >= 2 && cs_ccw2d(upper[usz-2], upper[usz-1], pts[i]) <= 0.0)
+      usz--;
+    upper[usz++] = pts[i];
+  }
+
+  lsz--; usz--;
+  int total = lsz + usz;
+  if (total < 3) { free(pts); free(lower); free(upper); return cs; }
+
+  cs.numContours = 1;
+  cs.contourSizes = (int *)malloc(sizeof(int));
+  cs.contourSizes[0] = total;
+  cs.verts = (ManifoldVec2 *)malloc(total * sizeof(ManifoldVec2));
+  memcpy(cs.verts, lower, lsz * sizeof(ManifoldVec2));
+  memcpy(cs.verts + lsz, upper, usz * sizeof(ManifoldVec2));
+
+  free(pts); free(lower); free(upper);
+  return cs;
+}
+
+ManifoldCrossSection manifold_cross_section_hull(
+    const ManifoldCrossSection *cs) {
+  if (!cs || cs->numContours == 0) return manifold_cross_section_empty();
+  int total = 0;
+  for (int i = 0; i < cs->numContours; i++) total += cs->contourSizes[i];
+  ManifoldVec2 *pts = (ManifoldVec2 *)malloc(total * sizeof(ManifoldVec2));
+  for (int i = 0; i < total; i++) pts[i] = cs_apply_transform(cs, i);
+  ManifoldCrossSection result = manifold_cross_section_hull_points(pts, total);
+  free(pts);
+  return result;
+}
+
+ManifoldCrossSection manifold_cross_section_hull_cross_sections(
+    const ManifoldCrossSection *css, int count) {
+  int total = 0;
+  for (int i = 0; i < count; i++)
+    for (int j = 0; j < css[i].numContours; j++)
+      total += css[i].contourSizes[j];
+  ManifoldVec2 *pts = (ManifoldVec2 *)malloc(total * sizeof(ManifoldVec2));
+  int idx = 0;
+  for (int i = 0; i < count; i++) {
+    int n = 0;
+    for (int j = 0; j < css[i].numContours; j++) n += css[i].contourSizes[j];
+    for (int j = 0; j < n; j++)
+      pts[idx++] = cs_apply_transform(&css[i], j);
+  }
+  ManifoldCrossSection result = manifold_cross_section_hull_points(pts, total);
+  free(pts);
+  return result;
+}
+
+// ---- 2D Polygon Boolean helpers ----
+
+// Ray-casting point-in-polygon (strictly inside, not on boundary)
+static bool cs_pip(ManifoldVec2 p, const ManifoldVec2 *poly, int n) {
+  int crossings = 0;
+  for (int i = 0, j = n - 1; i < n; j = i++) {
+    bool yi = poly[i].y > p.y;
+    bool yj = poly[j].y > p.y;
+    if (yi != yj) {
+      double xint = (poly[j].x - poly[i].x) * (p.y - poly[i].y) /
+                    (poly[j].y - poly[i].y) + poly[i].x;
+      if (p.x < xint) crossings++;
+    }
+  }
+  return (crossings & 1) == 1;
+}
+
+// Check if point p is on segment a→b (within tolerance)
+static bool cs_point_on_seg(ManifoldVec2 p, ManifoldVec2 a, ManifoldVec2 b,
+                             int *edge_out, double *param_out, int edge_idx) {
+  double dx = b.x - a.x, dy = b.y - a.y;
+  double len2 = dx*dx + dy*dy;
+  if (len2 < 1e-20) return false;
+  double t = ((p.x - a.x)*dx + (p.y - a.y)*dy) / len2;
+  if (t < -1e-9 || t > 1.0 + 1e-9) return false;
+  double ex = a.x + t*dx - p.x, ey = a.y + t*dy - p.y;
+  if (ex*ex + ey*ey < 1e-14) {
+    if (edge_out) *edge_out = edge_idx;
+    if (param_out) *param_out = t;
+    return true;
+  }
+  return false;
+}
+
+// Subtract a single clip contour from a single subject contour.
+// Both are CCW arrays of vertices. Returns clipped contour.
+static int cs_clip_diff(
+    const ManifoldVec2 *subj, int nsub,
+    const ManifoldVec2 *clip, int nclip,
+    ManifoldVec2 *out) {
+  const double EPS = 1e-9;
+
+  // Classify subject vertices: 0=outside, 1=inside, 2=on_boundary
+  int *cls = (int *)calloc(nsub, sizeof(int));
+  int *on_edge = (int *)malloc(nsub * sizeof(int));
+  double *on_param = (double *)malloc(nsub * sizeof(double));
+
+  for (int i = 0; i < nsub; i++) {
+    on_edge[i] = -1;
+    on_param[i] = 0;
+    for (int j = 0; j < nclip; j++) {
+      if (cs_point_on_seg(subj[i], clip[j], clip[(j+1)%nclip],
+                           &on_edge[i], &on_param[i], j)) {
+        cls[i] = 2;
+        break;
+      }
+    }
+    if (cls[i] != 2)
+      cls[i] = cs_pip(subj[i], clip, nclip) ? 1 : 0;
+  }
+
+  // Also find edge-edge intersection points (not at subject vertices)
+  typedef struct { int se; double st; int ce; double ct; ManifoldVec2 pos; } Isect;
+  Isect *isects = (Isect *)malloc((nsub * nclip + 1) * sizeof(Isect));
+  int nisects = 0;
+
+  for (int i = 0; i < nsub; i++) {
+    int in_ = (i+1) % nsub;
+    double d1x = subj[in_].x - subj[i].x, d1y = subj[in_].y - subj[i].y;
+    for (int j = 0; j < nclip; j++) {
+      int jn = (j+1) % nclip;
+      double d2x = clip[jn].x - clip[j].x, d2y = clip[jn].y - clip[j].y;
+      double cross = d1x*d2y - d1y*d2x;
+      if (fabs(cross) < EPS) continue;
+      double dx = clip[j].x - subj[i].x, dy = clip[j].y - subj[i].y;
+      double t = (dx*d2y - dy*d2x) / cross;
+      double s = (dx*d1y - dy*d1x) / cross;
+      if (t > EPS && t < 1.0 - EPS && s > -EPS && s < 1.0 + EPS) {
+        isects[nisects].se = i; isects[nisects].st = t;
+        isects[nisects].ce = j;
+        isects[nisects].ct = (s < 0) ? 0 : (s > 1) ? 1 : s;
+        isects[nisects].pos.x = subj[i].x + t*d1x;
+        isects[nisects].pos.y = subj[i].y + t*d1y;
+        nisects++;
+      }
+    }
+  }
+
+  // Build augmented vertex list sorted by position along subject
+  int naug = nsub + nisects;
+  double *aspos = (double *)malloc(naug * sizeof(double));
+  for (int i = 0; i < nsub; i++) aspos[i] = (double)i;
+  for (int i = 0; i < nisects; i++) aspos[nsub + i] = isects[i].se + isects[i].st;
+
+  int *order = (int *)malloc(naug * sizeof(int));
+  for (int i = 0; i < naug; i++) order[i] = i;
+  for (int i = 0; i < naug - 1; i++)
+    for (int j = i + 1; j < naug; j++)
+      if (aspos[order[j]] < aspos[order[i]]) {
+        int tmp = order[i]; order[i] = order[j]; order[j] = tmp;
+      }
+
+  ManifoldVec2 *spos = (ManifoldVec2 *)malloc(naug * sizeof(ManifoldVec2));
+  int *scls = (int *)malloc(naug * sizeof(int));
+  int *sedge = (int *)malloc(naug * sizeof(int));
+  double *sparam = (double *)malloc(naug * sizeof(double));
+  for (int i = 0; i < naug; i++) {
+    int oi = order[i];
+    if (oi < nsub) {
+      spos[i] = subj[oi]; scls[i] = cls[oi];
+      sedge[i] = on_edge[oi]; sparam[i] = on_param[oi];
+    } else {
+      int ii = oi - nsub;
+      spos[i] = isects[ii].pos; scls[i] = 2;
+      sedge[i] = isects[ii].ce; sparam[i] = isects[ii].ct;
+    }
+  }
+  free(aspos); free(order);
+
+  // Find transition points (entry=outside→inside, exit=inside→outside)
+  typedef struct { int aug_idx; int clip_edge; double clip_param; bool is_entry; } Trans;
+  Trans *trans = (Trans *)malloc(naug * sizeof(Trans));
+  int ntrans = 0;
+
+  for (int i = 0; i < naug; i++) {
+    if (scls[i] != 2) continue;
+    int prev_c = -1;
+    for (int k = 1; k < naug; k++) {
+      int p = (i - k + naug) % naug;
+      if (scls[p] != 2) { prev_c = scls[p]; break; }
+    }
+    int next_c = -1;
+    for (int k = 1; k < naug; k++) {
+      int n = (i + k) % naug;
+      if (scls[n] != 2) { next_c = scls[n]; break; }
+    }
+    if (prev_c == 0 && next_c == 1)
+      trans[ntrans++] = (Trans){i, sedge[i], sparam[i], true};
+    else if (prev_c == 1 && next_c == 0)
+      trans[ntrans++] = (Trans){i, sedge[i], sparam[i], false};
+  }
+
+  int nout = 0;
+
+  if (ntrans == 0) {
+    bool has_out = false;
+    for (int i = 0; i < naug; i++) if (scls[i] == 0) { has_out = true; break; }
+    if (has_out) {
+      memcpy(out, subj, nsub * sizeof(ManifoldVec2));
+      nout = nsub;
+    }
+    goto cleanup;
+  }
+
+  // Build output: walk augmented subject outside portions + clip boundary CW
+  {
+    int first_exit = -1;
+    for (int t = 0; t < ntrans; t++)
+      if (!trans[t].is_entry) { first_exit = t; break; }
+    if (first_exit < 0) goto cleanup;
+
+    int npairs = ntrans / 2;
+    for (int p = 0; p < npairs; p++) {
+      int exit_t = (first_exit + p * 2) % ntrans;
+      int entry_t = (first_exit + p * 2 + 1) % ntrans;
+
+      Trans *ex = &trans[exit_t];
+      Trans *en = &trans[entry_t];
+
+      // Add subject vertices from exit to entry (outside portion)
+      int idx = ex->aug_idx;
+      int ei = en->aug_idx;
+      do {
+        out[nout++] = spos[idx];
+        idx = (idx + 1) % naug;
+      } while (idx != ei);
+      out[nout++] = spos[ei]; // entry point
+
+      // Walk clip boundary CW from entry to next exit
+      int next_exit_t = (first_exit + ((p + 1) % npairs) * 2) % ntrans;
+      Trans *nex = &trans[next_exit_t];
+
+      int ce = en->clip_edge;   // entry clip edge
+      int te = nex->clip_edge;  // exit clip edge
+
+      // CW walk: from entry on edge ce, go toward clip[ce] (start of CCW edge)
+      // then clip[(ce-1+n)%n], etc., until reaching edge te
+      if (ce != te) {
+        out[nout++] = clip[ce];
+        int walk = (ce - 1 + nclip) % nclip;
+        while (walk != te) {
+          out[nout++] = clip[walk];
+          walk = (walk - 1 + nclip) % nclip;
+        }
+      }
+      // Don't add vertices for target edge — exit point added by next iteration
+    }
+  }
+
+cleanup:
+  free(cls); free(on_edge); free(on_param);
+  free(isects); free(spos); free(scls); free(sedge); free(sparam); free(trans);
+  return nout;
+}
+
+// Subtract cross section b from a
+static ManifoldCrossSection cs_subtract(
+    const ManifoldCrossSection *a, const ManifoldCrossSection *b) {
+  ManifoldCrossSection result = {NULL, NULL, 0, {{{1,0},{0,1},{0,0}}}};
+
+  ManifoldPolygons2D pa = manifold_cross_section_to_polygons(a);
+  ManifoldPolygons2D pb = manifold_cross_section_to_polygons(b);
+  if (pa.numPolys == 0) { manifold_polygons2d_free(&pa); manifold_polygons2d_free(&pb); return result; }
+  if (pb.numPolys == 0) {
+    manifold_polygons2d_free(&pb);
+    result = manifold_cross_section_of_polygons(&pa);
+    manifold_polygons2d_free(&pa);
+    return result;
+  }
+
+  // For each contour of a, subtract the first contour of b
+  const ManifoldVec2 *clip = pb.polys;
+  int nclip = pb.polySizes[0];
+
+  int max_contours = pa.numPolys * 2 + pb.numPolys;
+  ManifoldVec2 **cverts = (ManifoldVec2 **)malloc(max_contours * sizeof(ManifoldVec2 *));
+  int *csizes = (int *)malloc(max_contours * sizeof(int));
+  int nc = 0;
+
+  int offset = 0;
+  for (int c = 0; c < pa.numPolys; c++) {
+    const ManifoldVec2 *subj = pa.polys + offset;
+    int nsub = pa.polySizes[c];
+    offset += nsub;
+
+    // Check for edge-edge intersections or boundary contacts
+    bool has_contact = false;
+    for (int i = 0; i < nsub && !has_contact; i++) {
+      for (int j = 0; j < nclip; j++) {
+        int dummy; double dparam;
+        if (cs_point_on_seg(subj[i], clip[j], clip[(j+1)%nclip],
+                            &dummy, &dparam, j)) {
+          has_contact = true; break;
+        }
+      }
+    }
+    // Also check for edge-edge intersections
+    if (!has_contact) {
+      for (int i = 0; i < nsub && !has_contact; i++) {
+        int in_ = (i+1) % nsub;
+        double d1x = subj[in_].x - subj[i].x, d1y = subj[in_].y - subj[i].y;
+        for (int j = 0; j < nclip; j++) {
+          int jn = (j+1) % nclip;
+          double d2x = clip[jn].x - clip[j].x, d2y = clip[jn].y - clip[j].y;
+          double cross = d1x*d2y - d1y*d2x;
+          if (fabs(cross) < 1e-9) continue;
+          double dx = clip[j].x - subj[i].x, dy = clip[j].y - subj[i].y;
+          double t = (dx*d2y - dy*d2x) / cross;
+          double s = (dx*d1y - dy*d1x) / cross;
+          if (t > 1e-9 && t < 1.0 - 1e-9 && s > 1e-9 && s < 1.0 - 1e-9) {
+            has_contact = true; break;
+          }
+        }
+      }
+    }
+
+    if (!has_contact) {
+      // No contact: check containment
+      bool subj_in_clip = cs_pip(subj[0], clip, nclip);
+      bool clip_in_subj = cs_pip(clip[0], subj, nsub);
+
+      if (subj_in_clip) {
+        // Entirely inside clip → skip
+      } else if (clip_in_subj) {
+        // Clip inside subject → subject + hole
+        cverts[nc] = (ManifoldVec2 *)malloc(nsub * sizeof(ManifoldVec2));
+        memcpy(cverts[nc], subj, nsub * sizeof(ManifoldVec2));
+        csizes[nc] = nsub; nc++;
+        cverts[nc] = (ManifoldVec2 *)malloc(nclip * sizeof(ManifoldVec2));
+        for (int j = 0; j < nclip; j++)
+          cverts[nc][j] = clip[nclip - 1 - j];
+        csizes[nc] = nclip; nc++;
+      } else {
+        // No overlap → keep subject
+        cverts[nc] = (ManifoldVec2 *)malloc(nsub * sizeof(ManifoldVec2));
+        memcpy(cverts[nc], subj, nsub * sizeof(ManifoldVec2));
+        csizes[nc] = nsub; nc++;
+      }
+    } else {
+      // Has contact → clip
+      ManifoldVec2 *buf = (ManifoldVec2 *)malloc((nsub + nclip + nsub*nclip) * sizeof(ManifoldVec2));
+      int nout = cs_clip_diff(subj, nsub, clip, nclip, buf);
+      if (nout >= 3) {
+        cverts[nc] = (ManifoldVec2 *)malloc(nout * sizeof(ManifoldVec2));
+        memcpy(cverts[nc], buf, nout * sizeof(ManifoldVec2));
+        csizes[nc] = nout; nc++;
+      }
+      free(buf);
+    }
+  }
+
+  // Build result
+  if (nc > 0) {
+    int total = 0;
+    for (int i = 0; i < nc; i++) total += csizes[i];
+    result.numContours = nc;
+    result.contourSizes = (int *)malloc(nc * sizeof(int));
+    result.verts = (ManifoldVec2 *)malloc(total * sizeof(ManifoldVec2));
+    int off = 0;
+    for (int i = 0; i < nc; i++) {
+      result.contourSizes[i] = csizes[i];
+      memcpy(result.verts + off, cverts[i], csizes[i] * sizeof(ManifoldVec2));
+      off += csizes[i];
+      free(cverts[i]);
+    }
+  }
+  free(cverts); free(csizes);
+  manifold_polygons2d_free(&pa);
+  manifold_polygons2d_free(&pb);
+  return result;
+}
+
+ManifoldCrossSection manifold_cross_section_boolean(
+    const ManifoldCrossSection *a, const ManifoldCrossSection *b,
+    ManifoldOpType op) {
+  if (op == MANIFOLD_OP_SUBTRACT)
+    return cs_subtract(a, b);
+
+  // For Add (union): combine contours
+  if (op == MANIFOLD_OP_ADD) {
+    ManifoldPolygons2D pa = manifold_cross_section_to_polygons(a);
+    ManifoldPolygons2D pb = manifold_cross_section_to_polygons(b);
+    int nc = pa.numPolys + pb.numPolys;
+    int nv_a = 0, nv_b = 0;
+    for (int i = 0; i < pa.numPolys; i++) nv_a += pa.polySizes[i];
+    for (int i = 0; i < pb.numPolys; i++) nv_b += pb.polySizes[i];
+    ManifoldCrossSection result = {NULL, NULL, 0, {{{1,0},{0,1},{0,0}}}};
+    result.numContours = nc;
+    result.contourSizes = (int *)malloc(nc * sizeof(int));
+    result.verts = (ManifoldVec2 *)malloc((nv_a + nv_b) * sizeof(ManifoldVec2));
+    memcpy(result.contourSizes, pa.polySizes, pa.numPolys * sizeof(int));
+    memcpy(result.contourSizes + pa.numPolys, pb.polySizes, pb.numPolys * sizeof(int));
+    memcpy(result.verts, pa.polys, nv_a * sizeof(ManifoldVec2));
+    memcpy(result.verts + nv_a, pb.polys, nv_b * sizeof(ManifoldVec2));
+    manifold_polygons2d_free(&pa);
+    manifold_polygons2d_free(&pb);
+    return result;
+  }
+
+  return manifold_cross_section_empty();
+}
+
+ManifoldCrossSection manifold_cross_section_batch_boolean(
+    const ManifoldCrossSection *css, int count, ManifoldOpType op) {
+  if (count == 0) return manifold_cross_section_empty();
+  if (count == 1) return manifold_cross_section_copy(&css[0]);
+
+  ManifoldCrossSection result = manifold_cross_section_copy(&css[0]);
+  for (int i = 1; i < count; i++) {
+    ManifoldCrossSection tmp = manifold_cross_section_boolean(&result, &css[i], op);
+    manifold_cross_section_free(&result);
+    result = tmp;
+  }
+  return result;
+}
+
 // Port of Manifold::Impl::Slice(double height)
 // Slices the manifold at the given z-height, returning 2D cross-section polygons.
 ManifoldPolygons2D manifold_slice(const Manifold *m, double height) {
