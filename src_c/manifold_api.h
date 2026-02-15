@@ -306,6 +306,8 @@ ManifoldCrossSection manifold_cross_section_scale(
     const ManifoldCrossSection *cs, ManifoldVec2 s);
 ManifoldCrossSection manifold_cross_section_transform(
     const ManifoldCrossSection *cs, ManifoldMat2x3 m);
+ManifoldCrossSection manifold_cross_section_mirror(
+    const ManifoldCrossSection *cs, ManifoldVec2 ax);
 
 // Construct a circle with the given radius and number of segments.
 ManifoldCrossSection manifold_cross_section_circle(double radius,

@@ -2529,6 +2529,21 @@ ManifoldCrossSection manifold_cross_section_scale(
   return manifold_cross_section_transform(cs, m);
 }
 
+ManifoldCrossSection manifold_cross_section_mirror(
+    const ManifoldCrossSection *cs, ManifoldVec2 ax) {
+  double len = sqrt(ax.x * ax.x + ax.y * ax.y);
+  if (len == 0.0) {
+    return manifold_cross_section_empty();
+  }
+  double nx = ax.x / len;
+  double ny = ax.y / len;
+  // Reflection matrix: I - 2*n*nT
+  ManifoldMat2x3 m = {{{1.0 - 2.0*nx*nx, -2.0*nx*ny},
+                        {-2.0*nx*ny, 1.0 - 2.0*ny*ny},
+                        {0, 0}}};
+  return manifold_cross_section_transform(cs, m);
+}
+
 // ============================================================
 // CrossSection: Circle, Hull, Boolean
 // ============================================================

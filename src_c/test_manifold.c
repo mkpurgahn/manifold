@@ -6655,6 +6655,52 @@ static void test_CrossSection_HullError(void) {
   manifold_cross_section_free(&rr);
 }
 
+static void test_CrossSection_MirrorCheckAxis(void) {
+  // auto tri = CrossSection({{0., 0.}, {5., 5.}, {0., 10.}});
+  ManifoldVec2 tri_pts[] = {{0., 0.}, {5., 5.}, {0., 10.}};
+  int tri_sizes[] = {3};
+  ManifoldPolygons2D tri_polys = {tri_pts, tri_sizes, 1};
+  ManifoldCrossSection tri = manifold_cross_section_of_polygons(&tri_polys);
+
+  // auto a = tri.Mirror({1., 1.}).Bounds();
+  ManifoldCrossSection a = manifold_cross_section_mirror(&tri, (ManifoldVec2){1., 1.});
+  ManifoldRect2D a_bounds = manifold_cross_section_bounds(&a);
+
+  // auto a_expected = CrossSection({{0., 0.}, {-10., 0.}, {-5., -5.}}).Bounds();
+  ManifoldVec2 a_exp_pts[] = {{0., 0.}, {-10., 0.}, {-5., -5.}};
+  int a_exp_sizes[] = {3};
+  ManifoldPolygons2D a_exp_polys = {a_exp_pts, a_exp_sizes, 1};
+  ManifoldCrossSection a_exp_cs = manifold_cross_section_of_polygons(&a_exp_polys);
+  ManifoldRect2D a_exp = manifold_cross_section_bounds(&a_exp_cs);
+
+  EXPECT_NEAR(a_bounds.min.x, a_exp.min.x, 0.001);
+  EXPECT_NEAR(a_bounds.min.y, a_exp.min.y, 0.001);
+  EXPECT_NEAR(a_bounds.max.x, a_exp.max.x, 0.001);
+  EXPECT_NEAR(a_bounds.max.y, a_exp.max.y, 0.001);
+
+  // auto b = tri.Mirror({-1., 1.}).Bounds();
+  ManifoldCrossSection b = manifold_cross_section_mirror(&tri, (ManifoldVec2){-1., 1.});
+  ManifoldRect2D b_bounds = manifold_cross_section_bounds(&b);
+
+  // auto b_expected = CrossSection({{0., 0.}, {10., 0.}, {5., 5.}}).Bounds();
+  ManifoldVec2 b_exp_pts[] = {{0., 0.}, {10., 0.}, {5., 5.}};
+  int b_exp_sizes[] = {3};
+  ManifoldPolygons2D b_exp_polys = {b_exp_pts, b_exp_sizes, 1};
+  ManifoldCrossSection b_exp_cs = manifold_cross_section_of_polygons(&b_exp_polys);
+  ManifoldRect2D b_exp = manifold_cross_section_bounds(&b_exp_cs);
+
+  EXPECT_NEAR(b_bounds.min.x, b_exp.min.x, 0.001);
+  EXPECT_NEAR(b_bounds.min.y, b_exp.min.y, 0.001);
+  EXPECT_NEAR(b_bounds.max.x, b_exp.max.x, 0.001);
+  EXPECT_NEAR(b_bounds.max.y, b_exp.max.y, 0.001);
+
+  manifold_cross_section_free(&tri);
+  manifold_cross_section_free(&a);
+  manifold_cross_section_free(&a_exp_cs);
+  manifold_cross_section_free(&b);
+  manifold_cross_section_free(&b_exp_cs);
+}
+
 // ==================== Main ====================
 
 int main(void) {
@@ -6865,6 +6911,7 @@ int main(void) {
   RUN_TEST(CrossSection_Transform);
   RUN_TEST(CrossSection_Hull);
   RUN_TEST(CrossSection_HullError);
+  RUN_TEST(CrossSection_MirrorCheckAxis);
 
   // Early exit before slow tests (temporary for development)
   if (getenv("SKIP_SLOW") != NULL) {
