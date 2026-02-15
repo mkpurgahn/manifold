@@ -5187,6 +5187,26 @@ static void test_Samples_CondensedMatter16(void) {
   manifold_destroy(&cm2);
 }
 
+static void test_Samples_CondensedMatter64(void) {
+  ManifoldExecutionParams *params = manifold_get_params();
+  bool old_processOverlaps = params->processOverlaps;
+  params->processOverlaps = true;
+
+  Manifold cm = make_condensed_matter(64);
+  check_gl(&cm);
+
+  Manifold cm2 = make_condensed_matter(64);
+  ManifoldMeshGL mgl1 = manifold_get_meshgl(&cm);
+  ManifoldMeshGL mgl2 = manifold_get_meshgl(&cm2);
+  check_gl_equiv(&mgl1, &mgl2);
+  manifold_free_meshgl(&mgl1);
+  manifold_free_meshgl(&mgl2);
+  manifold_destroy(&cm);
+  manifold_destroy(&cm2);
+
+  params->processOverlaps = old_processOverlaps;
+}
+
 static void test_Samples_Sponge4(void) {
   // C++ Sponge4 uses MengerSponge(4) but that's too slow for C port.
   // Use level 2 instead. C++ genus values: 1:5, 2:81, 3:1409, 4:26433
@@ -7633,6 +7653,7 @@ int main(void) {
   RUN_TEST(Samples_Bracelet);
   RUN_TEST(Properties_MingapStretchyBracelet);
   RUN_TEST(Samples_CondensedMatter16);
+  RUN_TEST(Samples_CondensedMatter64);
 
   // These tests may corrupt memory — run last
   RUN_TEST(Samples_Sponge4);
