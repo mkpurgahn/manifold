@@ -217,6 +217,36 @@ double manifold_polygons2d_area(const ManifoldPolygons2D *polys);
 // Free a ManifoldPolygons2D returned by manifold_project().
 void manifold_polygons2d_free(ManifoldPolygons2D *p);
 
+// ---------- Rect2D ----------
+// Axis-aligned 2D bounding rectangle, matching C++ Rect.
+typedef struct {
+  ManifoldVec2 min;
+  ManifoldVec2 max;
+} ManifoldRect2D;
+
+// Create an empty rect (min=+inf, max=-inf).
+ManifoldRect2D manifold_rect2d_empty(void);
+
+// Create a rect containing two points.
+ManifoldRect2D manifold_rect2d(ManifoldVec2 a, ManifoldVec2 b);
+
+// Return the area of the rectangle.
+double manifold_rect2d_area(const ManifoldRect2D *r);
+
+// Does this rect contain the given point (inclusive)?
+bool manifold_rect2d_contains_point(const ManifoldRect2D *r, ManifoldVec2 p);
+
+// Does this rect contain the given rect (inclusive)?
+bool manifold_rect2d_contains_rect(const ManifoldRect2D *r,
+                                   const ManifoldRect2D *other);
+
+// Does this rect overlap the given rect (inclusive)?
+bool manifold_rect2d_does_overlap(const ManifoldRect2D *r,
+                                  const ManifoldRect2D *other);
+
+// Is the rectangle empty (containing no space)?
+bool manifold_rect2d_is_empty(const ManifoldRect2D *r);
+
 // ---------- CrossSection ----------
 // 2D cross-section: a set of non-self-intersecting polygon contours.
 // Minimal port of C++ CrossSection class.
@@ -230,6 +260,10 @@ typedef struct {
 // Empty contours (< 3 vertices) are filtered out, matching C++ behavior.
 ManifoldCrossSection manifold_cross_section_of_polygons(
     const ManifoldPolygons2D *polys);
+
+// Construct a CrossSection from a Rect.
+ManifoldCrossSection manifold_cross_section_of_rect(
+    const ManifoldRect2D *rect);
 
 // Construct an empty CrossSection.
 ManifoldCrossSection manifold_cross_section_empty(void);
@@ -245,6 +279,9 @@ size_t manifold_cross_section_num_contour(const ManifoldCrossSection *cs);
 
 // Compute the area of the cross-section.
 double manifold_cross_section_area2(const ManifoldCrossSection *cs);
+
+// Get the bounding rectangle of the cross-section.
+ManifoldRect2D manifold_cross_section_bounds(const ManifoldCrossSection *cs);
 
 // Free a ManifoldCrossSection.
 void manifold_cross_section_free(ManifoldCrossSection *cs);

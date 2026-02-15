@@ -2271,6 +2271,53 @@ void manifold_polygons2d_free(ManifoldPolygons2D *p) {
   p->numPolys = 0;
 }
 
+// ---------- Rect2D ----------
+
+ManifoldRect2D manifold_rect2d_empty(void) {
+  ManifoldRect2D r;
+  r.min.x = INFINITY;
+  r.min.y = INFINITY;
+  r.max.x = -INFINITY;
+  r.max.y = -INFINITY;
+  return r;
+}
+
+ManifoldRect2D manifold_rect2d(ManifoldVec2 a, ManifoldVec2 b) {
+  ManifoldRect2D r;
+  r.min.x = fmin(a.x, b.x);
+  r.min.y = fmin(a.y, b.y);
+  r.max.x = fmax(a.x, b.x);
+  r.max.y = fmax(a.y, b.y);
+  return r;
+}
+
+double manifold_rect2d_area(const ManifoldRect2D *r) {
+  double sx = r->max.x - r->min.x;
+  double sy = r->max.y - r->min.y;
+  return sx * sy;
+}
+
+bool manifold_rect2d_contains_point(const ManifoldRect2D *r, ManifoldVec2 p) {
+  return p.x >= r->min.x && p.y >= r->min.y &&
+         p.x <= r->max.x && p.y <= r->max.y;
+}
+
+bool manifold_rect2d_contains_rect(const ManifoldRect2D *r,
+                                   const ManifoldRect2D *other) {
+  return other->min.x >= r->min.x && other->min.y >= r->min.y &&
+         other->max.x <= r->max.x && other->max.y <= r->max.y;
+}
+
+bool manifold_rect2d_does_overlap(const ManifoldRect2D *r,
+                                  const ManifoldRect2D *other) {
+  return r->min.x <= other->max.x && r->min.y <= other->max.y &&
+         r->max.x >= other->min.x && r->max.y >= other->min.y;
+}
+
+bool manifold_rect2d_is_empty(const ManifoldRect2D *r) {
+  return r->max.y <= r->min.y || r->max.x <= r->min.x;
+}
+
 // ---------- CrossSection ----------
 
 ManifoldCrossSection manifold_cross_section_empty(void) {
@@ -2347,6 +2394,36 @@ double manifold_cross_section_area2(const ManifoldCrossSection *cs) {
     offset += n;
   }
   return totalArea;
+}
+
+ManifoldCrossSection manifold_cross_section_of_rect(
+    const ManifoldRect2D *rect) {
+  ManifoldCrossSection cs = {NULL, NULL, 0};
+  if (!rect || manifold_rect2d_is_empty(rect)) return cs;
+  cs.numContours = 1;
+  cs.contourSizes = (int *)malloc(sizeof(int));
+  cs.contourSizes[0] = 4;
+  cs.verts = (ManifoldVec2 *)malloc(4 * sizeof(ManifoldVec2));
+  // CCW winding matching C++: bottom-left, bottom-right, top-right, top-left
+  cs.verts[0] = (ManifoldVec2){rect->min.x, rect->min.y};
+  cs.verts[1] = (ManifoldVec2){rect->max.x, rect->min.y};
+  cs.verts[2] = (ManifoldVec2){rect->max.x, rect->max.y};
+  cs.verts[3] = (ManifoldVec2){rect->min.x, rect->max.y};
+  return cs;
+}
+
+ManifoldRect2D manifold_cross_section_bounds(const ManifoldCrossSection *cs) {
+  ManifoldRect2D r = manifold_rect2d_empty();
+  if (!cs || cs->numContours == 0) return r;
+  int total = 0;
+  for (int i = 0; i < cs->numContours; i++) total += cs->contourSizes[i];
+  for (int i = 0; i < total; i++) {
+    if (cs->verts[i].x < r.min.x) r.min.x = cs->verts[i].x;
+    if (cs->verts[i].y < r.min.y) r.min.y = cs->verts[i].y;
+    if (cs->verts[i].x > r.max.x) r.max.x = cs->verts[i].x;
+    if (cs->verts[i].y > r.max.y) r.max.y = cs->verts[i].y;
+  }
+  return r;
 }
 
 void manifold_cross_section_free(ManifoldCrossSection *cs) {

@@ -6425,6 +6425,35 @@ static void test_CrossSection_Empty(void) {
   manifold_cross_section_free(&e);
 }
 
+static void test_CrossSection_Rect(void) {
+  double w = 10;
+  double h = 5;
+  ManifoldRect2D rect = manifold_rect2d((ManifoldVec2){0, 0},
+                                        (ManifoldVec2){w, h});
+  ManifoldCrossSection cross = manifold_cross_section_of_rect(&rect);
+  double area = manifold_rect2d_area(&rect);
+
+  EXPECT_FLOAT_EQ(area, w * h);
+  EXPECT_FLOAT_EQ(area, manifold_cross_section_area2(&cross));
+
+  ASSERT_TRUE(manifold_rect2d_contains_point(&rect, (ManifoldVec2){5, 5}));
+
+  ManifoldRect2D bounds = manifold_cross_section_bounds(&cross);
+  ASSERT_TRUE(manifold_rect2d_contains_rect(&rect, &bounds));
+
+  ManifoldRect2D empty = manifold_rect2d_empty();
+  ASSERT_TRUE(manifold_rect2d_contains_rect(&rect, &empty));
+
+  ManifoldRect2D overlap = manifold_rect2d((ManifoldVec2){5, 5},
+                                           (ManifoldVec2){15, 15});
+  ASSERT_TRUE(manifold_rect2d_does_overlap(&rect, &overlap));
+
+  ManifoldRect2D empty2 = manifold_rect2d_empty();
+  ASSERT_TRUE(manifold_rect2d_is_empty(&empty2));
+
+  manifold_cross_section_free(&cross);
+}
+
 // ==================== Main ====================
 
 int main(void) {
@@ -6630,6 +6659,7 @@ int main(void) {
   // CrossSection tests
   printf("--- CrossSection ---\n");
   RUN_TEST(CrossSection_Empty);
+  RUN_TEST(CrossSection_Rect);
 
   // Early exit before slow tests (temporary for development)
   if (getenv("SKIP_SLOW") != NULL) {
