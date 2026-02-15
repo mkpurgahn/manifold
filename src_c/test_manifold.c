@@ -6992,6 +6992,28 @@ static void test_CrossSection_NegativeOffset(void) {
   manifold_cross_section_free(&dilated);
 }
 
+static void test_CrossSection_RoundOffset(void) {
+  // CrossSection::Square({20, 20}, true) => centered 20x20 square
+  ManifoldRect2D sqRect = {{-10, -10}, {10, 10}};
+  ManifoldCrossSection a = manifold_cross_section_of_rect(&sqRect);
+  int segments = 20;
+  ManifoldCrossSection rounded = manifold_cross_section_offset(
+      &a, 5.0, MANIFOLD_JOIN_ROUND, 2.0, segments);
+  ManifoldPolygons2D polys = manifold_cross_section_to_polygons(&rounded);
+  Manifold result = manifold_extrude(polys.polys, polys.polySizes,
+                                             polys.numPolys, 5.0, 0, 0.0,
+                                             (ManifoldVec2){1, 1});
+
+  EXPECT_EQ(manifold_genus(&result), 0);
+  EXPECT_NEAR(manifold_volume(&result), 4386, 1);
+  EXPECT_EQ((int)manifold_cross_section_num_vert(&rounded), segments + 4);
+
+  manifold_destroy(&result);
+  manifold_polygons2d_free(&polys);
+  manifold_cross_section_free(&rounded);
+  manifold_cross_section_free(&a);
+}
+
 // ==================== Main ====================
 
 int main(void) {
@@ -7209,6 +7231,7 @@ int main(void) {
   RUN_TEST(CrossSection_FillRule);
   RUN_TEST(CrossSection_BatchBoolean);
   RUN_TEST(CrossSection_NegativeOffset);
+  RUN_TEST(CrossSection_RoundOffset);
 
   // Early exit before slow tests (temporary for development)
   if (getenv("SKIP_SLOW") != NULL) {
