@@ -6406,6 +6406,25 @@ static void test_Manifold_FaceIDRoundTrip(void) {
   manifold_destroy(&cube2);
 }
 
+// ==================== CrossSection Tests ====================
+
+static void test_CrossSection_Empty(void) {
+  // C++ equivalent:
+  //   Polygons polys(2);
+  //   auto e = CrossSection(polys);
+  //   EXPECT_TRUE(e.IsEmpty());
+  ManifoldPolygons2D polys = {NULL, NULL, 0};
+  // Polygons(2) creates 2 empty SimplePolygon entries
+  int sizes[2] = {0, 0};
+  polys.polySizes = sizes;
+  polys.numPolys = 2;
+  polys.polys = NULL;
+
+  ManifoldCrossSection e = manifold_cross_section_of_polygons(&polys);
+  ASSERT_TRUE(manifold_cross_section_is_empty(&e));
+  manifold_cross_section_free(&e);
+}
+
 // ==================== Main ====================
 
 int main(void) {
@@ -6607,6 +6626,10 @@ int main(void) {
   // Quality tests
   printf("--- Quality ---\n");
   RUN_TEST(Quality_GetCircularSegments);
+
+  // CrossSection tests
+  printf("--- CrossSection ---\n");
+  RUN_TEST(CrossSection_Empty);
 
   // Early exit before slow tests (temporary for development)
   if (getenv("SKIP_SLOW") != NULL) {

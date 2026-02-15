@@ -217,6 +217,38 @@ double manifold_polygons2d_area(const ManifoldPolygons2D *polys);
 // Free a ManifoldPolygons2D returned by manifold_project().
 void manifold_polygons2d_free(ManifoldPolygons2D *p);
 
+// ---------- CrossSection ----------
+// 2D cross-section: a set of non-self-intersecting polygon contours.
+// Minimal port of C++ CrossSection class.
+typedef struct {
+  ManifoldVec2 *verts;   // flattened contour vertices
+  int *contourSizes;     // number of vertices per contour
+  int numContours;       // number of contours
+} ManifoldCrossSection;
+
+// Construct a CrossSection from a set of 2D polygon contours.
+// Empty contours (< 3 vertices) are filtered out, matching C++ behavior.
+ManifoldCrossSection manifold_cross_section_of_polygons(
+    const ManifoldPolygons2D *polys);
+
+// Construct an empty CrossSection.
+ManifoldCrossSection manifold_cross_section_empty(void);
+
+// Returns true if the cross-section has no contours.
+bool manifold_cross_section_is_empty(const ManifoldCrossSection *cs);
+
+// Returns the number of vertices in the cross-section.
+size_t manifold_cross_section_num_vert(const ManifoldCrossSection *cs);
+
+// Returns the number of contours in the cross-section.
+size_t manifold_cross_section_num_contour(const ManifoldCrossSection *cs);
+
+// Compute the area of the cross-section.
+double manifold_cross_section_area2(const ManifoldCrossSection *cs);
+
+// Free a ManifoldCrossSection.
+void manifold_cross_section_free(ManifoldCrossSection *cs);
+
 // ---------- OBJ Import ----------
 // Read a Manifold from a Wavefront OBJ file (matching C++ ReadOBJ).
 Manifold manifold_read_obj(const char *path);

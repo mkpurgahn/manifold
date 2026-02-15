@@ -2271,6 +2271,93 @@ void manifold_polygons2d_free(ManifoldPolygons2D *p) {
   p->numPolys = 0;
 }
 
+// ---------- CrossSection ----------
+
+ManifoldCrossSection manifold_cross_section_empty(void) {
+  ManifoldCrossSection cs = {NULL, NULL, 0};
+  return cs;
+}
+
+ManifoldCrossSection manifold_cross_section_of_polygons(
+    const ManifoldPolygons2D *polys) {
+  ManifoldCrossSection cs = {NULL, NULL, 0};
+  if (!polys || polys->numPolys == 0) return cs;
+
+  // Count valid contours (>= 3 vertices) and total vertices
+  int numValid = 0;
+  int totalVerts = 0;
+  int offset = 0;
+  for (int i = 0; i < polys->numPolys; i++) {
+    if (polys->polySizes[i] >= 3) {
+      numValid++;
+      totalVerts += polys->polySizes[i];
+    }
+    offset += polys->polySizes[i];
+  }
+  if (numValid == 0) return cs;
+
+  cs.verts = (ManifoldVec2 *)malloc(totalVerts * sizeof(ManifoldVec2));
+  cs.contourSizes = (int *)malloc(numValid * sizeof(int));
+  cs.numContours = numValid;
+
+  int vi = 0, ci = 0;
+  offset = 0;
+  for (int i = 0; i < polys->numPolys; i++) {
+    int n = polys->polySizes[i];
+    if (n >= 3) {
+      for (int j = 0; j < n; j++) {
+        cs.verts[vi++] = polys->polys[offset + j];
+      }
+      cs.contourSizes[ci++] = n;
+    }
+    offset += n;
+  }
+  return cs;
+}
+
+bool manifold_cross_section_is_empty(const ManifoldCrossSection *cs) {
+  return !cs || cs->numContours == 0;
+}
+
+size_t manifold_cross_section_num_vert(const ManifoldCrossSection *cs) {
+  if (!cs) return 0;
+  size_t total = 0;
+  for (int i = 0; i < cs->numContours; i++) total += cs->contourSizes[i];
+  return total;
+}
+
+size_t manifold_cross_section_num_contour(const ManifoldCrossSection *cs) {
+  return cs ? (size_t)cs->numContours : 0;
+}
+
+double manifold_cross_section_area2(const ManifoldCrossSection *cs) {
+  if (!cs || cs->numContours == 0) return 0.0;
+  double totalArea = 0.0;
+  int offset = 0;
+  for (int c = 0; c < cs->numContours; c++) {
+    int n = cs->contourSizes[c];
+    if (n < 3) { offset += n; continue; }
+    double area = 0.0;
+    for (int i = 0; i < n; i++) {
+      int j = (i + 1) % n;
+      area += cs->verts[offset + i].x * cs->verts[offset + j].y;
+      area -= cs->verts[offset + j].x * cs->verts[offset + i].y;
+    }
+    totalArea += fabs(area) * 0.5;
+    offset += n;
+  }
+  return totalArea;
+}
+
+void manifold_cross_section_free(ManifoldCrossSection *cs) {
+  if (!cs) return;
+  free(cs->verts);
+  cs->verts = NULL;
+  free(cs->contourSizes);
+  cs->contourSizes = NULL;
+  cs->numContours = 0;
+}
+
 // Port of Manifold::Impl::Slice(double height)
 // Slices the manifold at the given z-height, returning 2D cross-section polygons.
 ManifoldPolygons2D manifold_slice(const Manifold *m, double height) {
