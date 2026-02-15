@@ -2491,6 +2491,22 @@ ManifoldPolygons2D manifold_cross_section_to_polygons(
   for (int i = 0; i < totalVerts; i++) {
     polys.polys[i] = cs_apply_transform(cs, i);
   }
+  // If transform has negative determinant (e.g. mirror), reverse each contour
+  // to restore CCW winding
+  double det = cs->transform.cols[0].x * cs->transform.cols[1].y -
+               cs->transform.cols[0].y * cs->transform.cols[1].x;
+  if (det < 0.0) {
+    int offset = 0;
+    for (int c = 0; c < polys.numPolys; c++) {
+      int n = polys.polySizes[c];
+      for (int j = 0; j < n / 2; j++) {
+        ManifoldVec2 tmp = polys.polys[offset + j];
+        polys.polys[offset + j] = polys.polys[offset + n - 1 - j];
+        polys.polys[offset + n - 1 - j] = tmp;
+      }
+      offset += n;
+    }
+  }
   return polys;
 }
 
@@ -2856,26 +2872,15 @@ cleanup:
   return nout;
 }
 
-// Subtract cross section b from a
-static ManifoldCrossSection cs_subtract(
-    const ManifoldCrossSection *a, const ManifoldCrossSection *b) {
+// Subtract a single clip contour from cross section a (which may have multiple contours)
+static ManifoldCrossSection cs_subtract_single_clip(
+    const ManifoldCrossSection *a, const ManifoldVec2 *clip, int nclip) {
   ManifoldCrossSection result = {NULL, NULL, 0, {{{1,0},{0,1},{0,0}}}};
 
   ManifoldPolygons2D pa = manifold_cross_section_to_polygons(a);
-  ManifoldPolygons2D pb = manifold_cross_section_to_polygons(b);
-  if (pa.numPolys == 0) { manifold_polygons2d_free(&pa); manifold_polygons2d_free(&pb); return result; }
-  if (pb.numPolys == 0) {
-    manifold_polygons2d_free(&pb);
-    result = manifold_cross_section_of_polygons(&pa);
-    manifold_polygons2d_free(&pa);
-    return result;
-  }
+  if (pa.numPolys == 0) { manifold_polygons2d_free(&pa); return result; }
 
-  // For each contour of a, subtract the first contour of b
-  const ManifoldVec2 *clip = pb.polys;
-  int nclip = pb.polySizes[0];
-
-  int max_contours = pa.numPolys * 2 + pb.numPolys;
+  int max_contours = pa.numPolys * 2 + 1;
   ManifoldVec2 **cverts = (ManifoldVec2 **)malloc(max_contours * sizeof(ManifoldVec2 *));
   int *csizes = (int *)malloc(max_contours * sizeof(int));
   int nc = 0;
@@ -2969,8 +2974,48 @@ static ManifoldCrossSection cs_subtract(
   }
   free(cverts); free(csizes);
   manifold_polygons2d_free(&pa);
-  manifold_polygons2d_free(&pb);
   return result;
+}
+
+// Subtract cross section b from a, handling all contours of b
+static ManifoldCrossSection cs_subtract(
+    const ManifoldCrossSection *a, const ManifoldCrossSection *b) {
+  if (!a || a->numContours == 0)
+    return (ManifoldCrossSection){NULL, NULL, 0, {{{1,0},{0,1},{0,0}}}};
+  if (!b || b->numContours == 0) {
+    ManifoldPolygons2D pa = manifold_cross_section_to_polygons(a);
+    ManifoldCrossSection result = manifold_cross_section_of_polygons(&pa);
+    manifold_polygons2d_free(&pa);
+    return result;
+  }
+
+  ManifoldPolygons2D pb = manifold_cross_section_to_polygons(b);
+  if (pb.numPolys == 0) {
+    manifold_polygons2d_free(&pb);
+    ManifoldPolygons2D pa = manifold_cross_section_to_polygons(a);
+    ManifoldCrossSection result = manifold_cross_section_of_polygons(&pa);
+    manifold_polygons2d_free(&pa);
+    return result;
+  }
+
+  // Iteratively subtract each clip contour
+  ManifoldPolygons2D pa = manifold_cross_section_to_polygons(a);
+  ManifoldCrossSection current = manifold_cross_section_of_polygons(&pa);
+  manifold_polygons2d_free(&pa);
+
+  int clip_offset = 0;
+  for (int ci = 0; ci < pb.numPolys; ci++) {
+    int nclip = pb.polySizes[ci];
+    if (nclip < 3) { clip_offset += nclip; continue; }
+    ManifoldCrossSection next = cs_subtract_single_clip(
+        &current, pb.polys + clip_offset, nclip);
+    manifold_cross_section_free(&current);
+    current = next;
+    clip_offset += nclip;
+  }
+
+  manifold_polygons2d_free(&pb);
+  return current;
 }
 
 ManifoldCrossSection manifold_cross_section_boolean(
@@ -2979,24 +3024,46 @@ ManifoldCrossSection manifold_cross_section_boolean(
   if (op == MANIFOLD_OP_SUBTRACT)
     return cs_subtract(a, b);
 
-  // For Add (union): combine contours
+  // For Add (union): A ∪ B = A + (B \ A)
   if (op == MANIFOLD_OP_ADD) {
+    if (!a || a->numContours == 0) {
+      ManifoldPolygons2D pb = manifold_cross_section_to_polygons(b);
+      ManifoldCrossSection result = manifold_cross_section_of_polygons(&pb);
+      manifold_polygons2d_free(&pb);
+      return result;
+    }
+    if (!b || b->numContours == 0) {
+      ManifoldPolygons2D pa = manifold_cross_section_to_polygons(a);
+      ManifoldCrossSection result = manifold_cross_section_of_polygons(&pa);
+      manifold_polygons2d_free(&pa);
+      return result;
+    }
+    ManifoldCrossSection b_minus_a = cs_subtract(b, a);
     ManifoldPolygons2D pa = manifold_cross_section_to_polygons(a);
-    ManifoldPolygons2D pb = manifold_cross_section_to_polygons(b);
+    ManifoldPolygons2D pb = manifold_cross_section_to_polygons(&b_minus_a);
     int nc = pa.numPolys + pb.numPolys;
     int nv_a = 0, nv_b = 0;
     for (int i = 0; i < pa.numPolys; i++) nv_a += pa.polySizes[i];
     for (int i = 0; i < pb.numPolys; i++) nv_b += pb.polySizes[i];
     ManifoldCrossSection result = {NULL, NULL, 0, {{{1,0},{0,1},{0,0}}}};
+    if (nc == 0) {
+      manifold_polygons2d_free(&pa);
+      manifold_polygons2d_free(&pb);
+      manifold_cross_section_free(&b_minus_a);
+      return result;
+    }
     result.numContours = nc;
     result.contourSizes = (int *)malloc(nc * sizeof(int));
     result.verts = (ManifoldVec2 *)malloc((nv_a + nv_b) * sizeof(ManifoldVec2));
     memcpy(result.contourSizes, pa.polySizes, pa.numPolys * sizeof(int));
-    memcpy(result.contourSizes + pa.numPolys, pb.polySizes, pb.numPolys * sizeof(int));
+    if (pb.numPolys > 0)
+      memcpy(result.contourSizes + pa.numPolys, pb.polySizes, pb.numPolys * sizeof(int));
     memcpy(result.verts, pa.polys, nv_a * sizeof(ManifoldVec2));
-    memcpy(result.verts + nv_a, pb.polys, nv_b * sizeof(ManifoldVec2));
+    if (nv_b > 0)
+      memcpy(result.verts + nv_a, pb.polys, nv_b * sizeof(ManifoldVec2));
     manifold_polygons2d_free(&pa);
     manifold_polygons2d_free(&pb);
+    manifold_cross_section_free(&b_minus_a);
     return result;
   }
 

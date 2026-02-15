@@ -6701,6 +6701,46 @@ static void test_CrossSection_MirrorCheckAxis(void) {
   manifold_cross_section_free(&b_exp_cs);
 }
 
+static void test_CrossSection_MirrorUnion(void) {
+  // auto a = CrossSection::Square({5., 5.}, true);  // centered
+  ManifoldRect2D rect_a = manifold_rect2d((ManifoldVec2){-2.5, -2.5},
+                                          (ManifoldVec2){2.5, 2.5});
+  ManifoldCrossSection a = manifold_cross_section_of_rect(&rect_a);
+
+  // auto b = a.Translate({2.5, 2.5});
+  ManifoldCrossSection b = manifold_cross_section_translate(&a, (ManifoldVec2){2.5, 2.5});
+
+  // b.Mirror({1, 1})
+  ManifoldCrossSection b_mirror = manifold_cross_section_mirror(&b, (ManifoldVec2){1, 1});
+
+  // auto cross = a + b + b.Mirror({1, 1});
+  ManifoldCrossSection ab = manifold_cross_section_boolean(&a, &b, MANIFOLD_OP_ADD);
+  ManifoldCrossSection cross = manifold_cross_section_boolean(&ab, &b_mirror, MANIFOLD_OP_ADD);
+
+  // auto result = Manifold::Extrude(cross.ToPolygons(), 5.);
+  ManifoldPolygons2D polys = manifold_cross_section_to_polygons(&cross);
+  Manifold result = manifold_extrude(polys.polys, polys.polySizes, polys.numPolys,
+                                     5.0, 0, 0.0, (ManifoldVec2){1, 1});
+
+  // EXPECT_FLOAT_EQ(2.5 * a.Area(), cross.Area());
+  double a_area = manifold_cross_section_area2(&a);
+  double cross_area = manifold_cross_section_area2(&cross);
+  EXPECT_FLOAT_EQ(2.5 * a_area, cross_area);
+
+  // EXPECT_TRUE(a.Mirror(vec2(0.0)).IsEmpty());
+  ManifoldCrossSection a_mirror_zero = manifold_cross_section_mirror(&a, (ManifoldVec2){0, 0});
+  EXPECT_TRUE(manifold_cross_section_is_empty(&a_mirror_zero));
+
+  manifold_cross_section_free(&a);
+  manifold_cross_section_free(&b);
+  manifold_cross_section_free(&b_mirror);
+  manifold_cross_section_free(&ab);
+  manifold_cross_section_free(&cross);
+  manifold_polygons2d_free(&polys);
+  manifold_destroy(&result);
+  manifold_cross_section_free(&a_mirror_zero);
+}
+
 // ==================== Main ====================
 
 int main(void) {
@@ -6912,6 +6952,7 @@ int main(void) {
   RUN_TEST(CrossSection_Hull);
   RUN_TEST(CrossSection_HullError);
   RUN_TEST(CrossSection_MirrorCheckAxis);
+  RUN_TEST(CrossSection_MirrorUnion);
 
   // Early exit before slow tests (temporary for development)
   if (getenv("SKIP_SLOW") != NULL) {
