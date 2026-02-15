@@ -6741,6 +6741,33 @@ static void test_CrossSection_MirrorUnion(void) {
   manifold_cross_section_free(&a_mirror_zero);
 }
 
+static void warp_scale_translate(ManifoldVec2 *v) {
+  v->x = v->x * 2 + 4;
+  v->y = v->y * 3 + 5;
+}
+
+static void test_CrossSection_Warp(void) {
+  // auto sq = CrossSection::Square({10., 10.});
+  ManifoldRect2D sqRect = manifold_rect2d((ManifoldVec2){0, 0},
+                                          (ManifoldVec2){10, 10});
+  ManifoldCrossSection sq = manifold_cross_section_of_rect(&sqRect);
+
+  // auto a = sq.Scale({2, 3}).Translate({4, 5});
+  ManifoldCrossSection sq_scl = manifold_cross_section_scale(&sq, (ManifoldVec2){2, 3});
+  ManifoldCrossSection a = manifold_cross_section_translate(&sq_scl, (ManifoldVec2){4, 5});
+
+  // auto b = sq.Warp([](vec2& v) { v.x = v.x * 2 + 4; v.y = v.y * 3 + 5; });
+  ManifoldCrossSection b = manifold_cross_section_warp(&sq, warp_scale_translate);
+
+  EXPECT_EQ((int)manifold_cross_section_num_vert(&sq), 4);
+  EXPECT_EQ((int)manifold_cross_section_num_contour(&sq), 1);
+
+  manifold_cross_section_free(&sq);
+  manifold_cross_section_free(&sq_scl);
+  manifold_cross_section_free(&a);
+  manifold_cross_section_free(&b);
+}
+
 // ==================== Main ====================
 
 int main(void) {
@@ -6953,6 +6980,7 @@ int main(void) {
   RUN_TEST(CrossSection_HullError);
   RUN_TEST(CrossSection_MirrorCheckAxis);
   RUN_TEST(CrossSection_MirrorUnion);
+  RUN_TEST(CrossSection_Warp);
 
   // Early exit before slow tests (temporary for development)
   if (getenv("SKIP_SLOW") != NULL) {

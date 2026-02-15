@@ -2560,6 +2560,25 @@ ManifoldCrossSection manifold_cross_section_mirror(
   return manifold_cross_section_transform(cs, m);
 }
 
+ManifoldCrossSection manifold_cross_section_warp(
+    const ManifoldCrossSection *cs, void (*warpFunc)(ManifoldVec2 *v)) {
+  if (!cs || cs->numContours == 0 || !warpFunc)
+    return manifold_cross_section_empty();
+  // Materialize vertices with transform applied, then warp
+  int totalVerts = 0;
+  for (int i = 0; i < cs->numContours; i++) totalVerts += cs->contourSizes[i];
+  ManifoldCrossSection result = {NULL, NULL, 0, {{{1,0},{0,1},{0,0}}}};
+  result.numContours = cs->numContours;
+  result.contourSizes = (int *)malloc(cs->numContours * sizeof(int));
+  memcpy(result.contourSizes, cs->contourSizes, cs->numContours * sizeof(int));
+  result.verts = (ManifoldVec2 *)malloc(totalVerts * sizeof(ManifoldVec2));
+  for (int i = 0; i < totalVerts; i++) {
+    result.verts[i] = cs_apply_transform(cs, i);
+    warpFunc(&result.verts[i]);
+  }
+  return result;
+}
+
 // ============================================================
 // CrossSection: Circle, Hull, Boolean
 // ============================================================

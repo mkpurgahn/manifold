@@ -309,6 +309,12 @@ ManifoldCrossSection manifold_cross_section_transform(
 ManifoldCrossSection manifold_cross_section_mirror(
     const ManifoldCrossSection *cs, ManifoldVec2 ax);
 
+// Apply a warp function to all vertices of the cross-section.
+// The warp function receives a pointer to each vertex and may modify it.
+// Returns a new CrossSection with the warped vertices.
+ManifoldCrossSection manifold_cross_section_warp(
+    const ManifoldCrossSection *cs, void (*warpFunc)(ManifoldVec2 *v));
+
 // Construct a circle with the given radius and number of segments.
 ManifoldCrossSection manifold_cross_section_circle(double radius,
                                                     int circularSegments);
