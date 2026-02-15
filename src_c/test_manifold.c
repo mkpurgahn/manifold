@@ -6149,15 +6149,40 @@ static void test_Properties_Coplanar(void) {
   Manifold peg0 = manifold_cube((ManifoldVec3){1, 1, 2}, false);
   Manifold peg1 = manifold_translate(&peg0, (ManifoldVec3){1, 1, 0});
   Manifold peg = manifold_as_original(&peg1);
+  int pegID = manifold_original_id(&peg);
   Manifold hole0 = manifold_cube((ManifoldVec3){3, 3, 1}, false);
   Manifold hole1 = manifold_difference(&hole0, &peg);
   Manifold hole = manifold_as_original(&hole1);
   EXPECT_EQ(manifold_genus(&peg), 0);
   EXPECT_EQ(manifold_genus(&hole), 1);
 
+  // Collect input MeshGLs for RelatedGL
+  ManifoldMeshGL input[2];
+  input[0] = manifold_get_meshgl(&hole);
+  input[1] = manifold_get_meshgl(&peg);
+
   Manifold result = manifold_union(&hole, &peg);
   EXPECT_EQ(manifold_genus(&result), 0);
+  related_gl(&result, input, 2, false);
 
+  // Find minimum Z among peg-run vertices
+  ManifoldMeshGL resultGL = manifold_get_meshgl(&result);
+  float minPegZ = FLT_MAX;
+  for (size_t run = 0; run < resultGL.runOriginalIDLen; run++) {
+    if ((int)resultGL.runOriginalID[run] == pegID) {
+      for (size_t t3 = (size_t)resultGL.runIndex[run];
+           t3 < (size_t)resultGL.runIndex[run + 1]; t3++) {
+        size_t v = (size_t)resultGL.triVerts[t3];
+        float z = resultGL.vertProperties[v * resultGL.numProp + 2];
+        if (z < minPegZ) minPegZ = z;
+      }
+    }
+  }
+  EXPECT_FLOAT_EQ(minPegZ, 0.0f);
+
+  manifold_free_meshgl(&resultGL);
+  manifold_free_meshgl(&input[0]);
+  manifold_free_meshgl(&input[1]);
   manifold_destroy(&peg0); manifold_destroy(&peg1); manifold_destroy(&peg);
   manifold_destroy(&hole0); manifold_destroy(&hole1); manifold_destroy(&hole);
   manifold_destroy(&result);
