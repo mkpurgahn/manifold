@@ -3828,6 +3828,125 @@ static void test_Properties_TriangleDistanceOverlapping(void) {
   EXPECT_FLOAT_EQ(distance, 0);
 }
 
+// ==================== StretchyBracelet helper ====================
+
+// 2D rotation: rotate point p by angle (radians)
+static ManifoldVec2 rot2d(double angle, ManifoldVec2 p) {
+  double c = cos(angle), s = sin(angle);
+  return (ManifoldVec2){c * p.x - s * p.y, s * p.x + c * p.y};
+}
+
+static Manifold bracelet_base(double width, double radius, double decorRadius,
+                              double twistRadius, int nDecor, double innerRadius,
+                              double outerRadius, double cut, int nCut,
+                              int nDivision) {
+  // base cylinder
+  Manifold base = manifold_cylinder(width, radius + twistRadius / 2,
+                                    radius + twistRadius / 2, 0, false);
+
+  // Create circle cross-section translated by (twistRadius, 0)
+  int circleN = nDivision;
+  ManifoldVec2 *circle = (ManifoldVec2 *)malloc(circleN * sizeof(ManifoldVec2));
+  for (int i = 0; i < circleN; i++) {
+    double angle = 2.0 * kPi * i / circleN;
+    circle[i].x = twistRadius + decorRadius * cos(angle);
+    circle[i].y = decorRadius * sin(angle);
+  }
+
+  // Extrude circle with twist
+  int circSize = circleN;
+  ManifoldVec2 scaleTop = {1.0, 1.0};
+  Manifold decor_ext = manifold_extrude(circle, &circSize, 1, width, nDivision,
+                                        180.0, scaleTop);
+  free(circle);
+
+  // Scale and translate
+  Manifold decor_scaled = manifold_scale(&decor_ext, (ManifoldVec3){1.0, 0.5, 1.0});
+  Manifold decor = manifold_translate(&decor_scaled, (ManifoldVec3){0.0, radius, 0.0});
+
+  // Union decorations around the base
+  for (int i = 0; i < nDecor; i++) {
+    Manifold rotated = manifold_rotate(&decor, 0, 0, (360.0 / nDecor) * i);
+    Manifold tmp = manifold_union(&base, &rotated);
+    manifold_destroy(&base);
+    manifold_destroy(&rotated);
+    base = tmp;
+  }
+
+  // Create stretch polygon
+  double dPhiRad = 2.0 * kPi / nCut;
+  int stretchN = nCut * 4;
+  ManifoldVec2 *stretch = (ManifoldVec2 *)malloc(stretchN * sizeof(ManifoldVec2));
+  ManifoldVec2 p0 = {outerRadius, 0.0};
+  ManifoldVec2 p1 = {innerRadius, -cut};
+  ManifoldVec2 p2 = {innerRadius, cut};
+  for (int i = 0; i < nCut; i++) {
+    double angle = dPhiRad * i;
+    stretch[i * 4 + 0] = rot2d(angle, p0);
+    stretch[i * 4 + 1] = rot2d(angle, p1);
+    stretch[i * 4 + 2] = rot2d(angle, p2);
+    stretch[i * 4 + 3] = rot2d(angle, p0);
+  }
+
+  int stretchSize = stretchN;
+  Manifold stretch_ext = manifold_extrude(stretch, &stretchSize, 1, width, 0,
+                                          0.0, (ManifoldVec2){1.0, 1.0});
+  free(stretch);
+
+  // Intersection
+  Manifold result = manifold_intersection(&stretch_ext, &base);
+
+  // AsOriginal to remove extra coplanar edges
+  Manifold orig = manifold_as_original(&result);
+
+  manifold_destroy(&decor_ext);
+  manifold_destroy(&decor_scaled);
+  manifold_destroy(&decor);
+  manifold_destroy(&base);
+  manifold_destroy(&stretch_ext);
+  manifold_destroy(&result);
+
+  return orig;
+}
+
+static Manifold make_stretchy_bracelet(double radius, double height,
+                                       double width, double thickness,
+                                       int nDecor, int nCut, int nDivision) {
+  double twistRadius = kPi * radius / nDecor;
+  double decorRadius = twistRadius * 1.5;
+  double outerRadius = radius + (decorRadius + twistRadius) * 0.5;
+  double innerRadius = outerRadius - height;
+  double cutVal = 0.5 * (kPi * 2.0 * innerRadius / nCut - thickness);
+  double adjThickness = 0.5 * thickness * height / cutVal;
+
+  Manifold outer = bracelet_base(width, radius, decorRadius, twistRadius,
+                                  nDecor, innerRadius + thickness,
+                                  outerRadius + adjThickness,
+                                  cutVal - adjThickness, nCut, nDivision);
+  Manifold inner = bracelet_base(width, radius - thickness, decorRadius,
+                                  twistRadius, nDecor, innerRadius,
+                                  outerRadius + 3 * adjThickness,
+                                  cutVal, nCut, nDivision);
+  Manifold result = manifold_difference(&outer, &inner);
+  manifold_destroy(&outer);
+  manifold_destroy(&inner);
+  return result;
+}
+
+static void test_Properties_MingapStretchyBracelet(void) {
+  Manifold a = make_stretchy_bracelet(30.0, 8.0, 15.0, 0.4, 6, 20, 50);
+  Manifold b = make_stretchy_bracelet(30.0, 8.0, 15.0, 0.4, 6, 20, 50);
+  Manifold b_t = manifold_translate(&b, (ManifoldVec3){0, 0, 20});
+
+  double distance = manifold_min_gap(&a, &b_t, 10);
+
+  EXPECT_NEAR(distance, 5, 0.001);
+
+  manifold_destroy(&a);
+  manifold_destroy(&b);
+  manifold_destroy(&b_t);
+}
+
 // ==================== Boolean SimplifyCracks ====================
 
 static void simplify_cracks_warp(double *x, double *y, double *z, void *ctx) {
@@ -6529,6 +6648,7 @@ int main(void) {
   RUN_TEST(Manifold_Warp2);
   RUN_TEST(Manifold_WarpBatch);
   RUN_TEST(Smooth_SDF);
+  RUN_TEST(Properties_MingapStretchyBracelet);
 
   // These tests may corrupt memory — run last
   RUN_TEST(Samples_Sponge4);
