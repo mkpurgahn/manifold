@@ -2320,14 +2320,29 @@ bool manifold_rect2d_is_empty(const ManifoldRect2D *r) {
 
 // ---------- CrossSection ----------
 
+static const ManifoldMat2x3 MAT2X3_IDENTITY = {{{1, 0}, {0, 1}, {0, 0}}};
+
+// Compose two mat2x3 affine transforms: result = m * Mat3(t)
+// where Mat3(t) pads t with a third row (0, 0, 1).
+static ManifoldMat2x3 mat2x3_compose(ManifoldMat2x3 m, ManifoldMat2x3 t) {
+  ManifoldMat2x3 r;
+  r.cols[0].x = m.cols[0].x * t.cols[0].x + m.cols[1].x * t.cols[0].y;
+  r.cols[0].y = m.cols[0].y * t.cols[0].x + m.cols[1].y * t.cols[0].y;
+  r.cols[1].x = m.cols[0].x * t.cols[1].x + m.cols[1].x * t.cols[1].y;
+  r.cols[1].y = m.cols[0].y * t.cols[1].x + m.cols[1].y * t.cols[1].y;
+  r.cols[2].x = m.cols[0].x * t.cols[2].x + m.cols[1].x * t.cols[2].y + m.cols[2].x;
+  r.cols[2].y = m.cols[0].y * t.cols[2].x + m.cols[1].y * t.cols[2].y + m.cols[2].y;
+  return r;
+}
+
 ManifoldCrossSection manifold_cross_section_empty(void) {
-  ManifoldCrossSection cs = {NULL, NULL, 0};
+  ManifoldCrossSection cs = {NULL, NULL, 0, {{{1,0},{0,1},{0,0}}}};
   return cs;
 }
 
 ManifoldCrossSection manifold_cross_section_of_polygons(
     const ManifoldPolygons2D *polys) {
-  ManifoldCrossSection cs = {NULL, NULL, 0};
+  ManifoldCrossSection cs = {NULL, NULL, 0, {{{1,0},{0,1},{0,0}}}};
   if (!polys || polys->numPolys == 0) return cs;
 
   // Count valid contours (>= 3 vertices) and total vertices
@@ -2377,6 +2392,16 @@ size_t manifold_cross_section_num_contour(const ManifoldCrossSection *cs) {
   return cs ? (size_t)cs->numContours : 0;
 }
 
+// Apply a cross section's lazy transform to get a single transformed vertex.
+static ManifoldVec2 cs_apply_transform(const ManifoldCrossSection *cs, int idx) {
+  double x = cs->verts[idx].x;
+  double y = cs->verts[idx].y;
+  ManifoldVec2 out;
+  out.x = cs->transform.cols[0].x * x + cs->transform.cols[1].x * y + cs->transform.cols[2].x;
+  out.y = cs->transform.cols[0].y * x + cs->transform.cols[1].y * y + cs->transform.cols[2].y;
+  return out;
+}
+
 double manifold_cross_section_area2(const ManifoldCrossSection *cs) {
   if (!cs || cs->numContours == 0) return 0.0;
   double totalArea = 0.0;
@@ -2387,8 +2412,10 @@ double manifold_cross_section_area2(const ManifoldCrossSection *cs) {
     double area = 0.0;
     for (int i = 0; i < n; i++) {
       int j = (i + 1) % n;
-      area += cs->verts[offset + i].x * cs->verts[offset + j].y;
-      area -= cs->verts[offset + j].x * cs->verts[offset + i].y;
+      ManifoldVec2 vi = cs_apply_transform(cs, offset + i);
+      ManifoldVec2 vj = cs_apply_transform(cs, offset + j);
+      area += vi.x * vj.y;
+      area -= vj.x * vi.y;
     }
     totalArea += fabs(area) * 0.5;
     offset += n;
@@ -2398,7 +2425,7 @@ double manifold_cross_section_area2(const ManifoldCrossSection *cs) {
 
 ManifoldCrossSection manifold_cross_section_of_rect(
     const ManifoldRect2D *rect) {
-  ManifoldCrossSection cs = {NULL, NULL, 0};
+  ManifoldCrossSection cs = {NULL, NULL, 0, {{{1,0},{0,1},{0,0}}}};
   if (!rect || manifold_rect2d_is_empty(rect)) return cs;
   cs.numContours = 1;
   cs.contourSizes = (int *)malloc(sizeof(int));
@@ -2418,10 +2445,11 @@ ManifoldRect2D manifold_cross_section_bounds(const ManifoldCrossSection *cs) {
   int total = 0;
   for (int i = 0; i < cs->numContours; i++) total += cs->contourSizes[i];
   for (int i = 0; i < total; i++) {
-    if (cs->verts[i].x < r.min.x) r.min.x = cs->verts[i].x;
-    if (cs->verts[i].y < r.min.y) r.min.y = cs->verts[i].y;
-    if (cs->verts[i].x > r.max.x) r.max.x = cs->verts[i].x;
-    if (cs->verts[i].y > r.max.y) r.max.y = cs->verts[i].y;
+    ManifoldVec2 v = cs_apply_transform(cs, i);
+    if (v.x < r.min.x) r.min.x = v.x;
+    if (v.y < r.min.y) r.min.y = v.y;
+    if (v.x > r.max.x) r.max.x = v.x;
+    if (v.y > r.max.y) r.max.y = v.y;
   }
   return r;
 }
@@ -2433,6 +2461,72 @@ void manifold_cross_section_free(ManifoldCrossSection *cs) {
   free(cs->contourSizes);
   cs->contourSizes = NULL;
   cs->numContours = 0;
+}
+
+ManifoldCrossSection manifold_cross_section_copy(
+    const ManifoldCrossSection *cs) {
+  ManifoldCrossSection out = {NULL, NULL, 0, {{{1,0},{0,1},{0,0}}}};
+  if (!cs || cs->numContours == 0) return out;
+  int totalVerts = 0;
+  for (int i = 0; i < cs->numContours; i++) totalVerts += cs->contourSizes[i];
+  out.numContours = cs->numContours;
+  out.contourSizes = (int *)malloc(cs->numContours * sizeof(int));
+  memcpy(out.contourSizes, cs->contourSizes, cs->numContours * sizeof(int));
+  out.verts = (ManifoldVec2 *)malloc(totalVerts * sizeof(ManifoldVec2));
+  memcpy(out.verts, cs->verts, totalVerts * sizeof(ManifoldVec2));
+  out.transform = cs->transform;
+  return out;
+}
+
+ManifoldPolygons2D manifold_cross_section_to_polygons(
+    const ManifoldCrossSection *cs) {
+  ManifoldPolygons2D polys = {NULL, NULL, 0};
+  if (!cs || cs->numContours == 0) return polys;
+  int totalVerts = 0;
+  for (int i = 0; i < cs->numContours; i++) totalVerts += cs->contourSizes[i];
+  polys.numPolys = cs->numContours;
+  polys.polySizes = (int *)malloc(cs->numContours * sizeof(int));
+  memcpy(polys.polySizes, cs->contourSizes, cs->numContours * sizeof(int));
+  polys.polys = (ManifoldVec2 *)malloc(totalVerts * sizeof(ManifoldVec2));
+  for (int i = 0; i < totalVerts; i++) {
+    polys.polys[i] = cs_apply_transform(cs, i);
+  }
+  return polys;
+}
+
+ManifoldCrossSection manifold_cross_section_transform(
+    const ManifoldCrossSection *cs, ManifoldMat2x3 m) {
+  ManifoldCrossSection out = {NULL, NULL, 0, {{{1,0},{0,1},{0,0}}}};
+  if (!cs || cs->numContours == 0) return out;
+  int totalVerts = 0;
+  for (int i = 0; i < cs->numContours; i++) totalVerts += cs->contourSizes[i];
+  out.numContours = cs->numContours;
+  out.contourSizes = (int *)malloc(cs->numContours * sizeof(int));
+  memcpy(out.contourSizes, cs->contourSizes, cs->numContours * sizeof(int));
+  out.verts = (ManifoldVec2 *)malloc(totalVerts * sizeof(ManifoldVec2));
+  memcpy(out.verts, cs->verts, totalVerts * sizeof(ManifoldVec2));
+  out.transform = mat2x3_compose(m, cs->transform);
+  return out;
+}
+
+ManifoldCrossSection manifold_cross_section_translate(
+    const ManifoldCrossSection *cs, ManifoldVec2 v) {
+  ManifoldMat2x3 m = {{{1, 0}, {0, 1}, {v.x, v.y}}};
+  return manifold_cross_section_transform(cs, m);
+}
+
+ManifoldCrossSection manifold_cross_section_rotate(
+    const ManifoldCrossSection *cs, double degrees) {
+  double c = manifold_cosd(degrees);
+  double s = manifold_sind(degrees);
+  ManifoldMat2x3 m = {{{c, s}, {-s, c}, {0, 0}}};
+  return manifold_cross_section_transform(cs, m);
+}
+
+ManifoldCrossSection manifold_cross_section_scale(
+    const ManifoldCrossSection *cs, ManifoldVec2 s) {
+  ManifoldMat2x3 m = {{{s.x, 0}, {0, s.y}, {0, 0}}};
+  return manifold_cross_section_transform(cs, m);
 }
 
 // Port of Manifold::Impl::Slice(double height)

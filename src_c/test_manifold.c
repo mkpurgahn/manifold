@@ -6462,10 +6462,12 @@ static void test_CrossSection_Square(void) {
   ManifoldRect2D rect = manifold_rect2d((ManifoldVec2){0, 0},
                                         (ManifoldVec2){5, 5});
   ManifoldCrossSection cs = manifold_cross_section_of_rect(&rect);
+  ManifoldPolygons2D polys = manifold_cross_section_to_polygons(&cs);
 
   // C++: Manifold::Extrude(polys, 5)
-  Manifold b = manifold_extrude(cs.verts, cs.contourSizes, cs.numContours,
+  Manifold b = manifold_extrude(polys.polys, polys.polySizes, polys.numPolys,
                                 5.0, 0, 0.0, (ManifoldVec2){1, 1});
+  manifold_polygons2d_free(&polys);
   manifold_cross_section_free(&cs);
 
   // C++: (a - b).Volume() == 0
@@ -6475,6 +6477,75 @@ static void test_CrossSection_Square(void) {
   manifold_destroy(&a);
   manifold_destroy(&b);
   manifold_destroy(&diff);
+}
+
+static void test_CrossSection_Transform(void) {
+  // C++: auto sq = CrossSection::Square({10., 10.});
+  ManifoldRect2D sqRect = manifold_rect2d((ManifoldVec2){0, 0},
+                                          (ManifoldVec2){10, 10});
+  ManifoldCrossSection sq = manifold_cross_section_of_rect(&sqRect);
+
+  // C++: auto a = sq.Rotate(45).Scale({2, 3}).Translate({4, 5});
+  ManifoldCrossSection sq_rot = manifold_cross_section_rotate(&sq, 45);
+  ManifoldCrossSection sq_rot_scl = manifold_cross_section_scale(&sq_rot,
+      (ManifoldVec2){2, 3});
+  ManifoldCrossSection a = manifold_cross_section_translate(&sq_rot_scl,
+      (ManifoldVec2){4, 5});
+
+  // Build combined mat3 = trans * scale * rot, then extract mat2x3
+  double c45 = manifold_cosd(45);
+  double s45 = manifold_sind(45);
+  ManifoldMat2x3 mat = {{
+    {2.0 * c45,  3.0 * s45},
+    {-2.0 * s45, 3.0 * c45},
+    {4.0,        5.0}
+  }};
+
+  // C++: auto b = sq.Transform(mat2x3(trans * scale * rot));
+  ManifoldCrossSection b = manifold_cross_section_transform(&sq, mat);
+
+  // C++: auto b_copy = CrossSection(b);
+  ManifoldCrossSection b_copy = manifold_cross_section_copy(&b);
+
+  // C++: auto ex_b = Manifold::Extrude(b.ToPolygons(), 1.).GetMeshGL();
+  ManifoldPolygons2D polys_b = manifold_cross_section_to_polygons(&b);
+  Manifold ext_b = manifold_extrude(polys_b.polys, polys_b.polySizes,
+                                    polys_b.numPolys,
+                                    1.0, 0, 0.0, (ManifoldVec2){1, 1});
+  ManifoldMeshGL mesh_b = manifold_get_meshgl(&ext_b);
+
+  // C++: Identical(Manifold::Extrude(a.ToPolygons(), 1.).GetMeshGL(), ex_b);
+  ManifoldPolygons2D polys_a = manifold_cross_section_to_polygons(&a);
+  Manifold ext_a = manifold_extrude(polys_a.polys, polys_a.polySizes,
+                                    polys_a.numPolys,
+                                    1.0, 0, 0.0, (ManifoldVec2){1, 1});
+  ManifoldMeshGL mesh_a = manifold_get_meshgl(&ext_a);
+  identical_meshgl(&mesh_a, &mesh_b);
+
+  // C++: Identical(ex_b, Manifold::Extrude(b_copy.ToPolygons(), 1.).GetMeshGL());
+  ManifoldPolygons2D polys_bc = manifold_cross_section_to_polygons(&b_copy);
+  Manifold ext_bc = manifold_extrude(polys_bc.polys, polys_bc.polySizes,
+                                     polys_bc.numPolys,
+                                     1.0, 0, 0.0, (ManifoldVec2){1, 1});
+  ManifoldMeshGL mesh_bc = manifold_get_meshgl(&ext_bc);
+  identical_meshgl(&mesh_b, &mesh_bc);
+
+  // Cleanup
+  manifold_cross_section_free(&sq);
+  manifold_cross_section_free(&sq_rot);
+  manifold_cross_section_free(&sq_rot_scl);
+  manifold_cross_section_free(&a);
+  manifold_cross_section_free(&b);
+  manifold_cross_section_free(&b_copy);
+  manifold_polygons2d_free(&polys_b);
+  manifold_polygons2d_free(&polys_a);
+  manifold_polygons2d_free(&polys_bc);
+  manifold_free_meshgl(&mesh_b);
+  manifold_free_meshgl(&mesh_a);
+  manifold_free_meshgl(&mesh_bc);
+  manifold_destroy(&ext_b);
+  manifold_destroy(&ext_a);
+  manifold_destroy(&ext_bc);
 }
 
 // ==================== Main ====================
@@ -6684,6 +6755,7 @@ int main(void) {
   RUN_TEST(CrossSection_Empty);
   RUN_TEST(CrossSection_Rect);
   RUN_TEST(CrossSection_Square);
+  RUN_TEST(CrossSection_Transform);
 
   // Early exit before slow tests (temporary for development)
   if (getenv("SKIP_SLOW") != NULL) {

@@ -250,10 +250,13 @@ bool manifold_rect2d_is_empty(const ManifoldRect2D *r);
 // ---------- CrossSection ----------
 // 2D cross-section: a set of non-self-intersecting polygon contours.
 // Minimal port of C++ CrossSection class.
+// Transforms are stored lazily and applied when vertices are materialized,
+// matching C++ behavior for exact floating-point reproducibility.
 typedef struct {
-  ManifoldVec2 *verts;   // flattened contour vertices
+  ManifoldVec2 *verts;   // base (untransformed) contour vertices
   int *contourSizes;     // number of vertices per contour
   int numContours;       // number of contours
+  ManifoldMat2x3 transform; // lazy affine transform (identity = no pending)
 } ManifoldCrossSection;
 
 // Construct a CrossSection from a set of 2D polygon contours.
@@ -285,6 +288,24 @@ ManifoldRect2D manifold_cross_section_bounds(const ManifoldCrossSection *cs);
 
 // Free a ManifoldCrossSection.
 void manifold_cross_section_free(ManifoldCrossSection *cs);
+
+// Deep copy a CrossSection.
+ManifoldCrossSection manifold_cross_section_copy(const ManifoldCrossSection *cs);
+
+// Return a new ManifoldPolygons2D with the lazy transform applied.
+// Caller must free the returned polygons with manifold_polygons2d_free.
+ManifoldPolygons2D manifold_cross_section_to_polygons(
+    const ManifoldCrossSection *cs);
+
+// Transform operations (return new cross sections with lazy transforms).
+ManifoldCrossSection manifold_cross_section_translate(
+    const ManifoldCrossSection *cs, ManifoldVec2 v);
+ManifoldCrossSection manifold_cross_section_rotate(
+    const ManifoldCrossSection *cs, double degrees);
+ManifoldCrossSection manifold_cross_section_scale(
+    const ManifoldCrossSection *cs, ManifoldVec2 s);
+ManifoldCrossSection manifold_cross_section_transform(
+    const ManifoldCrossSection *cs, ManifoldMat2x3 m);
 
 // ---------- OBJ Import ----------
 // Read a Manifold from a Wavefront OBJ file (matching C++ ReadOBJ).
