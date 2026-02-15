@@ -340,6 +340,18 @@ ManifoldCrossSection manifold_cross_section_boolean(
 ManifoldCrossSection manifold_cross_section_batch_boolean(
     const ManifoldCrossSection *css, int count, ManifoldOpType op);
 
+// Decompose a cross-section into topologically disconnected components.
+// Each component has one outer contour and zero or more holes.
+// Returns the array in *out and the count in *outCount. Caller must free
+// each element with manifold_cross_section_free and then free the array.
+void manifold_cross_section_decompose(
+    const ManifoldCrossSection *cs,
+    ManifoldCrossSection **out, int *outCount);
+
+// Compose multiple cross-sections into one (union).
+ManifoldCrossSection manifold_cross_section_compose(
+    const ManifoldCrossSection *css, int count);
+
 // ---------- OBJ Import ----------
 // Read a Manifold from a Wavefront OBJ file (matching C++ ReadOBJ).
 Manifold manifold_read_obj(const char *path);

@@ -3103,6 +3103,127 @@ ManifoldCrossSection manifold_cross_section_batch_boolean(
   return result;
 }
 
+// Compute signed area of a contour (positive = CCW, negative = CW)
+static double cs_signed_area(const ManifoldVec2 *verts, int n) {
+  double area = 0.0;
+  for (int i = 0; i < n; i++) {
+    int j = (i + 1) % n;
+    area += verts[i].x * verts[j].y;
+    area -= verts[j].x * verts[i].y;
+  }
+  return area * 0.5;
+}
+
+void manifold_cross_section_decompose(
+    const ManifoldCrossSection *cs,
+    ManifoldCrossSection **out, int *outCount) {
+  *out = NULL;
+  *outCount = 0;
+  if (!cs || cs->numContours == 0) return;
+
+  // Materialize vertices with transform applied
+  ManifoldPolygons2D polys = manifold_cross_section_to_polygons(cs);
+  int nc = polys.numPolys;
+  if (nc < 2) {
+    // Single contour or empty: return a copy
+    *outCount = 1;
+    *out = (ManifoldCrossSection *)malloc(sizeof(ManifoldCrossSection));
+    (*out)[0] = manifold_cross_section_of_polygons(&polys);
+    manifold_polygons2d_free(&polys);
+    return;
+  }
+
+  // Compute signed area and offset for each contour
+  double *areas = (double *)malloc(nc * sizeof(double));
+  int *offsets = (int *)malloc(nc * sizeof(int));
+  offsets[0] = 0;
+  for (int i = 0; i < nc; i++) {
+    if (i > 0) offsets[i] = offsets[i-1] + polys.polySizes[i-1];
+    areas[i] = cs_signed_area(polys.polys + offsets[i], polys.polySizes[i]);
+  }
+
+  // Identify outer contours (positive signed area = CCW)
+  int nOuter = 0;
+  int *outerIdx = (int *)malloc(nc * sizeof(int));
+  for (int i = 0; i < nc; i++) {
+    if (areas[i] > 0) outerIdx[nOuter++] = i;
+  }
+
+  if (nOuter == 0) {
+    // All contours are holes? Return as single component.
+    *outCount = 1;
+    *out = (ManifoldCrossSection *)malloc(sizeof(ManifoldCrossSection));
+    (*out)[0] = manifold_cross_section_of_polygons(&polys);
+    free(areas); free(offsets); free(outerIdx);
+    manifold_polygons2d_free(&polys);
+    return;
+  }
+
+  // Assign each hole to the smallest enclosing outer contour
+  int *holeOwner = (int *)malloc(nc * sizeof(int));
+  for (int i = 0; i < nc; i++) holeOwner[i] = -1;
+  for (int i = 0; i < nc; i++) {
+    if (areas[i] > 0) continue; // outer
+    ManifoldVec2 pt = polys.polys[offsets[i]]; // first vertex of hole
+    double bestArea = 1e30;
+    int bestOuter = -1;
+    for (int j = 0; j < nOuter; j++) {
+      int oi = outerIdx[j];
+      if (cs_pip(pt, polys.polys + offsets[oi], polys.polySizes[oi])) {
+        if (areas[oi] < bestArea) {
+          bestArea = areas[oi];
+          bestOuter = j;
+        }
+      }
+    }
+    holeOwner[i] = bestOuter;
+  }
+
+  // Build output: one CrossSection per outer contour + its holes
+  *outCount = nOuter;
+  *out = (ManifoldCrossSection *)malloc(nOuter * sizeof(ManifoldCrossSection));
+  for (int j = 0; j < nOuter; j++) {
+    int oi = outerIdx[j];
+    // Count holes belonging to this outer
+    int nHoles = 0;
+    for (int i = 0; i < nc; i++) {
+      if (holeOwner[i] == j) nHoles++;
+    }
+    int nContours = 1 + nHoles;
+    int totalVerts = polys.polySizes[oi];
+    for (int i = 0; i < nc; i++) {
+      if (holeOwner[i] == j) totalVerts += polys.polySizes[i];
+    }
+    ManifoldCrossSection comp = {NULL, NULL, 0, {{{1,0},{0,1},{0,0}}}};
+    comp.numContours = nContours;
+    comp.contourSizes = (int *)malloc(nContours * sizeof(int));
+    comp.verts = (ManifoldVec2 *)malloc(totalVerts * sizeof(ManifoldVec2));
+    // First contour: outer
+    comp.contourSizes[0] = polys.polySizes[oi];
+    memcpy(comp.verts, polys.polys + offsets[oi],
+           polys.polySizes[oi] * sizeof(ManifoldVec2));
+    int ci = 1, vo = polys.polySizes[oi];
+    for (int i = 0; i < nc; i++) {
+      if (holeOwner[i] == j) {
+        comp.contourSizes[ci] = polys.polySizes[i];
+        memcpy(comp.verts + vo, polys.polys + offsets[i],
+               polys.polySizes[i] * sizeof(ManifoldVec2));
+        vo += polys.polySizes[i];
+        ci++;
+      }
+    }
+    (*out)[j] = comp;
+  }
+
+  free(areas); free(offsets); free(outerIdx); free(holeOwner);
+  manifold_polygons2d_free(&polys);
+}
+
+ManifoldCrossSection manifold_cross_section_compose(
+    const ManifoldCrossSection *css, int count) {
+  return manifold_cross_section_batch_boolean(css, count, MANIFOLD_OP_ADD);
+}
+
 // Port of Manifold::Impl::Slice(double height)
 // Slices the manifold at the given z-height, returning 2D cross-section polygons.
 ManifoldPolygons2D manifold_slice(const Manifold *m, double height) {

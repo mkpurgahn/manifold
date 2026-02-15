@@ -6768,6 +6768,114 @@ static void test_CrossSection_Warp(void) {
   manifold_cross_section_free(&b);
 }
 
+static void test_CrossSection_Decompose(void) {
+  // auto a = CrossSection::Square({2., 2.}, true) -
+  //          CrossSection::Square({1., 1.}, true);
+  ManifoldRect2D outerRect = manifold_rect2d((ManifoldVec2){-1, -1},
+                                              (ManifoldVec2){1, 1});
+  ManifoldRect2D innerRect = manifold_rect2d((ManifoldVec2){-0.5, -0.5},
+                                              (ManifoldVec2){0.5, 0.5});
+  ManifoldCrossSection outer = manifold_cross_section_of_rect(&outerRect);
+  ManifoldCrossSection inner = manifold_cross_section_of_rect(&innerRect);
+  ManifoldCrossSection a = manifold_cross_section_boolean(&outer, &inner,
+                                                          MANIFOLD_OP_SUBTRACT);
+
+  // auto b = a.Translate({4, 4});
+  ManifoldCrossSection b = manifold_cross_section_translate(&a, (ManifoldVec2){4, 4});
+
+  // auto ab = a + b;
+  ManifoldCrossSection ab = manifold_cross_section_boolean(&a, &b, MANIFOLD_OP_ADD);
+
+  // auto decomp = ab.Decompose();
+  ManifoldCrossSection *decomp = NULL;
+  int decompCount = 0;
+  manifold_cross_section_decompose(&ab, &decomp, &decompCount);
+
+  // auto recomp = CrossSection::Compose(decomp);
+  ManifoldCrossSection recomp = manifold_cross_section_compose(decomp, decompCount);
+
+  EXPECT_EQ(decompCount, 2);
+  EXPECT_EQ((int)manifold_cross_section_num_contour(&decomp[0]), 2);
+  EXPECT_EQ((int)manifold_cross_section_num_contour(&decomp[1]), 2);
+
+  // Identical(Extrude(a.ToPolygons(), 1), Extrude(decomp[0].ToPolygons(), 1))
+  {
+    ManifoldPolygons2D pa = manifold_cross_section_to_polygons(&a);
+    Manifold ea = manifold_extrude(pa.polys, pa.polySizes, pa.numPolys,
+                                   1.0, 0, 0.0, (ManifoldVec2){1, 1});
+    ManifoldMeshGL ga = manifold_get_meshgl(&ea);
+
+    ManifoldPolygons2D pd0 = manifold_cross_section_to_polygons(&decomp[0]);
+    Manifold ed0 = manifold_extrude(pd0.polys, pd0.polySizes, pd0.numPolys,
+                                    1.0, 0, 0.0, (ManifoldVec2){1, 1});
+    ManifoldMeshGL gd0 = manifold_get_meshgl(&ed0);
+
+    identical_meshgl(&ga, &gd0);
+
+    manifold_free_meshgl(&ga);
+    manifold_free_meshgl(&gd0);
+    manifold_destroy(&ea);
+    manifold_destroy(&ed0);
+    manifold_polygons2d_free(&pa);
+    manifold_polygons2d_free(&pd0);
+  }
+
+  // Identical(Extrude(b.ToPolygons(), 1), Extrude(decomp[1].ToPolygons(), 1))
+  {
+    ManifoldPolygons2D pb = manifold_cross_section_to_polygons(&b);
+    Manifold eb = manifold_extrude(pb.polys, pb.polySizes, pb.numPolys,
+                                   1.0, 0, 0.0, (ManifoldVec2){1, 1});
+    ManifoldMeshGL gb = manifold_get_meshgl(&eb);
+
+    ManifoldPolygons2D pd1 = manifold_cross_section_to_polygons(&decomp[1]);
+    Manifold ed1 = manifold_extrude(pd1.polys, pd1.polySizes, pd1.numPolys,
+                                    1.0, 0, 0.0, (ManifoldVec2){1, 1});
+    ManifoldMeshGL gd1 = manifold_get_meshgl(&ed1);
+
+    identical_meshgl(&gb, &gd1);
+
+    manifold_free_meshgl(&gb);
+    manifold_free_meshgl(&gd1);
+    manifold_destroy(&eb);
+    manifold_destroy(&ed1);
+    manifold_polygons2d_free(&pb);
+    manifold_polygons2d_free(&pd1);
+  }
+
+  // Identical(Extrude(ab.ToPolygons(), 1), Extrude(recomp.ToPolygons(), 1))
+  {
+    ManifoldPolygons2D pab = manifold_cross_section_to_polygons(&ab);
+    Manifold eab = manifold_extrude(pab.polys, pab.polySizes, pab.numPolys,
+                                    1.0, 0, 0.0, (ManifoldVec2){1, 1});
+    ManifoldMeshGL gab = manifold_get_meshgl(&eab);
+
+    ManifoldPolygons2D pr = manifold_cross_section_to_polygons(&recomp);
+    Manifold er = manifold_extrude(pr.polys, pr.polySizes, pr.numPolys,
+                                   1.0, 0, 0.0, (ManifoldVec2){1, 1});
+    ManifoldMeshGL gr = manifold_get_meshgl(&er);
+
+    identical_meshgl(&gab, &gr);
+
+    manifold_free_meshgl(&gab);
+    manifold_free_meshgl(&gr);
+    manifold_destroy(&eab);
+    manifold_destroy(&er);
+    manifold_polygons2d_free(&pab);
+    manifold_polygons2d_free(&pr);
+  }
+
+  // Cleanup
+  manifold_cross_section_free(&outer);
+  manifold_cross_section_free(&inner);
+  manifold_cross_section_free(&a);
+  manifold_cross_section_free(&b);
+  manifold_cross_section_free(&ab);
+  for (int i = 0; i < decompCount; i++)
+    manifold_cross_section_free(&decomp[i]);
+  free(decomp);
+  manifold_cross_section_free(&recomp);
+}
+
 // ==================== Main ====================
 
 int main(void) {
@@ -6981,6 +7089,7 @@ int main(void) {
   RUN_TEST(CrossSection_MirrorCheckAxis);
   RUN_TEST(CrossSection_MirrorUnion);
   RUN_TEST(CrossSection_Warp);
+  RUN_TEST(CrossSection_Decompose);
 
   // Early exit before slow tests (temporary for development)
   if (getenv("SKIP_SLOW") != NULL) {

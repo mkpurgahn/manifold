@@ -177,55 +177,82 @@ static inline ManifoldVecIVec3 manifold_fan_triangulate(int startIdx, int n) {
 // polyVerts: flat array of all polygon vertices (outer first, then holes)
 // polySizes: array of vertex counts per polygon
 // nPolys: number of polygons (1 outer + n-1 holes)
-// baseIndex: starting vertex index offset for the output triangles
-// Returns triangles as ManifoldVecIVec3
-static inline ManifoldVecIVec3 manifold_triangulate_with_holes(
+// Helper: compute signed area of a 2D polygon (positive = CCW, negative = CW)
+static inline double mtwh_signed_area(const ManifoldVec2 *v, int n) {
+  double a = 0.0;
+  for (int i = 0; i < n; i++) {
+    int j = (i + 1) % n;
+    a += v[i].x * v[j].y - v[j].x * v[i].y;
+  }
+  return a * 0.5;
+}
+
+// Helper: point-in-polygon ray casting test
+static inline bool mtwh_pip(ManifoldVec2 p, const ManifoldVec2 *poly, int n) {
+  int crossings = 0;
+  for (int i = 0, j = n - 1; i < n; j = i++) {
+    bool yi = poly[i].y > p.y;
+    bool yj = poly[j].y > p.y;
+    if (yi != yj) {
+      double xint = (poly[j].x - poly[i].x) * (p.y - poly[i].y) /
+                    (poly[j].y - poly[i].y) + poly[i].x;
+      if (p.x < xint) crossings++;
+    }
+  }
+  return (crossings & 1) == 1;
+}
+
+// Triangulate a single outer contour with its holes
+static inline ManifoldVecIVec3 manifold_triangulate_one_group(
     const ManifoldVec2 *polyVerts, const int *polySizes, int nPolys,
+    const int *polyOffsets, const int *groupIndices, int groupCount,
     int baseIndex) {
-  if (nPolys <= 1) {
-    // No holes, just triangulate the single polygon
-    return manifold_triangulate_polygon(polyVerts, NULL,
-        nPolys == 1 ? (size_t)polySizes[0] : 0);
+  if (groupCount <= 1) {
+    int pi = groupIndices[0];
+    int off = polyOffsets[pi];
+    int n = polySizes[pi];
+    // Need to create index mapping for baseIndex offset
+    int *idxMap = (int *)malloc((size_t)n * sizeof(int));
+    for (int i = 0; i < n; i++) idxMap[i] = baseIndex + off + i;
+    ManifoldVecIVec3 tris = manifold_triangulate_polygon(
+        polyVerts + off, idxMap, (size_t)n);
+    free(idxMap);
+    return tris;
   }
 
-  // Build combined polygon by bridging holes into the outer contour
-  // Strategy: for each hole, find its rightmost vertex, then find the closest
-  // visible vertex on the outer polygon, and insert a bridge (duplicate vertices)
+  // First polygon in group is the outer contour
+  int outerPi = groupIndices[0];
+  int outerOff = polyOffsets[outerPi];
+  int outerN = polySizes[outerPi];
 
-  int outerN = polySizes[0];
-  // Start with outer polygon vertices
   size_t totalVerts = 0;
-  for (int i = 0; i < nPolys; i++) totalVerts += (size_t)polySizes[i];
+  for (int g = 0; g < groupCount; g++)
+    totalVerts += (size_t)polySizes[groupIndices[g]];
 
-  // Working arrays for the merged polygon
   ManifoldVec2 *merged = (ManifoldVec2 *)malloc(
-      (totalVerts + 2 * (size_t)(nPolys - 1)) * sizeof(ManifoldVec2));
+      (totalVerts + 2 * (size_t)(groupCount - 1)) * sizeof(ManifoldVec2));
   int *mergedIdx = (int *)malloc(
-      (totalVerts + 2 * (size_t)(nPolys - 1)) * sizeof(int));
+      (totalVerts + 2 * (size_t)(groupCount - 1)) * sizeof(int));
   size_t mergedLen = (size_t)outerN;
 
-  // Copy outer polygon
   for (int i = 0; i < outerN; i++) {
-    merged[i] = polyVerts[i];
-    mergedIdx[i] = baseIndex + i;
+    merged[i] = polyVerts[outerOff + i];
+    mergedIdx[i] = baseIndex + outerOff + i;
   }
 
-  // Process each hole
-  int holeOffset = outerN;
-  for (int h = 1; h < nPolys; h++) {
-    int holeN = polySizes[h];
-    const ManifoldVec2 *hole = polyVerts + holeOffset;
+  for (int h = 1; h < groupCount; h++) {
+    int holePi = groupIndices[h];
+    int holeOff = polyOffsets[holePi];
+    int holeN = polySizes[holePi];
+    const ManifoldVec2 *hole = polyVerts + holeOff;
 
-    // Find the rightmost vertex in the hole
     int rightmost = 0;
     for (int i = 1; i < holeN; i++) {
       if (hole[i].x > hole[rightmost].x ||
-          (hole[i].x == hole[rightmost].x && hole[i].y > hole[rightmost].y)) {
+          (hole[i].x == hole[rightmost].x && hole[i].y > hole[rightmost].y))
         rightmost = i;
-      }
     }
 
-    // Find the closest visible vertex in the merged polygon
     ManifoldVec2 holeVert = hole[rightmost];
     int bestOuter = 0;
     double bestDist = 1e308;
@@ -233,63 +260,134 @@ static inline ManifoldVecIVec3 manifold_triangulate_with_holes(
       double dx = merged[i].x - holeVert.x;
       double dy = merged[i].y - holeVert.y;
       double dist = dx * dx + dy * dy;
-      if (dist < bestDist) {
-        bestDist = dist;
-        bestOuter = (int)i;
-      }
+      if (dist < bestDist) { bestDist = dist; bestOuter = (int)i; }
     }
 
-    // Insert bridge: outer[bestOuter] -> hole[rightmost] -> ... -> hole[rightmost] -> outer[bestOuter]
     size_t newLen = mergedLen + (size_t)holeN + 2;
     ManifoldVec2 *newMerged = (ManifoldVec2 *)malloc(newLen * sizeof(ManifoldVec2));
     int *newIdx = (int *)malloc(newLen * sizeof(int));
     size_t k = 0;
 
-    // Copy outer up to and including bestOuter
     for (int i = 0; i <= bestOuter; i++) {
-      newMerged[k] = merged[i];
-      newIdx[k] = mergedIdx[i];
-      k++;
+      newMerged[k] = merged[i]; newIdx[k] = mergedIdx[i]; k++;
     }
-
-    // Insert hole starting at rightmost, going around
     for (int i = 0; i < holeN; i++) {
       int hi = (rightmost + i) % holeN;
-      newMerged[k] = hole[hi];
-      newIdx[k] = baseIndex + holeOffset + hi;
-      k++;
+      newMerged[k] = hole[hi]; newIdx[k] = baseIndex + holeOff + hi; k++;
     }
-
-    // Close bridge back: duplicate hole[rightmost] and outer[bestOuter]
-    newMerged[k] = hole[rightmost];
-    newIdx[k] = baseIndex + holeOffset + rightmost;
-    k++;
-    newMerged[k] = merged[bestOuter];
-    newIdx[k] = mergedIdx[bestOuter];
-    k++;
-
-    // Copy rest of outer
+    newMerged[k] = hole[rightmost]; newIdx[k] = baseIndex + holeOff + rightmost; k++;
+    newMerged[k] = merged[bestOuter]; newIdx[k] = mergedIdx[bestOuter]; k++;
     for (size_t i = (size_t)(bestOuter + 1); i < mergedLen; i++) {
-      newMerged[k] = merged[i];
-      newIdx[k] = mergedIdx[i];
-      k++;
+      newMerged[k] = merged[i]; newIdx[k] = mergedIdx[i]; k++;
     }
 
-    free(merged);
-    free(mergedIdx);
-    merged = newMerged;
-    mergedIdx = newIdx;
-    mergedLen = k;
-
-    holeOffset += holeN;
+    free(merged); free(mergedIdx);
+    merged = newMerged; mergedIdx = newIdx; mergedLen = k;
   }
 
-  // Triangulate the merged polygon
   ManifoldVecIVec3 tris = manifold_triangulate_polygon(merged, mergedIdx, mergedLen);
-
-  free(merged);
-  free(mergedIdx);
+  free(merged); free(mergedIdx);
   return tris;
+}
+
+// baseIndex: starting vertex index offset for the output triangles
+// Returns triangles as ManifoldVecIVec3
+// Handles multiple outer contours with their respective holes.
+static inline ManifoldVecIVec3 manifold_triangulate_with_holes(
+    const ManifoldVec2 *polyVerts, const int *polySizes, int nPolys,
+    int baseIndex) {
+  if (nPolys <= 0) {
+    ManifoldVecIVec3 empty = {0};
+    return empty;
+  }
+  if (nPolys == 1) {
+    return manifold_triangulate_polygon(polyVerts, NULL, (size_t)polySizes[0]);
+  }
+
+  // Compute offsets and signed areas
+  int *offsets = (int *)malloc((size_t)nPolys * sizeof(int));
+  double *areas = (double *)malloc((size_t)nPolys * sizeof(double));
+  offsets[0] = 0;
+  for (int i = 0; i < nPolys; i++) {
+    if (i > 0) offsets[i] = offsets[i-1] + polySizes[i-1];
+    areas[i] = mtwh_signed_area(polyVerts + offsets[i], polySizes[i]);
+  }
+
+  // Identify outer contours (positive area = CCW)
+  int nOuter = 0;
+  int *outerIndices = (int *)malloc((size_t)nPolys * sizeof(int));
+  for (int i = 0; i < nPolys; i++) {
+    if (areas[i] > 0) outerIndices[nOuter++] = i;
+  }
+
+  if (nOuter == 0) {
+    // Fallback: treat first as outer, rest as holes (original behavior)
+    free(offsets); free(areas); free(outerIndices);
+    // Use old single-group approach
+    int *group = (int *)malloc((size_t)nPolys * sizeof(int));
+    int *offs = (int *)malloc((size_t)nPolys * sizeof(int));
+    offs[0] = 0;
+    for (int i = 0; i < nPolys; i++) {
+      group[i] = i;
+      if (i > 0) offs[i] = offs[i-1] + polySizes[i-1];
+    }
+    ManifoldVecIVec3 tris = manifold_triangulate_one_group(
+        polyVerts, polySizes, nPolys, offs, group, nPolys, baseIndex);
+    free(group); free(offs);
+    return tris;
+  }
+
+  if (nOuter == 1) {
+    // Single outer with holes: use original approach
+    int *group = (int *)malloc((size_t)nPolys * sizeof(int));
+    for (int i = 0; i < nPolys; i++) group[i] = i;
+    ManifoldVecIVec3 tris = manifold_triangulate_one_group(
+        polyVerts, polySizes, nPolys, offsets, group, nPolys, baseIndex);
+    free(group); free(offsets); free(areas); free(outerIndices);
+    return tris;
+  }
+
+  // Multiple outers: assign each hole to its enclosing outer
+  int *holeOwner = (int *)malloc((size_t)nPolys * sizeof(int));
+  for (int i = 0; i < nPolys; i++) holeOwner[i] = -1;
+  for (int i = 0; i < nPolys; i++) {
+    if (areas[i] > 0) continue; // outer
+    ManifoldVec2 pt = polyVerts[offsets[i]];
+    double bestArea = 1e30;
+    int bestOwner = 0;
+    for (int j = 0; j < nOuter; j++) {
+      int oi = outerIndices[j];
+      if (mtwh_pip(pt, polyVerts + offsets[oi], polySizes[oi])) {
+        if (areas[oi] < bestArea) {
+          bestArea = areas[oi];
+          bestOwner = j;
+        }
+      }
+    }
+    holeOwner[i] = bestOwner;
+  }
+
+  // Triangulate each group separately and merge results
+  ManifoldVecIVec3 allTris = {0};
+  int *groupBuf = (int *)malloc((size_t)nPolys * sizeof(int));
+
+  for (int j = 0; j < nOuter; j++) {
+    int gc = 0;
+    groupBuf[gc++] = outerIndices[j]; // outer first
+    for (int i = 0; i < nPolys; i++) {
+      if (holeOwner[i] == j) groupBuf[gc++] = i;
+    }
+
+    ManifoldVecIVec3 tris = manifold_triangulate_one_group(
+        polyVerts, polySizes, nPolys, offsets, groupBuf, gc, baseIndex);
+    for (size_t t = 0; t < tris.len; t++) {
+      vec_ivec3_push(&allTris, tris.data[t]);
+    }
+    vec_ivec3_free(&tris);
+  }
+
+  free(groupBuf); free(holeOwner); free(offsets); free(areas); free(outerIndices);
+  return allTris;
 }
 
 #endif // MANIFOLD_POLYGON_H
