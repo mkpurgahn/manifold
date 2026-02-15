@@ -2377,6 +2377,306 @@ ManifoldCrossSection manifold_cross_section_of_polygons(
   return cs;
 }
 
+// ==================== Polygon Self-Union with Fill Rules ====================
+// Implements a planar subdivision algorithm for resolving self-intersecting
+// polygons with different fill rules, equivalent to Clipper2's Union operation.
+
+typedef struct { double t; int vertex; } CSEdgeEvt;
+typedef struct { int heIdx; double angle; } CSAngleEnt;
+
+static int cmp_cs_edge_evt(const void *a, const void *b) {
+  double da = ((const CSEdgeEvt *)a)->t;
+  double db = ((const CSEdgeEvt *)b)->t;
+  return (da < db) ? -1 : (da > db) ? 1 : 0;
+}
+
+static int cmp_cs_angle_ent(const void *a, const void *b) {
+  double da = ((const CSAngleEnt *)a)->angle;
+  double db = ((const CSAngleEnt *)b)->angle;
+  return (da < db) ? -1 : (da > db) ? 1 : 0;
+}
+
+// Compute winding number of polygon P[0..n-1] around point (qx,qy)
+static int cs_polygon_winding(const ManifoldVec2 *P, int n,
+                              double qx, double qy) {
+  int winding = 0;
+  for (int i = 0; i < n; i++) {
+    int j = (i + 1) % n;
+    if (P[i].y <= qy) {
+      if (P[j].y > qy) {
+        double cross = (P[j].x - P[i].x) * (qy - P[i].y)
+                     - (qx - P[i].x) * (P[j].y - P[i].y);
+        if (cross > 0) winding++;
+      }
+    } else {
+      if (P[j].y <= qy) {
+        double cross = (P[j].x - P[i].x) * (qy - P[i].y)
+                     - (qx - P[i].x) * (P[j].y - P[i].y);
+        if (cross < 0) winding--;
+      }
+    }
+  }
+  return winding;
+}
+
+static bool cs_fill_match(int winding, ManifoldFillRule rule) {
+  switch (rule) {
+    case MANIFOLD_FILL_EVEN_ODD: return (winding & 1) != 0;
+    case MANIFOLD_FILL_NON_ZERO: return winding != 0;
+    case MANIFOLD_FILL_POSITIVE: return winding > 0;
+    case MANIFOLD_FILL_NEGATIVE: return winding < 0;
+  }
+  return false;
+}
+
+ManifoldCrossSection manifold_cross_section_of_simple_polygon(
+    const ManifoldVec2 *pts, int n, ManifoldFillRule fillRule) {
+  ManifoldCrossSection cs = {NULL, NULL, 0, {{{1,0},{0,1},{0,0}}}};
+  if (!pts || n < 3) return cs;
+
+  // Step 1: Find all self-intersection points between non-adjacent edges
+  int maxIsect = n * (n - 1) / 2;
+  int nIsect = 0;
+  int *isEdgeA = (int *)malloc(maxIsect * sizeof(int));
+  int *isEdgeB = (int *)malloc(maxIsect * sizeof(int));
+  double *isTA = (double *)malloc(maxIsect * sizeof(double));
+  double *isTB = (double *)malloc(maxIsect * sizeof(double));
+  double *isX = (double *)malloc(maxIsect * sizeof(double));
+  double *isY = (double *)malloc(maxIsect * sizeof(double));
+
+  for (int i = 0; i < n; i++) {
+    int i2 = (i + 1) % n;
+    double d1x = pts[i2].x - pts[i].x, d1y = pts[i2].y - pts[i].y;
+    for (int j = i + 2; j < n; j++) {
+      if (i == 0 && j == n - 1) continue;
+      int j2 = (j + 1) % n;
+      double d2x = pts[j2].x - pts[j].x, d2y = pts[j2].y - pts[j].y;
+      double cross = d1x * d2y - d1y * d2x;
+      if (fabs(cross) < 1e-12) continue;
+      double dx = pts[j].x - pts[i].x, dy = pts[j].y - pts[i].y;
+      double t = (dx * d2y - dy * d2x) / cross;
+      double s = (dx * d1y - dy * d1x) / cross;
+      if (t > 1e-9 && t < 1.0 - 1e-9 && s > 1e-9 && s < 1.0 - 1e-9) {
+        isEdgeA[nIsect] = i;
+        isEdgeB[nIsect] = j;
+        isTA[nIsect] = t;
+        isTB[nIsect] = s;
+        isX[nIsect] = pts[i].x + t * d1x;
+        isY[nIsect] = pts[i].y + t * d1y;
+        nIsect++;
+      }
+    }
+  }
+
+  // No self-intersections: simple polygon
+  if (nIsect == 0) {
+    free(isEdgeA); free(isEdgeB); free(isTA); free(isTB); free(isX); free(isY);
+    double signedArea = 0;
+    for (int i = 0; i < n; i++) {
+      int j = (i + 1) % n;
+      signedArea += pts[i].x * pts[j].y - pts[j].x * pts[i].y;
+    }
+    signedArea *= 0.5;
+    int winding = (signedArea > 0) ? 1 : -1;
+    if (!cs_fill_match(winding, fillRule)) return cs;
+    cs.numContours = 1;
+    cs.contourSizes = (int *)malloc(sizeof(int));
+    cs.contourSizes[0] = n;
+    cs.verts = (ManifoldVec2 *)malloc(n * sizeof(ManifoldVec2));
+    memcpy(cs.verts, pts, n * sizeof(ManifoldVec2));
+    return cs;
+  }
+
+  // Step 2: Build vertex list (original + intersection points)
+  int nVerts = n + nIsect;
+  ManifoldVec2 *verts = (ManifoldVec2 *)malloc(nVerts * sizeof(ManifoldVec2));
+  for (int i = 0; i < n; i++) verts[i] = pts[i];
+  for (int i = 0; i < nIsect; i++)
+    verts[n + i] = (ManifoldVec2){isX[i], isY[i]};
+
+  // Step 3: Build edge events (split edges at intersection points)
+  int *evtCount = (int *)calloc(n, sizeof(int));
+  for (int i = 0; i < n; i++) evtCount[i] = 2;
+  for (int i = 0; i < nIsect; i++) {
+    evtCount[isEdgeA[i]]++;
+    evtCount[isEdgeB[i]]++;
+  }
+  int totalEvts = 0;
+  int *evtStart = (int *)malloc(n * sizeof(int));
+  for (int i = 0; i < n; i++) {
+    evtStart[i] = totalEvts;
+    totalEvts += evtCount[i];
+  }
+  CSEdgeEvt *evts = (CSEdgeEvt *)malloc(totalEvts * sizeof(CSEdgeEvt));
+  int *evtFill = (int *)calloc(n, sizeof(int));
+  for (int i = 0; i < n; i++) {
+    evts[evtStart[i] + evtFill[i]++] = (CSEdgeEvt){0.0, i};
+    evts[evtStart[i] + evtFill[i]++] = (CSEdgeEvt){1.0, (i + 1) % n};
+  }
+  for (int i = 0; i < nIsect; i++) {
+    int ea = isEdgeA[i], eb = isEdgeB[i], vi = n + i;
+    evts[evtStart[ea] + evtFill[ea]++] = (CSEdgeEvt){isTA[i], vi};
+    evts[evtStart[eb] + evtFill[eb]++] = (CSEdgeEvt){isTB[i], vi};
+  }
+  free(evtFill);
+  for (int i = 0; i < n; i++)
+    qsort(evts + evtStart[i], evtCount[i], sizeof(CSEdgeEvt), cmp_cs_edge_evt);
+
+  // Step 4: Build half-edge list
+  // Count forward half-edges (one per sub-segment)
+  int nForward = 0;
+  for (int i = 0; i < n; i++) nForward += evtCount[i] - 1;
+  int maxHE = 2 * nForward;
+  int *heFrom = (int *)malloc(maxHE * sizeof(int));
+  int *heTo = (int *)malloc(maxHE * sizeof(int));
+  int *heTwin = (int *)malloc(maxHE * sizeof(int));
+  int *heNext = (int *)malloc(maxHE * sizeof(int));
+  double *heAngle = (double *)malloc(maxHE * sizeof(double));
+  int nHE = 0;
+
+  // Forward half-edges (follow original polygon direction)
+  for (int i = 0; i < n; i++) {
+    for (int j = 0; j < evtCount[i] - 1; j++) {
+      int from = evts[evtStart[i] + j].vertex;
+      int to = evts[evtStart[i] + j + 1].vertex;
+      heFrom[nHE] = from;
+      heTo[nHE] = to;
+      heTwin[nHE] = -1;
+      heNext[nHE] = -1;
+      double dx = verts[to].x - verts[from].x;
+      double dy = verts[to].y - verts[from].y;
+      heAngle[nHE] = atan2(dy, dx);
+      nHE++;
+    }
+  }
+  // Twin half-edges
+  for (int i = 0; i < nForward; i++) {
+    heFrom[nHE] = heTo[i];
+    heTo[nHE] = heFrom[i];
+    heTwin[nHE] = i;
+    heTwin[i] = nHE;
+    heNext[nHE] = -1;
+    double dx = verts[heFrom[i]].x - verts[heTo[i]].x;
+    double dy = verts[heFrom[i]].y - verts[heTo[i]].y;
+    heAngle[nHE] = atan2(dy, dx);
+    nHE++;
+  }
+
+  // Step 5: Sort outgoing edges at each vertex by angle, build next pointers
+  int *outCount2 = (int *)calloc(nVerts, sizeof(int));
+  for (int i = 0; i < nHE; i++) outCount2[heFrom[i]]++;
+  int *outStart2 = (int *)malloc(nVerts * sizeof(int));
+  int tot = 0;
+  for (int i = 0; i < nVerts; i++) {
+    outStart2[i] = tot;
+    tot += outCount2[i];
+  }
+  CSAngleEnt *outEdges = (CSAngleEnt *)malloc(nHE * sizeof(CSAngleEnt));
+  int *outFill2 = (int *)calloc(nVerts, sizeof(int));
+  for (int i = 0; i < nHE; i++) {
+    int v = heFrom[i];
+    outEdges[outStart2[v] + outFill2[v]++] = (CSAngleEnt){i, heAngle[i]};
+  }
+  free(outFill2);
+  for (int v = 0; v < nVerts; v++) {
+    if (outCount2[v] > 1)
+      qsort(outEdges + outStart2[v], outCount2[v],
+            sizeof(CSAngleEnt), cmp_cs_angle_ent);
+  }
+
+  // Build next pointers using DCEL rule:
+  // At vertex v, CCW-sorted outgoing e[0]..e[k-1]:
+  //   next(twin(e[i])) = e[(i-1+k) % k]
+  for (int v = 0; v < nVerts; v++) {
+    int k = outCount2[v];
+    if (k == 0) continue;
+    for (int i = 0; i < k; i++) {
+      int ei = outEdges[outStart2[v] + i].heIdx;
+      int pi = (i - 1 + k) % k;
+      int eprev = outEdges[outStart2[v] + pi].heIdx;
+      heNext[heTwin[ei]] = eprev;
+    }
+  }
+
+  // Step 6: Trace faces
+  bool *visited = (bool *)calloc(nHE, sizeof(bool));
+  int *faceStartArr = (int *)malloc(nHE * sizeof(int));
+  int *faceSizeArr = (int *)malloc(nHE * sizeof(int));
+  int *faceVertsArr = (int *)malloc(nHE * sizeof(int));
+  int nFaces = 0, fvTotal = 0;
+
+  for (int start = 0; start < nHE; start++) {
+    if (visited[start]) continue;
+    faceStartArr[nFaces] = fvTotal;
+    int cur = start, fsize = 0;
+    do {
+      visited[cur] = true;
+      faceVertsArr[fvTotal++] = heFrom[cur];
+      fsize++;
+      cur = heNext[cur];
+      if (cur == -1 || fsize > nHE) break;
+    } while (cur != start);
+    faceSizeArr[nFaces] = fsize;
+    nFaces++;
+  }
+
+  // Step 7: For each face, compute area and winding number
+  int resultContours = 0, resultVerts = 0;
+  bool *faceSelected = (bool *)calloc(nFaces, sizeof(bool));
+
+  for (int f = 0; f < nFaces; f++) {
+    int fs = faceStartArr[f], fz = faceSizeArr[f];
+    if (fz < 3) continue;
+    // Signed area
+    double area = 0;
+    for (int i = 0; i < fz; i++) {
+      int j = (i + 1) % fz;
+      ManifoldVec2 vi = verts[faceVertsArr[fs + i]];
+      ManifoldVec2 vj = verts[faceVertsArr[fs + j]];
+      area += vi.x * vj.y - vj.x * vi.y;
+    }
+    area *= 0.5;
+    if (fabs(area) < 1e-15) continue;
+    // Centroid for winding number test
+    double cx = 0, cy = 0;
+    for (int i = 0; i < fz; i++) {
+      cx += verts[faceVertsArr[fs + i]].x;
+      cy += verts[faceVertsArr[fs + i]].y;
+    }
+    cx /= fz; cy /= fz;
+    int w = cs_polygon_winding(pts, n, cx, cy);
+    if (cs_fill_match(w, fillRule)) {
+      faceSelected[f] = true;
+      resultContours++;
+      resultVerts += fz;
+    }
+  }
+
+  // Step 8: Build result CrossSection
+  if (resultContours > 0) {
+    cs.numContours = resultContours;
+    cs.contourSizes = (int *)malloc(resultContours * sizeof(int));
+    cs.verts = (ManifoldVec2 *)malloc(resultVerts * sizeof(ManifoldVec2));
+    int ci = 0, vi = 0;
+    for (int f = 0; f < nFaces; f++) {
+      if (!faceSelected[f]) continue;
+      int fs = faceStartArr[f], fz = faceSizeArr[f];
+      cs.contourSizes[ci++] = fz;
+      for (int i = 0; i < fz; i++)
+        cs.verts[vi++] = verts[faceVertsArr[fs + i]];
+    }
+  }
+
+  // Cleanup
+  free(isEdgeA); free(isEdgeB); free(isTA); free(isTB); free(isX); free(isY);
+  free(verts); free(evtCount); free(evtStart); free(evts);
+  free(heFrom); free(heTo); free(heTwin); free(heNext); free(heAngle);
+  free(outCount2); free(outStart2); free(outEdges);
+  free(visited); free(faceStartArr); free(faceSizeArr); free(faceVertsArr);
+  free(faceSelected);
+  return cs;
+}
+
 bool manifold_cross_section_is_empty(const ManifoldCrossSection *cs) {
   return !cs || cs->numContours == 0;
 }

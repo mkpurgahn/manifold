@@ -259,10 +259,23 @@ typedef struct {
   ManifoldMat2x3 transform; // lazy affine transform (identity = no pending)
 } ManifoldCrossSection;
 
+// Fill rules for polygon winding (matches C++ CrossSection::FillRule).
+typedef enum {
+  MANIFOLD_FILL_EVEN_ODD = 0,
+  MANIFOLD_FILL_NON_ZERO = 1,
+  MANIFOLD_FILL_POSITIVE = 2,
+  MANIFOLD_FILL_NEGATIVE = 3,
+} ManifoldFillRule;
+
 // Construct a CrossSection from a set of 2D polygon contours.
 // Empty contours (< 3 vertices) are filtered out, matching C++ behavior.
 ManifoldCrossSection manifold_cross_section_of_polygons(
     const ManifoldPolygons2D *polys);
+
+// Construct a CrossSection from a single simple polygon with a fill rule.
+// Resolves self-intersections using planar subdivision and fill rule.
+ManifoldCrossSection manifold_cross_section_of_simple_polygon(
+    const ManifoldVec2 *pts, int n, ManifoldFillRule fillRule);
 
 // Construct a CrossSection from a Rect.
 ManifoldCrossSection manifold_cross_section_of_rect(

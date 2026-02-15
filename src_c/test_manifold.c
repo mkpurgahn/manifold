@@ -6876,6 +6876,41 @@ static void test_CrossSection_Decompose(void) {
   manifold_cross_section_free(&recomp);
 }
 
+static void test_CrossSection_FillRule(void) {
+  ManifoldVec2 polygon[] = {
+    {-7, 13},
+    {-7, 12},
+    {-5, 9},
+    {-5, 8.1},
+    {-4.8, 8},
+  };
+
+  ManifoldCrossSection positive =
+      manifold_cross_section_of_simple_polygon(polygon, 5,
+                                               MANIFOLD_FILL_POSITIVE);
+  EXPECT_NEAR(manifold_cross_section_area2(&positive), 0.683, 0.001);
+
+  ManifoldCrossSection negative =
+      manifold_cross_section_of_simple_polygon(polygon, 5,
+                                               MANIFOLD_FILL_NEGATIVE);
+  EXPECT_NEAR(manifold_cross_section_area2(&negative), 0.193, 0.001);
+
+  ManifoldCrossSection evenOdd =
+      manifold_cross_section_of_simple_polygon(polygon, 5,
+                                               MANIFOLD_FILL_EVEN_ODD);
+  EXPECT_NEAR(manifold_cross_section_area2(&evenOdd), 0.875, 0.001);
+
+  ManifoldCrossSection nonZero =
+      manifold_cross_section_of_simple_polygon(polygon, 5,
+                                               MANIFOLD_FILL_NON_ZERO);
+  EXPECT_NEAR(manifold_cross_section_area2(&nonZero), 0.875, 0.001);
+
+  manifold_cross_section_free(&positive);
+  manifold_cross_section_free(&negative);
+  manifold_cross_section_free(&evenOdd);
+  manifold_cross_section_free(&nonZero);
+}
+
 // ==================== Main ====================
 
 int main(void) {
@@ -7090,6 +7125,7 @@ int main(void) {
   RUN_TEST(CrossSection_MirrorUnion);
   RUN_TEST(CrossSection_Warp);
   RUN_TEST(CrossSection_Decompose);
+  RUN_TEST(CrossSection_FillRule);
 
   // Early exit before slow tests (temporary for development)
   if (getenv("SKIP_SLOW") != NULL) {
