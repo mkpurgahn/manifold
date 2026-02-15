@@ -3191,202 +3191,497 @@ cleanup:
   return nout;
 }
 
-// Subtract a single clip contour from cross section a (which may have multiple contours)
-static ManifoldCrossSection cs_subtract_single_clip(
-    const ManifoldCrossSection *a, const ManifoldVec2 *clip, int nclip) {
-  ManifoldCrossSection result = {NULL, NULL, 0, {{{1,0},{0,1},{0,0}}}};
-
-  ManifoldPolygons2D pa = manifold_cross_section_to_polygons(a);
-  if (pa.numPolys == 0) { manifold_polygons2d_free(&pa); return result; }
-
-  int max_contours = pa.numPolys * 2 + 1;
-  ManifoldVec2 **cverts = (ManifoldVec2 **)malloc(max_contours * sizeof(ManifoldVec2 *));
-  int *csizes = (int *)malloc(max_contours * sizeof(int));
-  int nc = 0;
-
+// Multi-contour winding number at a point
+static int cs_multi_winding(const ManifoldVec2 *allPts, const int *sizes,
+                            int nc, double qx, double qy) {
+  int winding = 0;
   int offset = 0;
-  for (int c = 0; c < pa.numPolys; c++) {
-    const ManifoldVec2 *subj = pa.polys + offset;
-    int nsub = pa.polySizes[c];
-    offset += nsub;
-
-    // Check for edge-edge intersections or boundary contacts
-    bool has_contact = false;
-    for (int i = 0; i < nsub && !has_contact; i++) {
-      for (int j = 0; j < nclip; j++) {
-        int dummy; double dparam;
-        if (cs_point_on_seg(subj[i], clip[j], clip[(j+1)%nclip],
-                            &dummy, &dparam, j)) {
-          has_contact = true; break;
-        }
-      }
-    }
-    // Also check for edge-edge intersections
-    if (!has_contact) {
-      for (int i = 0; i < nsub && !has_contact; i++) {
-        int in_ = (i+1) % nsub;
-        double d1x = subj[in_].x - subj[i].x, d1y = subj[in_].y - subj[i].y;
-        for (int j = 0; j < nclip; j++) {
-          int jn = (j+1) % nclip;
-          double d2x = clip[jn].x - clip[j].x, d2y = clip[jn].y - clip[j].y;
-          double cross = d1x*d2y - d1y*d2x;
-          if (fabs(cross) < 1e-9) continue;
-          double dx = clip[j].x - subj[i].x, dy = clip[j].y - subj[i].y;
-          double t = (dx*d2y - dy*d2x) / cross;
-          double s = (dx*d1y - dy*d1x) / cross;
-          if (t > 1e-9 && t < 1.0 - 1e-9 && s > 1e-9 && s < 1.0 - 1e-9) {
-            has_contact = true; break;
-          }
-        }
-      }
-    }
-
-    if (!has_contact) {
-      // No contact: check containment
-      bool subj_in_clip = cs_pip(subj[0], clip, nclip);
-      bool clip_in_subj = cs_pip(clip[0], subj, nsub);
-
-      if (subj_in_clip) {
-        // Entirely inside clip → skip
-      } else if (clip_in_subj) {
-        // Clip inside subject → subject + hole
-        cverts[nc] = (ManifoldVec2 *)malloc(nsub * sizeof(ManifoldVec2));
-        memcpy(cverts[nc], subj, nsub * sizeof(ManifoldVec2));
-        csizes[nc] = nsub; nc++;
-        cverts[nc] = (ManifoldVec2 *)malloc(nclip * sizeof(ManifoldVec2));
-        for (int j = 0; j < nclip; j++)
-          cverts[nc][j] = clip[nclip - 1 - j];
-        csizes[nc] = nclip; nc++;
-      } else {
-        // No overlap → keep subject
-        cverts[nc] = (ManifoldVec2 *)malloc(nsub * sizeof(ManifoldVec2));
-        memcpy(cverts[nc], subj, nsub * sizeof(ManifoldVec2));
-        csizes[nc] = nsub; nc++;
-      }
-    } else {
-      // Has contact → clip
-      ManifoldVec2 *buf = (ManifoldVec2 *)malloc((nsub + nclip + nsub*nclip) * sizeof(ManifoldVec2));
-      int nout = cs_clip_diff(subj, nsub, clip, nclip, buf);
-      if (nout >= 3) {
-        cverts[nc] = (ManifoldVec2 *)malloc(nout * sizeof(ManifoldVec2));
-        memcpy(cverts[nc], buf, nout * sizeof(ManifoldVec2));
-        csizes[nc] = nout; nc++;
-      }
-      free(buf);
-    }
+  for (int c = 0; c < nc; c++) {
+    winding += cs_polygon_winding(allPts + offset, sizes[c], qx, qy);
+    offset += sizes[c];
   }
-
-  // Build result
-  if (nc > 0) {
-    int total = 0;
-    for (int i = 0; i < nc; i++) total += csizes[i];
-    result.numContours = nc;
-    result.contourSizes = (int *)malloc(nc * sizeof(int));
-    result.verts = (ManifoldVec2 *)malloc(total * sizeof(ManifoldVec2));
-    int off = 0;
-    for (int i = 0; i < nc; i++) {
-      result.contourSizes[i] = csizes[i];
-      memcpy(result.verts + off, cverts[i], csizes[i] * sizeof(ManifoldVec2));
-      off += csizes[i];
-      free(cverts[i]);
-    }
-  }
-  free(cverts); free(csizes);
-  manifold_polygons2d_free(&pa);
-  return result;
+  return winding;
 }
 
-// Subtract cross section b from a, handling all contours of b
-static ManifoldCrossSection cs_subtract(
-    const ManifoldCrossSection *a, const ManifoldCrossSection *b) {
-  if (!a || a->numContours == 0)
-    return (ManifoldCrossSection){NULL, NULL, 0, {{{1,0},{0,1},{0,0}}}};
-  if (!b || b->numContours == 0) {
-    ManifoldPolygons2D pa = manifold_cross_section_to_polygons(a);
-    ManifoldCrossSection result = manifold_cross_section_of_polygons(&pa);
-    manifold_polygons2d_free(&pa);
-    return result;
+// General cross-section boolean via DCEL planar subdivision.
+// allPts: concatenated contour vertices (B reversed for subtract).
+// sizes: array of contour vertex counts.
+// nc: number of contours.
+// windingMin: keep faces with winding >= this value.
+static ManifoldCrossSection cs_planar_bool(
+    const ManifoldVec2 *allPts, const int *sizes, int nc, int windingMin) {
+  ManifoldCrossSection cs = {NULL, NULL, 0, {{{1,0},{0,1},{0,0}}}};
+  if (nc == 0) return cs;
+
+  int nTotalVerts = 0;
+  for (int c = 0; c < nc; c++) nTotalVerts += sizes[c];
+  int nTotalEdges = nTotalVerts;
+
+  // Build edge arrays
+  int *contourOff = (int *)malloc(nc * sizeof(int));
+  contourOff[0] = 0;
+  for (int c = 1; c < nc; c++) contourOff[c] = contourOff[c-1] + sizes[c-1];
+
+  int *efrom = (int *)malloc(nTotalEdges * sizeof(int));
+  int *eto = (int *)malloc(nTotalEdges * sizeof(int));
+  int ei = 0;
+  for (int c = 0; c < nc; c++) {
+    for (int i = 0; i < sizes[c]; i++) {
+      efrom[ei] = contourOff[c] + i;
+      eto[ei] = contourOff[c] + (i + 1) % sizes[c];
+      ei++;
+    }
   }
 
-  ManifoldPolygons2D pb = manifold_cross_section_to_polygons(b);
-  if (pb.numPolys == 0) {
-    manifold_polygons2d_free(&pb);
-    ManifoldPolygons2D pa = manifold_cross_section_to_polygons(a);
-    ManifoldCrossSection result = manifold_cross_section_of_polygons(&pa);
-    manifold_polygons2d_free(&pa);
-    return result;
+  // Find all intersections between non-adjacent edges
+  int maxIsect = 256;
+  int nIsect = 0;
+  int *isEA = (int *)malloc(maxIsect * sizeof(int));
+  int *isEB = (int *)malloc(maxIsect * sizeof(int));
+  double *isTa = (double *)malloc(maxIsect * sizeof(double));
+  double *isTb = (double *)malloc(maxIsect * sizeof(double));
+  double *isXp = (double *)malloc(maxIsect * sizeof(double));
+  double *isYp = (double *)malloc(maxIsect * sizeof(double));
+
+  for (int ea = 0; ea < nTotalEdges; ea++) {
+    int fa = efrom[ea], ta = eto[ea];
+    double d1x = allPts[ta].x - allPts[fa].x;
+    double d1y = allPts[ta].y - allPts[fa].y;
+    for (int eb = ea + 1; eb < nTotalEdges; eb++) {
+      int fb = efrom[eb], tb = eto[eb];
+      if (fa == fb || fa == tb || ta == fb || ta == tb) continue;
+      double d2x = allPts[tb].x - allPts[fb].x;
+      double d2y = allPts[tb].y - allPts[fb].y;
+      double cross = d1x * d2y - d1y * d2x;
+      if (fabs(cross) < 1e-12) continue;
+      double dx = allPts[fb].x - allPts[fa].x;
+      double dy = allPts[fb].y - allPts[fa].y;
+      double t = (dx * d2y - dy * d2x) / cross;
+      double s = (dx * d1y - dy * d1x) / cross;
+      if (t > 1e-9 && t < 1.0 - 1e-9 && s > 1e-9 && s < 1.0 - 1e-9) {
+        if (nIsect >= maxIsect) {
+          maxIsect *= 2;
+          isEA = (int *)realloc(isEA, maxIsect * sizeof(int));
+          isEB = (int *)realloc(isEB, maxIsect * sizeof(int));
+          isTa = (double *)realloc(isTa, maxIsect * sizeof(double));
+          isTb = (double *)realloc(isTb, maxIsect * sizeof(double));
+          isXp = (double *)realloc(isXp, maxIsect * sizeof(double));
+          isYp = (double *)realloc(isYp, maxIsect * sizeof(double));
+        }
+        isEA[nIsect] = ea;
+        isEB[nIsect] = eb;
+        isTa[nIsect] = t;
+        isTb[nIsect] = s;
+        isXp[nIsect] = allPts[fa].x + t * d1x;
+        isYp[nIsect] = allPts[fa].y + t * d1y;
+        nIsect++;
+      }
+    }
   }
 
-  // Iteratively subtract each clip contour
-  ManifoldPolygons2D pa = manifold_cross_section_to_polygons(a);
-  ManifoldCrossSection current = manifold_cross_section_of_polygons(&pa);
-  manifold_polygons2d_free(&pa);
+  // Detect T-junctions: vertices of one contour lying on edges of another.
+  // For each vertex, check if it lies on any edge from a different contour.
+  int maxTJ = 64;
+  int nTJ = 0;
+  int *tjEdge = (int *)malloc(maxTJ * sizeof(int));
+  double *tjParam = (double *)malloc(maxTJ * sizeof(double));
+  int *tjVert = (int *)malloc(maxTJ * sizeof(int));
 
-  int clip_offset = 0;
-  for (int ci = 0; ci < pb.numPolys; ci++) {
-    int nclip = pb.polySizes[ci];
-    if (nclip < 3) { clip_offset += nclip; continue; }
-    ManifoldCrossSection next = cs_subtract_single_clip(
-        &current, pb.polys + clip_offset, nclip);
-    manifold_cross_section_free(&current);
-    current = next;
-    clip_offset += nclip;
+  for (int ea = 0; ea < nTotalEdges; ea++) {
+    int va = efrom[ea];
+    ManifoldVec2 p = allPts[va];
+    for (int eb = 0; eb < nTotalEdges; eb++) {
+      if (efrom[eb] == va || eto[eb] == va) continue;
+      // Check if vertex va lies on edge eb
+      int fb2 = efrom[eb], tb2 = eto[eb];
+      double edx = allPts[tb2].x - allPts[fb2].x;
+      double edy = allPts[tb2].y - allPts[fb2].y;
+      double len2 = edx * edx + edy * edy;
+      if (len2 < 1e-20) continue;
+      double t = ((p.x - allPts[fb2].x) * edx +
+                  (p.y - allPts[fb2].y) * edy) / len2;
+      if (t < 1e-9 || t > 1.0 - 1e-9) continue;
+      double px = allPts[fb2].x + t * edx;
+      double py = allPts[fb2].y + t * edy;
+      double dist2 = (p.x - px) * (p.x - px) + (p.y - py) * (p.y - py);
+      if (dist2 < 1e-10) {
+        if (nTJ >= maxTJ) {
+          maxTJ *= 2;
+          tjEdge = (int *)realloc(tjEdge, maxTJ * sizeof(int));
+          tjParam = (double *)realloc(tjParam, maxTJ * sizeof(double));
+          tjVert = (int *)realloc(tjVert, maxTJ * sizeof(int));
+        }
+        tjEdge[nTJ] = eb;
+        tjParam[nTJ] = t;
+        tjVert[nTJ] = va;
+        nTJ++;
+      }
+    }
   }
 
-  manifold_polygons2d_free(&pb);
-  return current;
+  // No intersections AND no T-junctions: boundary classification check.
+  // A contour is a boundary if the winding on its interior side differs
+  // in classification from the winding on its exterior side.
+  if (nIsect == 0 && nTJ == 0) {
+    int resultNC = 0, resultNV = 0;
+    bool *keep = (bool *)calloc(nc, sizeof(bool));
+    int offset = 0;
+    for (int c = 0; c < nc; c++) {
+      int n = sizes[c];
+      // Compute signed area to determine contour orientation
+      double signedArea = 0;
+      for (int i = 0; i < n; i++) {
+        int j = (i + 1) % n;
+        signedArea += allPts[offset+i].x * allPts[offset+j].y
+                    - allPts[offset+j].x * allPts[offset+i].y;
+      }
+      signedArea *= 0.5;
+
+      // Find an interior test point: midpoint of first edge, offset to the
+      // interior side (left for CCW, right for CW)
+      double mx = (allPts[offset].x + allPts[offset+1].x) * 0.5;
+      double my = (allPts[offset].y + allPts[offset+1].y) * 0.5;
+      double edx = allPts[offset+1].x - allPts[offset].x;
+      double edy = allPts[offset+1].y - allPts[offset].y;
+      double elen = sqrt(edx*edx + edy*edy);
+      if (elen > 1e-15) {
+        double nx = -edy / elen, ny = edx / elen;  // left normal
+        double eps = 1e-6;
+        if (signedArea < 0) { nx = -nx; ny = -ny; }  // right normal for CW
+        double px = mx + nx * eps, py = my + ny * eps;
+        int w_in = cs_multi_winding(allPts, sizes, nc, px, py);
+        // w_out differs by the contour's own contribution
+        int w_out = (signedArea > 0) ? (w_in - 1) : (w_in + 1);
+        bool in_sel = (w_in >= windingMin);
+        bool out_sel = (w_out >= windingMin);
+        if (in_sel != out_sel) {
+          keep[c] = true;
+          resultNC++;
+          resultNV += n;
+        }
+      }
+      offset += n;
+    }
+    if (resultNC > 0) {
+      cs.numContours = resultNC;
+      cs.contourSizes = (int *)malloc(resultNC * sizeof(int));
+      cs.verts = (ManifoldVec2 *)malloc(resultNV * sizeof(ManifoldVec2));
+      int ci = 0, vi = 0;
+      offset = 0;
+      for (int c = 0; c < nc; c++) {
+        if (keep[c]) {
+          cs.contourSizes[ci++] = sizes[c];
+          memcpy(cs.verts + vi, allPts + offset,
+                 sizes[c] * sizeof(ManifoldVec2));
+          vi += sizes[c];
+        }
+        offset += sizes[c];
+      }
+    }
+    free(keep);
+    free(contourOff); free(efrom); free(eto);
+    free(isEA); free(isEB); free(isTa); free(isTb); free(isXp); free(isYp);
+    free(tjEdge); free(tjParam); free(tjVert);
+    return cs;
+  }
+
+  // Build vertices: original + intersection points (T-junctions reuse existing)
+  int nVerts = nTotalVerts + nIsect;
+  ManifoldVec2 *verts = (ManifoldVec2 *)malloc(nVerts * sizeof(ManifoldVec2));
+  memcpy(verts, allPts, nTotalVerts * sizeof(ManifoldVec2));
+  for (int i = 0; i < nIsect; i++)
+    verts[nTotalVerts + i] = (ManifoldVec2){isXp[i], isYp[i]};
+
+  // Build edge events (split edges at intersection points and T-junctions)
+  int *evtCount = (int *)calloc(nTotalEdges, sizeof(int));
+  for (int e = 0; e < nTotalEdges; e++) evtCount[e] = 2;
+  for (int i = 0; i < nIsect; i++) {
+    evtCount[isEA[i]]++;
+    evtCount[isEB[i]]++;
+  }
+  for (int i = 0; i < nTJ; i++) {
+    evtCount[tjEdge[i]]++;
+  }
+  int totalEvts = 0;
+  int *evtStart = (int *)malloc(nTotalEdges * sizeof(int));
+  for (int e = 0; e < nTotalEdges; e++) {
+    evtStart[e] = totalEvts;
+    totalEvts += evtCount[e];
+  }
+  CSEdgeEvt *evts = (CSEdgeEvt *)malloc(totalEvts * sizeof(CSEdgeEvt));
+  int *evtFill = (int *)calloc(nTotalEdges, sizeof(int));
+  for (int e = 0; e < nTotalEdges; e++) {
+    evts[evtStart[e] + evtFill[e]++] = (CSEdgeEvt){0.0, efrom[e]};
+    evts[evtStart[e] + evtFill[e]++] = (CSEdgeEvt){1.0, eto[e]};
+  }
+  for (int i = 0; i < nIsect; i++) {
+    int vi = nTotalVerts + i;
+    evts[evtStart[isEA[i]] + evtFill[isEA[i]]++] = (CSEdgeEvt){isTa[i], vi};
+    evts[evtStart[isEB[i]] + evtFill[isEB[i]]++] = (CSEdgeEvt){isTb[i], vi};
+  }
+  for (int i = 0; i < nTJ; i++) {
+    evts[evtStart[tjEdge[i]] + evtFill[tjEdge[i]]++] =
+        (CSEdgeEvt){tjParam[i], tjVert[i]};
+  }
+  free(evtFill);
+  for (int e = 0; e < nTotalEdges; e++)
+    qsort(evts + evtStart[e], evtCount[e], sizeof(CSEdgeEvt), cmp_cs_edge_evt);
+  free(tjEdge); free(tjParam); free(tjVert);
+
+  // Build half-edge list
+  int nForward = 0;
+  for (int e = 0; e < nTotalEdges; e++) nForward += evtCount[e] - 1;
+  int maxHE = 2 * nForward;
+  int *heFrom = (int *)malloc(maxHE * sizeof(int));
+  int *heTo = (int *)malloc(maxHE * sizeof(int));
+  int *heTwin = (int *)malloc(maxHE * sizeof(int));
+  int *heNext = (int *)malloc(maxHE * sizeof(int));
+  double *heAngle = (double *)malloc(maxHE * sizeof(double));
+  int nHE = 0;
+
+  for (int e = 0; e < nTotalEdges; e++) {
+    for (int j = 0; j < evtCount[e] - 1; j++) {
+      int from = evts[evtStart[e] + j].vertex;
+      int to = evts[evtStart[e] + j + 1].vertex;
+      heFrom[nHE] = from;
+      heTo[nHE] = to;
+      heTwin[nHE] = -1;
+      heNext[nHE] = -1;
+      double ddx = verts[to].x - verts[from].x;
+      double ddy = verts[to].y - verts[from].y;
+      heAngle[nHE] = atan2(ddy, ddx);
+      nHE++;
+    }
+  }
+  int nFwd = nHE;
+  for (int i = 0; i < nFwd; i++) {
+    heFrom[nHE] = heTo[i];
+    heTo[nHE] = heFrom[i];
+    heTwin[nHE] = i;
+    heTwin[i] = nHE;
+    heNext[nHE] = -1;
+    double ddx = verts[heFrom[i]].x - verts[heTo[i]].x;
+    double ddy = verts[heFrom[i]].y - verts[heTo[i]].y;
+    heAngle[nHE] = atan2(ddy, ddx);
+    nHE++;
+  }
+
+  // Sort outgoing edges at each vertex by angle, build next pointers
+  int *outCount = (int *)calloc(nVerts, sizeof(int));
+  for (int i = 0; i < nHE; i++) outCount[heFrom[i]]++;
+  int *outStart = (int *)malloc(nVerts * sizeof(int));
+  int tot = 0;
+  for (int i = 0; i < nVerts; i++) { outStart[i] = tot; tot += outCount[i]; }
+  CSAngleEnt *outEdges = (CSAngleEnt *)malloc(nHE * sizeof(CSAngleEnt));
+  int *outFill = (int *)calloc(nVerts, sizeof(int));
+  for (int i = 0; i < nHE; i++) {
+    int v = heFrom[i];
+    outEdges[outStart[v] + outFill[v]++] = (CSAngleEnt){i, heAngle[i]};
+  }
+  free(outFill);
+  for (int v = 0; v < nVerts; v++) {
+    if (outCount[v] > 1)
+      qsort(outEdges + outStart[v], outCount[v],
+            sizeof(CSAngleEnt), cmp_cs_angle_ent);
+  }
+
+  // DCEL rule: next(twin(e[i])) = e[(i-1+k) % k]
+  for (int v = 0; v < nVerts; v++) {
+    int k = outCount[v];
+    if (k == 0) continue;
+    for (int i = 0; i < k; i++) {
+      int eii = outEdges[outStart[v] + i].heIdx;
+      int pi = (i - 1 + k) % k;
+      int eprev = outEdges[outStart[v] + pi].heIdx;
+      heNext[heTwin[eii]] = eprev;
+    }
+  }
+
+  // Trace faces
+  bool *visited = (bool *)calloc(nHE, sizeof(bool));
+  // Trace faces and record faceOf for each half-edge
+  int *faceOf = (int *)malloc(nHE * sizeof(int));
+  memset(faceOf, -1, nHE * sizeof(int));
+  int *faceStartArr = (int *)malloc(nHE * sizeof(int));
+  int *faceSizeArr = (int *)malloc(nHE * sizeof(int));
+  int *faceHEArr = (int *)malloc(nHE * sizeof(int));  // half-edge indices per face
+  int nFaces = 0, fhTotal = 0;
+
+  for (int start = 0; start < nHE; start++) {
+    if (visited[start]) continue;
+    faceStartArr[nFaces] = fhTotal;
+    int cur = start, fsize = 0;
+    do {
+      visited[cur] = true;
+      faceOf[cur] = nFaces;
+      faceHEArr[fhTotal++] = cur;
+      fsize++;
+      cur = heNext[cur];
+      if (cur == -1 || fsize > nHE) break;
+    } while (cur != start);
+    faceSizeArr[nFaces] = fsize;
+    nFaces++;
+  }
+
+  // For each face, compute winding and select (only positive-area faces)
+  bool *faceSelected = (bool *)calloc(nFaces, sizeof(bool));
+
+  for (int f = 0; f < nFaces; f++) {
+    int fs = faceStartArr[f], fz = faceSizeArr[f];
+    if (fz < 3) continue;
+    double area = 0;
+    for (int i = 0; i < fz; i++) {
+      int j = (i + 1) % fz;
+      int hi = faceHEArr[fs + i], hj = faceHEArr[fs + j];
+      ManifoldVec2 vi = verts[heFrom[hi]];
+      ManifoldVec2 vj = verts[heFrom[hj]];
+      area += vi.x * vj.y - vj.x * vi.y;
+    }
+    area *= 0.5;
+    if (area < 1e-10) continue;  // skip CW/exterior/degenerate faces
+    // Use centroid for winding test
+    double cx = 0, cy = 0;
+    for (int i = 0; i < fz; i++) {
+      cx += verts[heFrom[faceHEArr[fs + i]]].x;
+      cy += verts[heFrom[faceHEArr[fs + i]]].y;
+    }
+    cx /= fz; cy /= fz;
+    int w = cs_multi_winding(allPts, sizes, nc, cx, cy);
+    if (w >= windingMin) {
+      faceSelected[f] = true;
+    }
+  }
+
+  // Extract boundary edges: h is boundary if faceOf[h] is selected
+  // and faceOf[twin(h)] is not selected
+  bool *isBound = (bool *)calloc(nHE, sizeof(bool));
+  int nBound = 0;
+  for (int h = 0; h < nHE; h++) {
+    int fh = faceOf[h];
+    int ft = faceOf[heTwin[h]];
+    if (fh >= 0 && faceSelected[fh] && (ft < 0 || !faceSelected[ft])) {
+      isBound[h] = true;
+      nBound++;
+    }
+  }
+
+  // Chain boundary edges into contours
+  // To find the next boundary edge after h: follow heNext[h], and if that's
+  // not a boundary edge, cross to the adjacent face via twin and continue.
+  int resultContours = 0, resultVerts = 0;
+  bool *usedBound = (bool *)calloc(nHE, sizeof(bool));
+  // First pass: count contours and verts
+  for (int start = 0; start < nHE; start++) {
+    if (!isBound[start] || usedBound[start]) continue;
+    int h = start, cnt = 0;
+    do {
+      usedBound[h] = true;
+      cnt++;
+      int cur = heNext[h];
+      while (!isBound[cur]) cur = heNext[heTwin[cur]];
+      h = cur;
+    } while (h != start);
+    resultContours++;
+    resultVerts += cnt;
+  }
+
+  // Second pass: build output
+  if (resultContours > 0) {
+    cs.numContours = resultContours;
+    cs.contourSizes = (int *)malloc(resultContours * sizeof(int));
+    cs.verts = (ManifoldVec2 *)malloc(resultVerts * sizeof(ManifoldVec2));
+    memset(usedBound, 0, nHE * sizeof(bool));
+    int ci = 0, vi = 0;
+    for (int start = 0; start < nHE; start++) {
+      if (!isBound[start] || usedBound[start]) continue;
+      int h = start, cnt = 0;
+      do {
+        usedBound[h] = true;
+        cs.verts[vi++] = verts[heFrom[h]];
+        cnt++;
+        int cur = heNext[h];
+        while (!isBound[cur]) cur = heNext[heTwin[cur]];
+        h = cur;
+      } while (h != start);
+      cs.contourSizes[ci++] = cnt;
+    }
+  }
+
+  // Cleanup
+  free(contourOff); free(efrom); free(eto);
+  free(isEA); free(isEB); free(isTa); free(isTb); free(isXp); free(isYp);
+  free(verts); free(evtCount); free(evtStart); free(evts);
+  free(heFrom); free(heTo); free(heTwin); free(heNext); free(heAngle);
+  free(outCount); free(outStart); free(outEdges);
+  free(visited); free(faceOf); free(faceStartArr); free(faceSizeArr);
+  free(faceHEArr); free(faceSelected); free(isBound); free(usedBound);
+  return cs;
 }
 
 ManifoldCrossSection manifold_cross_section_boolean(
     const ManifoldCrossSection *a, const ManifoldCrossSection *b,
     ManifoldOpType op) {
-  if (op == MANIFOLD_OP_SUBTRACT)
-    return cs_subtract(a, b);
-
-  // For Add (union): A ∪ B = A + (B \ A)
-  if (op == MANIFOLD_OP_ADD) {
-    if (!a || a->numContours == 0) {
+  // Handle empty inputs
+  bool aEmpty = !a || a->numContours == 0;
+  bool bEmpty = !b || b->numContours == 0;
+  if (aEmpty && bEmpty) return manifold_cross_section_empty();
+  if (aEmpty) {
+    if (op == MANIFOLD_OP_ADD) {
       ManifoldPolygons2D pb = manifold_cross_section_to_polygons(b);
-      ManifoldCrossSection result = manifold_cross_section_of_polygons(&pb);
+      ManifoldCrossSection r = manifold_cross_section_of_polygons(&pb);
       manifold_polygons2d_free(&pb);
-      return result;
+      return r;
     }
-    if (!b || b->numContours == 0) {
+    return manifold_cross_section_empty();
+  }
+  if (bEmpty) {
+    if (op == MANIFOLD_OP_SUBTRACT || op == MANIFOLD_OP_ADD) {
       ManifoldPolygons2D pa = manifold_cross_section_to_polygons(a);
-      ManifoldCrossSection result = manifold_cross_section_of_polygons(&pa);
+      ManifoldCrossSection r = manifold_cross_section_of_polygons(&pa);
       manifold_polygons2d_free(&pa);
-      return result;
+      return r;
     }
-    ManifoldCrossSection b_minus_a = cs_subtract(b, a);
-    ManifoldPolygons2D pa = manifold_cross_section_to_polygons(a);
-    ManifoldPolygons2D pb = manifold_cross_section_to_polygons(&b_minus_a);
-    int nc = pa.numPolys + pb.numPolys;
-    int nv_a = 0, nv_b = 0;
-    for (int i = 0; i < pa.numPolys; i++) nv_a += pa.polySizes[i];
-    for (int i = 0; i < pb.numPolys; i++) nv_b += pb.polySizes[i];
-    ManifoldCrossSection result = {NULL, NULL, 0, {{{1,0},{0,1},{0,0}}}};
-    if (nc == 0) {
-      manifold_polygons2d_free(&pa);
-      manifold_polygons2d_free(&pb);
-      manifold_cross_section_free(&b_minus_a);
-      return result;
-    }
-    result.numContours = nc;
-    result.contourSizes = (int *)malloc(nc * sizeof(int));
-    result.verts = (ManifoldVec2 *)malloc((nv_a + nv_b) * sizeof(ManifoldVec2));
-    memcpy(result.contourSizes, pa.polySizes, pa.numPolys * sizeof(int));
-    if (pb.numPolys > 0)
-      memcpy(result.contourSizes + pa.numPolys, pb.polySizes, pb.numPolys * sizeof(int));
-    memcpy(result.verts, pa.polys, nv_a * sizeof(ManifoldVec2));
-    if (nv_b > 0)
-      memcpy(result.verts + nv_a, pb.polys, nv_b * sizeof(ManifoldVec2));
-    manifold_polygons2d_free(&pa);
-    manifold_polygons2d_free(&pb);
-    manifold_cross_section_free(&b_minus_a);
-    return result;
+    return manifold_cross_section_empty();
   }
 
-  return manifold_cross_section_empty();
+  // Materialize vertices
+  ManifoldPolygons2D pa = manifold_cross_section_to_polygons(a);
+  ManifoldPolygons2D pb = manifold_cross_section_to_polygons(b);
+
+  int nva = 0, nvb = 0;
+  for (int i = 0; i < pa.numPolys; i++) nva += pa.polySizes[i];
+  for (int i = 0; i < pb.numPolys; i++) nvb += pb.polySizes[i];
+
+  // Build combined contours
+  int numC = pa.numPolys + pb.numPolys;
+  int numV = nva + nvb;
+  ManifoldVec2 *allPts = (ManifoldVec2 *)malloc(numV * sizeof(ManifoldVec2));
+  int *sizes = (int *)malloc(numC * sizeof(int));
+
+  memcpy(allPts, pa.polys, nva * sizeof(ManifoldVec2));
+  memcpy(sizes, pa.polySizes, pa.numPolys * sizeof(int));
+
+  int boff = nva, srcOff = 0;
+  for (int c = 0; c < pb.numPolys; c++) {
+    int n = pb.polySizes[c];
+    sizes[pa.numPolys + c] = n;
+    if (op == MANIFOLD_OP_SUBTRACT) {
+      for (int j = 0; j < n; j++)
+        allPts[boff + j] = pb.polys[srcOff + n - 1 - j];
+    } else {
+      memcpy(allPts + boff, pb.polys + srcOff, n * sizeof(ManifoldVec2));
+    }
+    boff += n;
+    srcOff += n;
+  }
+
+  int windingMin = (op == MANIFOLD_OP_INTERSECT) ? 2 : 1;
+  ManifoldCrossSection result = cs_planar_bool(allPts, sizes, numC, windingMin);
+
+  free(allPts); free(sizes);
+  manifold_polygons2d_free(&pa);
+  manifold_polygons2d_free(&pb);
+  return result;
 }
 
 ManifoldCrossSection manifold_cross_section_batch_boolean(

@@ -6911,6 +6911,67 @@ static void test_CrossSection_FillRule(void) {
   manifold_cross_section_free(&nonZero);
 }
 
+static void test_CrossSection_BatchBoolean(void) {
+  ManifoldRect2D sqRect = {{0, 0}, {100, 100}};
+  ManifoldCrossSection square = manifold_cross_section_of_rect(&sqRect);
+
+  ManifoldCrossSection circle1_base = manifold_cross_section_circle(30, 30);
+  ManifoldCrossSection circle1 =
+      manifold_cross_section_translate(&circle1_base, (ManifoldVec2){-10, 30});
+  manifold_cross_section_free(&circle1_base);
+
+  ManifoldCrossSection circle2_base = manifold_cross_section_circle(20, 30);
+  ManifoldCrossSection circle2 =
+      manifold_cross_section_translate(&circle2_base, (ManifoldVec2){110, 20});
+  manifold_cross_section_free(&circle2_base);
+
+  ManifoldCrossSection circle3_base = manifold_cross_section_circle(40, 30);
+  ManifoldCrossSection circle3 =
+      manifold_cross_section_translate(&circle3_base, (ManifoldVec2){50, 110});
+  manifold_cross_section_free(&circle3_base);
+
+  // Intersect
+  ManifoldCrossSection arr_i[4];
+  arr_i[0] = manifold_cross_section_copy(&square);
+  arr_i[1] = manifold_cross_section_copy(&circle1);
+  arr_i[2] = manifold_cross_section_copy(&circle2);
+  arr_i[3] = manifold_cross_section_copy(&circle3);
+  ManifoldCrossSection intersect =
+      manifold_cross_section_batch_boolean(arr_i, 4, MANIFOLD_OP_INTERSECT);
+  EXPECT_FLOAT_EQ(manifold_cross_section_area2(&intersect), 0);
+  EXPECT_FLOAT_EQ((double)manifold_cross_section_num_vert(&intersect), 0);
+  manifold_cross_section_free(&intersect);
+
+  // Add
+  ManifoldCrossSection arr_a[4];
+  arr_a[0] = manifold_cross_section_copy(&square);
+  arr_a[1] = manifold_cross_section_copy(&circle1);
+  arr_a[2] = manifold_cross_section_copy(&circle2);
+  arr_a[3] = manifold_cross_section_copy(&circle3);
+  ManifoldCrossSection add =
+      manifold_cross_section_batch_boolean(arr_a, 4, MANIFOLD_OP_ADD);
+  EXPECT_FLOAT_EQ(manifold_cross_section_area2(&add), 16278.637002);
+  EXPECT_FLOAT_EQ((double)manifold_cross_section_num_vert(&add), 66);
+  manifold_cross_section_free(&add);
+
+  // Subtract
+  ManifoldCrossSection arr_s[4];
+  arr_s[0] = manifold_cross_section_copy(&square);
+  arr_s[1] = manifold_cross_section_copy(&circle1);
+  arr_s[2] = manifold_cross_section_copy(&circle2);
+  arr_s[3] = manifold_cross_section_copy(&circle3);
+  ManifoldCrossSection subtract =
+      manifold_cross_section_batch_boolean(arr_s, 4, MANIFOLD_OP_SUBTRACT);
+  EXPECT_FLOAT_EQ(manifold_cross_section_area2(&subtract), 7234.478452);
+  EXPECT_FLOAT_EQ((double)manifold_cross_section_num_vert(&subtract), 42);
+  manifold_cross_section_free(&subtract);
+
+  manifold_cross_section_free(&square);
+  manifold_cross_section_free(&circle1);
+  manifold_cross_section_free(&circle2);
+  manifold_cross_section_free(&circle3);
+}
+
 // ==================== Main ====================
 
 int main(void) {
@@ -7126,6 +7187,7 @@ int main(void) {
   RUN_TEST(CrossSection_Warp);
   RUN_TEST(CrossSection_Decompose);
   RUN_TEST(CrossSection_FillRule);
+  RUN_TEST(CrossSection_BatchBoolean);
 
   // Early exit before slow tests (temporary for development)
   if (getenv("SKIP_SLOW") != NULL) {
