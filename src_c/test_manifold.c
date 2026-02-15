@@ -6454,6 +6454,29 @@ static void test_CrossSection_Rect(void) {
   manifold_cross_section_free(&cross);
 }
 
+static void test_CrossSection_Square(void) {
+  // C++: auto a = Manifold::Cube({5, 5, 5});
+  Manifold a = manifold_cube((ManifoldVec3){5, 5, 5}, 0);
+
+  // C++: CrossSection::Square({5, 5}).ToPolygons()
+  ManifoldRect2D rect = manifold_rect2d((ManifoldVec2){0, 0},
+                                        (ManifoldVec2){5, 5});
+  ManifoldCrossSection cs = manifold_cross_section_of_rect(&rect);
+
+  // C++: Manifold::Extrude(polys, 5)
+  Manifold b = manifold_extrude(cs.verts, cs.contourSizes, cs.numContours,
+                                5.0, 0, 0.0, (ManifoldVec2){1, 1});
+  manifold_cross_section_free(&cs);
+
+  // C++: (a - b).Volume() == 0
+  Manifold diff = manifold_boolean(&a, &b, MANIFOLD_OP_SUBTRACT);
+  EXPECT_FLOAT_EQ(manifold_volume(&diff), 0.0);
+
+  manifold_destroy(&a);
+  manifold_destroy(&b);
+  manifold_destroy(&diff);
+}
+
 // ==================== Main ====================
 
 int main(void) {
@@ -6660,6 +6683,7 @@ int main(void) {
   printf("--- CrossSection ---\n");
   RUN_TEST(CrossSection_Empty);
   RUN_TEST(CrossSection_Rect);
+  RUN_TEST(CrossSection_Square);
 
   // Early exit before slow tests (temporary for development)
   if (getenv("SKIP_SLOW") != NULL) {
